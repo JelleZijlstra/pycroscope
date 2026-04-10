@@ -223,7 +223,10 @@ def test_get_argspec():
         # there's special logic for this in signature_from_value; TODO move that into
         # ExtendedArgSpec
         assert Signature.make(
-            [SigParameter("arg")], callable=ClassWithCall.__call__
+            [SigParameter("arg")],
+            callable=ClassWithCall.__call__,
+            bound_receiver_param_name="self",
+            bound_receiver_composite=Composite(TypedValue(ClassWithCall)),
         ) == visitor.signature_from_value(cwc_typed)
 
         ata = AllTheAttrs([])

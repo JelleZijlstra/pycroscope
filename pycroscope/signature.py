@@ -2037,6 +2037,8 @@ class Signature:
         evaluator: Evaluator | None = None,
         deprecated: str | None = None,
         self_param: TypeVarParam | None = None,
+        bound_receiver_param_name: str | None = None,
+        bound_receiver_composite: Composite | None = None,
     ) -> "Signature":
         """Create a :class:`Signature` object.
 
@@ -2082,6 +2084,8 @@ class Signature:
             evaluator=evaluator,
             deprecated=deprecated,
             self_param=self_param,
+            bound_receiver_param_name=bound_receiver_param_name,
+            bound_receiver_composite=bound_receiver_composite,
         )
 
     def __str__(self) -> str:
@@ -2192,19 +2196,14 @@ class Signature:
             has_return_annotation=self.has_return_value(),
             allow_call=self.allow_call,
             deprecated=self.deprecated,
-            bound_receiver_param_name=(
-                receiver_param_name
-                if preserve_impl and self_value is not None
-                else None
-            ),
+            bound_receiver_param_name=receiver_param_name
+            # if preserve_impl and self_value is not None
+            # else None
+            ,
             bound_receiver_composite=(
                 self_composite
-                if preserve_impl and self_composite is not None
-                else (
-                    Composite(self_value)
-                    if preserve_impl and self_value is not None
-                    else None
-                )
+                if self_composite is not None
+                else (Composite(self_value) if self_value is not None else None)
             ),
         )
         if restore_typevars:

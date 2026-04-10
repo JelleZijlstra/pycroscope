@@ -14440,7 +14440,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def get_tv_map(
         self, left: Value, right: Value, relation: Relation = Relation.ASSIGNABLE
-    ) -> CanAssign:
+    ) -> TypeVarMap | CanAssignError:
         return get_tv_map(left, right, relation, self)
 
     def get_attribute(

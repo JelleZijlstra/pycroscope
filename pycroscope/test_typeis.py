@@ -963,8 +963,7 @@ class TestTypeIs(TestNameCheckVisitorBase):
             assert a(x=1)
 
             assert a(x=x)
-            # Seems like we drop the annotations on the __call__ return somewhere
-            assert_type(x, object)  # TODO: int
+            assert_type(x, int)
 
     @assert_passes()
     def testTypeIsMustBeSubtypeFunctions(self):
