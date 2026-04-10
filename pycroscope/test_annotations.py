@@ -477,7 +477,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
     def test_forward_ref_invalid_listcomp(self):
         from .annotations import Context, type_from_runtime
 
-        val = type_from_runtime("[int for i in range(1)]", ctx=Context())
+        val = type_from_runtime("[int for i in range(1)]", ctx=Context(self_key=None))
         assert isinstance(val, AnyValue)
 
     def test_forward_ref_invalid_unusual_expressions(self):
@@ -493,7 +493,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
             "(lambda: int)()",
             'f"int"',
         ):
-            val = type_from_runtime(annotation, ctx=Context())
+            val = type_from_runtime(annotation, ctx=Context(self_key=None))
             assert isinstance(val, AnyValue), annotation
 
     @skip_before((3, 11))
@@ -517,7 +517,9 @@ class TestAnnotations(TestNameCheckVisitorBase):
         exec("class Callback[**P]:\n    pass", namespace)
         Callback = namespace["Callback"]
 
-        assert type_from_runtime(Callback[[int, str]], ctx=Context()) == GenericValue(
+        assert type_from_runtime(
+            Callback[[int, str]], ctx=Context(self_key=None)
+        ) == GenericValue(
             Callback,
             [
                 SequenceValue(

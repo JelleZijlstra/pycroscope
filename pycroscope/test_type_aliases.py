@@ -566,6 +566,10 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
         print(Alias.__value__)
         print(Alias.__type_params__)
 
+        def capybara(x: TypeAliasType):
+            assert_type(x.__name__, str)
+            assert_type(x.__module__, str | None)
+
     @assert_passes()
     def test_typing_extensions_paramspec_list_arg(self):
         from typing import Callable, ParamSpec

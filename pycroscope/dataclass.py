@@ -1,5 +1,6 @@
 """Dataclass-specific helpers."""
 
+import types
 from collections.abc import Callable
 
 import pycroscope
@@ -183,6 +184,22 @@ def apply_synthetic_attributes(
                 "__hash__", ClassSymbol(is_method=True, initializer=hash_value)
             )
 
+    if semantics.eq and _get_local_synthetic_initializer(type_object, "__eq__") is None:
+        eq_value = CallableValue(
+            Signature.make(
+                [
+                    SigParameter("self", ParameterKind.POSITIONAL_OR_KEYWORD),
+                    SigParameter("other", ParameterKind.POSITIONAL_OR_KEYWORD),
+                ],
+                TypedValue(bool),
+            )
+        )
+        type_object.add_declared_symbol(
+            "__eq__", ClassSymbol(is_method=True, initializer=eq_value)
+        )
+
+    # TODO: should also synthesize order comparison methods if order=True
+
 
 def maybe_resolve_synthetic_descriptor_attribute(
     synthetic_class: SyntheticClassObjectValue,
@@ -210,6 +227,16 @@ def maybe_resolve_synthetic_descriptor_attribute(
     normalized_candidate = replace_fallback(descriptor_candidate)
     if isinstance(normalized_candidate, AnnotatedValue):
         normalized_candidate = replace_fallback(normalized_candidate.value)
+    # TODO: this whole function is weird, we shouldn't need this if we have proper
+    # descriptor resolution in type_object.py.
+    if (
+        descriptor_value is not None
+        and isinstance(normalized_candidate, KnownValue)
+        and isinstance(
+            normalized_candidate.val, (types.FunctionType, types.BuiltinFunctionType)
+        )
+    ):
+        return value
     if not isinstance(normalized_candidate, (KnownValue, SyntheticClassObjectValue)):
         if not isinstance(normalized_candidate, TypedValue):
             return value

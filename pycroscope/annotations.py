@@ -202,7 +202,7 @@ class AnnotationVisitor(ErrorContext, CanAssignContext, Protocol):
     def invalid_self_annotation_message(self, annotation: ast.AST) -> str | None:
         raise NotImplementedError
 
-    def get_bound_self_type(self) -> Value | None:
+    def get_self_key(self) -> type | str | None:
         raise NotImplementedError
 
     def get_type_alias_cache(self) -> dict[object, TypeAlias]:
@@ -217,6 +217,7 @@ class Context:
 
     """
 
+    self_key: type | str | None = field(kw_only=True)
     should_suppress_errors: bool = field(default=False, init=False)
     """While this is True, no annotation errors are emitted."""
     should_allow_undefined_names: bool = field(default=False, init=False)
@@ -276,12 +277,10 @@ class Context:
     def invalid_self_annotation_message(self, node: ast.AST) -> str | None:
         return None
 
-    def get_bound_self_type(self) -> Value | None:
-        if self.visitor is not None:
-            return self.visitor.get_bound_self_type()
-        if isinstance(self.can_assign_ctx, AnnotationVisitor):
-            return self.can_assign_ctx.get_bound_self_type()
-        return None
+    def get_self_value(self) -> Value | None:
+        if self.self_key is None:
+            return None
+        return bound_self_type_from_class_key(self.self_key)
 
     def maybe_show_invalid_self_annotation(self, node: ast.AST | None = None) -> None:
         if self.should_suppress_errors:
@@ -386,7 +385,12 @@ class SyntheticEvaluator(type_evaluation.Evaluator):
         return cls(
             node,
             return_annotation,
-            _DefaultContext(visitor, node, use_name_node_for_error=True),
+            _DefaultContext(
+                self_key=visitor.current_class_key,
+                visitor=visitor,
+                node=node,
+                use_name_node_for_error=True,
+            ),
         )
 
 
@@ -409,7 +413,7 @@ def type_from_ast(
 
     """
     if ctx is None:
-        ctx = _DefaultContext(visitor, ast_node)
+        ctx = _DefaultContext(visitor=visitor, node=ast_node)
     return _type_from_ast(ast_node, ctx)
 
 
@@ -423,7 +427,7 @@ def annotation_expr_from_ast(
     """Given an AST node representing an annotation, return a
     ``AnnotationExpr``."""
     if ctx is None:
-        ctx = _DefaultContext(visitor, ast_node)
+        ctx = _DefaultContext(visitor=visitor, node=ast_node)
     if suppress_errors:
         with ctx.suppress_errors():
             return _annotation_expr_from_ast(ast_node, ctx)
@@ -498,7 +502,7 @@ def type_from_runtime(
     """
 
     if ctx is None:
-        ctx = _DefaultContext(visitor, node, globals)
+        ctx = _DefaultContext(visitor=visitor, node=node, globals=globals)
     if suppress_errors and allow_undefined_names:
         with ctx.suppress_errors():
             with ctx.allow_undefined_names():
@@ -523,7 +527,7 @@ def annotation_expr_from_runtime(
     allow_undefined_names: bool = False,
 ) -> AnnotationExpr:
     if ctx is None:
-        ctx = _DefaultContext(visitor, node, globals)
+        ctx = _DefaultContext(visitor=visitor, node=node, globals=globals)
     if suppress_errors and allow_undefined_names:
         with ctx.suppress_errors():
             with ctx.allow_undefined_names():
@@ -566,7 +570,7 @@ def type_from_value(
 
     """
     if ctx is None:
-        ctx = _DefaultContext(visitor, node)
+        ctx = _DefaultContext(visitor=visitor, node=node)
     if suppress_errors and allow_undefined_names:
         with ctx.suppress_errors():
             with ctx.allow_undefined_names():
@@ -590,7 +594,7 @@ def annotation_expr_from_value(
     allow_undefined_names: bool = False,
 ) -> AnnotationExpr:
     if ctx is None:
-        ctx = _DefaultContext(visitor, node)
+        ctx = _DefaultContext(visitor=visitor, node=node)
     if suppress_errors and allow_undefined_names:
         with ctx.suppress_errors():
             with ctx.allow_undefined_names():
@@ -612,7 +616,7 @@ def value_from_ast(
     error_on_unrecognized: bool = True,
 ) -> Value:
     if ctx is None:
-        ctx = _DefaultContext(visitor, ast_node)
+        ctx = _DefaultContext(visitor=visitor, node=ast_node)
     try:
         val = _Visitor(ctx).visit(ast_node)
     except _UnsupportedAnnotationExpression:
@@ -776,7 +780,16 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
     elif is_typing_name(val, "NoReturn") or is_typing_name(val, "Never"):
         return NO_RETURN_VALUE
     elif is_typing_name(val, "Self"):
-        return ctx.get_bound_self_type() or SelfTVV
+        bound_self = ctx.get_self_value()
+        if bound_self is not None:
+            return bound_self
+        ctx.show_error(
+            "Self cannot be used outside a class", ErrorCode.invalid_self_usage
+        )
+        # fail
+        # # TODO: fail
+        # return AnyValue(AnySource.error)
+        return SelfTVV
     elif is_typing_name(val, "LiteralString"):
         return TypedValue(str, literal_only=True)
     elif hasattr(val, "__supertype__"):
@@ -859,7 +872,7 @@ def make_type_param_from_value(
 ) -> TypeParam | None:
     if ctx is None:
         assert visitor is not None, "visitor must be provided if ctx is not"
-        ctx = _DefaultContext(visitor, node)
+        ctx = _DefaultContext(visitor=visitor, node=node)
     if isinstance(value, PartialCallValue):
         runtime_val = replace_fallback(value.runtime_value)
         if isinstance(runtime_val, TypedValue):
@@ -1021,7 +1034,7 @@ def make_type_param(
 ) -> TypeParam:
     if ctx is None:
         assert visitor is not None, "visitor must be provided if ctx is not"
-        ctx = _DefaultContext(visitor, node)
+        ctx = _DefaultContext(visitor=visitor, node=node)
     runtime_default = getattr(tv, "__default__", NoDefault)
     if runtime_default is not NoDefault:
         default = _type_param_component_from_runtime(runtime_default, ctx)
@@ -1407,7 +1420,7 @@ def _ensure_annotation_context(
 ) -> Context:
     if isinstance(ctx, Context):
         return ctx
-    return _DefaultContext(ctx, node)
+    return _DefaultContext(visitor=ctx, node=node)
 
 
 def _normalize_paramspec_generic_arg(
@@ -2596,14 +2609,22 @@ def _type_alias_cache_key(key: object) -> object:
 class _DefaultContext(Context):
     def __init__(
         self,
+        *,
         visitor: CanAssignContext | None,
         node: ast.AST | None,
+        self_key: type | str | None = None,
         globals: Mapping[str, object] | None = None,
         use_name_node_for_error: bool = False,
     ) -> None:
-        super().__init__(can_assign_ctx=visitor)
         if isinstance(visitor, AnnotationVisitor):
-            self.visitor = visitor
+            base_visitor = visitor
+            if self_key is None:
+                self_key = visitor.get_self_key()
+        else:
+            base_visitor = None
+        super().__init__(
+            can_assign_ctx=visitor, visitor=base_visitor, self_key=self_key
+        )
         self.node = node
         self.globals = globals
         self.use_name_node_for_error = use_name_node_for_error
@@ -2713,7 +2734,7 @@ class _DefaultContext(Context):
 
 
 @dataclass
-class _RuntimeAnnotationsContext(Context):
+class RuntimeAnnotationsContext(Context):
     owner: object
     node: ast.AST | None = None
 
@@ -2756,11 +2777,6 @@ class _RuntimeAnnotationsContext(Context):
         if self.visitor is None:
             return None
         return self.visitor.invalid_self_annotation_message(node)
-
-    def get_bound_self_type(self) -> Value | None:
-        if isinstance(self.owner, type):
-            return bound_self_type_from_class_key(self.owner)
-        return super().get_bound_self_type()
 
 
 @dataclass(frozen=True)

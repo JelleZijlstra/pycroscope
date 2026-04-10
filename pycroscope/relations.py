@@ -1361,6 +1361,7 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
                 suppress_errors=True,
                 allow_undefined_names=True,
             )
+            # TODO: this seems weird
             if (
                 type_form == AnyValue(AnySource.error)
                 and initial_failure_count is not None
@@ -1373,7 +1374,7 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
                 return type_form
         else:
             type_form = type_from_runtime(value.val, visitor=ctx, suppress_errors=True)
-        if type_form == AnyValue(AnySource.error):
+        if isinstance(type_form, AnyValue) and type_form.source is AnySource.error:
             return CanAssignError(f"{value} is not a TypeForm")
         extracted = gradualize(type_form)
         if isinstance(extracted, (TypeVarValue, TypeVarTupleValue)) and (

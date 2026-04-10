@@ -13,13 +13,12 @@ if sys.version_info >= (3, 14):
     from annotationlib import Format, get_annotations
 
 from .annotations import (
-    _RuntimeAnnotationsContext,
+    RuntimeAnnotationsContext,
     annotation_expr_from_runtime,
     make_type_param,
     type_from_runtime,
 )
 from .arg_spec import ArgSpecCache
-from .checker import Checker
 from .safe import is_namedtuple_class, safe_getattr, safe_isinstance
 from .type_object import DataclassFieldRecord
 from .value import (
@@ -45,14 +44,12 @@ from .value import (
     SyntheticModuleValue,
     TypedValue,
     TypeFormValue,
-    TypeParam,
     TypeVarMap,
     UnboundMethodValue,
     Value,
     get_namedtuple_field_annotation,
     match_typevar_arguments,
     replace_fallback,
-    type_param_to_value,
 )
 
 
@@ -98,11 +95,11 @@ def _iter_base_type_values(
         if isinstance(root, SyntheticClassObjectValue):
             root = root.class_type
         elif isinstance(root, KnownValue):
-            root = arg_spec_cache._type_from_base(root.val)
+            root = arg_spec_cache._type_from_base(root.val, object)
         root = replace_fallback(root)
         members = tuple(
             (
-                arg_spec_cache._type_from_base(member.val)
+                arg_spec_cache._type_from_base(member.val, object)
                 if arg_spec_cache is not None and isinstance(member, KnownValue)
                 else member
             )
@@ -136,7 +133,8 @@ def _iter_base_type_values_from_simple(
         if base_id in seen_known_bases:
             return
         yield from _iter_base_type_values(
-            arg_spec_cache._type_from_base(value.val),
+            # TODO: owner is wrong, but this probably doesn't matter
+            arg_spec_cache._type_from_base(value.val, object),
             arg_spec_cache,
             seen_known_bases | {base_id},
         )
@@ -159,19 +157,6 @@ def _iter_base_type_values_from_simple(
         pass
     else:
         assert_never(value)
-
-
-def _default_type_argument_for_param(
-    type_param: TypeParam, substitutions: TypeVarMap, checker: "Checker"
-) -> Value:
-    if type_param.default is not None:
-        default = type_param.default
-        if isinstance(default, KnownValue):
-            default = type_from_runtime(
-                default.val, ctx=checker.arg_spec_cache.default_context
-            )
-        return default.substitute_typevars(substitutions)
-    return type_param_to_value(type_param)
 
 
 def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) -> None:
@@ -288,7 +273,7 @@ def _runtime_member_value(raw_value: object, owner: type) -> Value:
     if not isinstance(runtime_params, tuple) or not runtime_params:
         return value
 
-    ctx = _RuntimeAnnotationsContext(owner)
+    ctx = RuntimeAnnotationsContext(owner=owner, self_key=owner)
     with ctx.suppress_errors():
         type_params = tuple(make_type_param(param, ctx) for param in runtime_params)
         type_arguments = tuple(type_from_runtime(arg, ctx=ctx) for arg in args)
@@ -377,24 +362,19 @@ _CLASS_SYMBOL_ALLOWED_QUALIFIERS = frozenset(
 
 
 def _symbol_from_runtime_annotation(annotation: object, owner: type) -> ClassSymbol:
-    ctx = _RuntimeAnnotationsContext(owner)
+    ctx = RuntimeAnnotationsContext(owner=owner, self_key=owner)
     with ctx.suppress_errors():
         expr = annotation_expr_from_runtime(annotation, ctx=ctx)
         typ, qualifiers = expr.maybe_unqualify(_CLASS_SYMBOL_ALLOWED_QUALIFIERS)
-    return ClassSymbol(
-        annotation=(
-            typ if typ is not None else AnyValue(AnySource.incomplete_annotation)
-        ),
-        qualifiers=frozenset(qualifiers),
-    )
+    return ClassSymbol(annotation=typ, qualifiers=frozenset(qualifiers))
 
 
-def _value_from_runtime_annotation(annotation: object, owner: type) -> Value:
-    ctx = _RuntimeAnnotationsContext(owner)
+def _value_from_runtime_annotation(annotation: object, owner: type) -> Value | None:
+    ctx = RuntimeAnnotationsContext(owner=owner, self_key=owner)
     with ctx.suppress_errors():
         expr = annotation_expr_from_runtime(annotation, ctx=ctx)
         typ, _ = expr.maybe_unqualify(set())
-    return typ if typ is not None else AnyValue(AnySource.incomplete_annotation)
+    return typ
 
 
 def _runtime_namedtuple_field_names(typ: type) -> tuple[str, ...]:

@@ -25,7 +25,7 @@ from .extensions import deprecated as deprecated_decorator
 from .maybe_asynq import asynq
 from .node_visitor import Error, ErrorContext
 from .options import Options, PyObjectSequenceOption
-from .relations import Relation, has_relation
+from .relations import Relation, get_tv_map, has_relation
 from .safe import is_instance_of_typing_name, is_typing_name
 from .signature import (
     ParameterKind,
@@ -65,7 +65,6 @@ from .value import (
     annotate_value,
     bound_self_type_from_class_key,
     freshen_typevars_for_inference,
-    get_tv_map,
     is_async_iterable,
     is_iterable,
     make_coro_type,
@@ -174,7 +173,9 @@ class FunctionInfo:
         if self.return_annotation is None:
             return AnyValue(AnySource.unannotated)
         if isinstance(self.node, ast.AsyncFunctionDef):
-            tv_map = get_tv_map(AsyncGeneratorValue, self.return_annotation, ctx)
+            tv_map = get_tv_map(
+                AsyncGeneratorValue, self.return_annotation, Relation.ASSIGNABLE, ctx
+            )
             if not isinstance(tv_map, CanAssignError):
                 return tv_map.get_typevar(
                     SendParamA, AnyValue(AnySource.generic_argument)
@@ -186,7 +187,9 @@ class FunctionInfo:
                 return AnyValue(AnySource.error)
             return KnownValue(None)
         else:
-            tv_map = get_tv_map(GeneratorValue, self.return_annotation, ctx)
+            tv_map = get_tv_map(
+                GeneratorValue, self.return_annotation, Relation.ASSIGNABLE, ctx
+            )
             if not isinstance(tv_map, CanAssignError):
                 return tv_map.get_typevar(
                     SendParam, AnyValue(AnySource.generic_argument)
@@ -201,7 +204,9 @@ class FunctionInfo:
     def get_generator_return_type(self, ctx: CanAssignContext) -> Value:
         if self.return_annotation is None:
             return AnyValue(AnySource.unannotated)
-        tv_map = get_tv_map(GeneratorValue, self.return_annotation, ctx)
+        tv_map = get_tv_map(
+            GeneratorValue, self.return_annotation, Relation.ASSIGNABLE, ctx
+        )
         if not isinstance(tv_map, CanAssignError):
             return tv_map.get_typevar(ReturnParam, AnyValue(AnySource.generic_argument))
         # If the return annotation is a non-Generator Iterable, assume the return

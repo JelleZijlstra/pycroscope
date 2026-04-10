@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import List, NewType
 
 import pytest
-from typing_extensions import ParamSpec, TypeVar, TypeVarTuple
+from typing_extensions import ParamSpec, Self, TypeVar, TypeVarTuple
 
 from .checker import Checker
 from .maybe_asynq import asynq
@@ -18,6 +18,7 @@ from .test_node_visitor import assert_passes
 from .value import (
     AnySource,
     AnyValue,
+    ClassOwner,
     GenericValue,
     KnownValue,
     NewTypeValue,
@@ -170,6 +171,9 @@ class ClassWithCall(object):
     def normal_staticmethod(arg):
         pass
 
+    def returns_self(self) -> Self:
+        return self
+
 
 def function(capybara, hutia=3, *tucotucos, **proechimys):
     pass
@@ -195,6 +199,16 @@ class AllTheAttrs:
         return AllTheAttrs([*self.x, attr])
 
 
+def test_get_argspec_self() -> None:
+    asc = Checker().arg_spec_cache
+    sig = asc.get_argspec(ClassWithCall.returns_self)
+
+    assert isinstance(sig, Signature)
+    assert isinstance(sig.return_value, TypeVarValue)
+    my_self = sig.return_value.typevar_param
+    assert my_self.owner == ClassOwner(__name__, "ClassWithCall", ClassWithCall)
+
+
 def test_get_argspec():
     checker = Checker()
     visitor = ConfiguredNameCheckVisitor(
@@ -209,7 +223,10 @@ def test_get_argspec():
         # there's special logic for this in signature_from_value; TODO move that into
         # ExtendedArgSpec
         assert Signature.make(
-            [SigParameter("arg")], callable=ClassWithCall.__call__
+            [SigParameter("arg")],
+            callable=ClassWithCall.__call__,
+            bound_receiver_param_name="self",
+            bound_receiver_composite=Composite(TypedValue(ClassWithCall)),
         ) == visitor.signature_from_value(cwc_typed)
 
         ata = AllTheAttrs([])

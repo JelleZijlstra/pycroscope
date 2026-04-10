@@ -570,12 +570,8 @@ class Signature:
     """Type evaluator for this function."""
     deprecated: str | None = None
     """Deprecation message for this callable."""
-    bound_receiver_param_name: str | None = field(
-        default=None, repr=False, compare=False, hash=False
-    )
-    bound_receiver_composite: Composite | None = field(
-        default=None, repr=False, compare=False, hash=False
-    )
+    bound_receiver_param_name: str | None = field(default=None, repr=False)
+    bound_receiver_composite: Composite | None = field(default=None, repr=False)
     typevars_of_params: dict[str, list[TypeParam]] = field(
         init=False, default_factory=dict, repr=False, compare=False, hash=False
     )
@@ -587,6 +583,9 @@ class Signature:
     )
     use_default_inferable_typevars: bool = field(
         default=True, repr=False, compare=False, hash=False
+    )
+    self_param: TypeVarParam | None = field(
+        default=None, repr=False, compare=False, hash=False
     )
 
     def __post_init__(self) -> None:
@@ -2037,6 +2036,9 @@ class Signature:
         allow_partial_call: bool = False,
         evaluator: Evaluator | None = None,
         deprecated: str | None = None,
+        self_param: TypeVarParam | None = None,
+        bound_receiver_param_name: str | None = None,
+        bound_receiver_composite: Composite | None = None,
     ) -> "Signature":
         """Create a :class:`Signature` object.
 
@@ -2081,6 +2083,9 @@ class Signature:
             allow_partial_call=allow_partial_call,
             evaluator=evaluator,
             deprecated=deprecated,
+            self_param=self_param,
+            bound_receiver_param_name=bound_receiver_param_name,
+            bound_receiver_composite=bound_receiver_composite,
         )
 
     def __str__(self) -> str:
@@ -2091,6 +2096,8 @@ class Signature:
             rendered += " (with impl)"
         if self.evaluator:
             rendered += " (with evaluator)"
+        if self.self_param is not None:
+            rendered += f" (Self={self.self_param})"
         return rendered
 
     def _render_parameters(self) -> Iterable[str]:
@@ -2189,19 +2196,14 @@ class Signature:
             has_return_annotation=self.has_return_value(),
             allow_call=self.allow_call,
             deprecated=self.deprecated,
-            bound_receiver_param_name=(
-                receiver_param_name
-                if preserve_impl and self_value is not None
-                else None
-            ),
+            bound_receiver_param_name=receiver_param_name
+            # if preserve_impl and self_value is not None
+            # else None
+            ,
             bound_receiver_composite=(
                 self_composite
-                if preserve_impl and self_composite is not None
-                else (
-                    Composite(self_value)
-                    if preserve_impl and self_value is not None
-                    else None
-                )
+                if self_composite is not None
+                else (Composite(self_value) if self_value is not None else None)
             ),
         )
         if restore_typevars:
@@ -2973,7 +2975,8 @@ class BoundMethodSignature:
             self.signature.substitute_typevars(
                 typevars, infer_substituted_typevars=infer_substituted_typevars
             ),
-            self.self_composite.substitute_typevars(typevars),
+            # Not very principled, but this prevents us from replacing Self multiple times
+            self.self_composite,
             (
                 self.return_override.substitute_typevars(typevars)
                 if self.return_override is not None

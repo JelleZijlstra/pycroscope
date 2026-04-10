@@ -1238,6 +1238,70 @@ class TestClassAttributeTransformer(TestNameCheckVisitorBase):
             assert_type(cls.foo, str)
 
 
+class TestSelfCheckRegressions(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_builtin_descriptor_aliases_use_typeshed_attribute_types(self):
+        import types
+
+        from typing_extensions import assert_type
+
+        def traceback_case() -> None:
+            try:
+                raise RuntimeError("boom")
+            except RuntimeError as error:
+                tb = error.__traceback__
+                assert tb is not None
+                assert_type(tb, types.TracebackType)
+                assert_type(tb.tb_frame, types.FrameType)
+                assert_type(tb.tb_frame.f_code, types.CodeType)
+                assert_type(tb.tb_frame.f_code.co_filename, str)
+
+        def method_descriptor_case(obj: types.MethodDescriptorType) -> None:
+            assert_type(obj.__objclass__, type)
+            assert_type(obj.__objclass__.__module__, str)
+
+    @assert_passes()
+    def test_text_mode_open_yields_str_lines(self):
+        from typing_extensions import assert_type
+
+        def capybara() -> None:
+            with open("test_file.txt") as f:
+                lines = f.readlines()
+                assert_type(lines, list[str])
+            with open("test_file.txt") as f:
+                for line in f:
+                    assert_type(line, str)
+                    stripped = line.strip()
+                    assert_type(stripped, str)
+
+    @assert_passes()
+    def test_defaultdict_get_default_binds_method_on_known_instance(self):
+        from collections import defaultdict
+
+        from typing_extensions import assert_type
+
+        def capybara() -> None:
+            d = defaultdict(set)
+            assert_type(d.get("a", ()), set | tuple[()])
+
+    @assert_passes()
+    def test_types_dunder_dict_items_does_not_crash(self):
+        import types
+
+        def capybara() -> None:
+            for _name, _typ in types.__dict__.items():
+                return
+
+    @assert_passes()
+    def test_importfrom_level_prefers_typeshed_annotation(self):
+        import ast
+
+        from typing_extensions import assert_type
+
+        def capybara(x: ast.ImportFrom) -> None:
+            assert_type(x.level, int)
+
+
 class TestAttributeWrites(TestNameCheckVisitorBase):
     @assert_passes()
     def test_unannotated_in_body(self):

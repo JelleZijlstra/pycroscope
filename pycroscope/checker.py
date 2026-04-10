@@ -18,12 +18,9 @@ from typing import TypeVar, cast
 
 from typing_extensions import assert_never
 
-import pycroscope
-from pycroscope.type_evaluation import KWARGS
-
 from . import dataclass as dataclass_helpers
 from .analysis_lib import object_from_string
-from .annotations import type_from_runtime, type_from_value
+from .annotations import Context, type_from_runtime, type_from_value
 from .arg_spec import ArgSpecCache, GenericBases
 from .attributes import AttrContext, get_attribute
 from .extensions import get_overloads as get_runtime_overloads
@@ -58,6 +55,7 @@ from .signature import (
 )
 from .stacked_scopes import Composite
 from .suggested_type import CallableTracker
+from .type_evaluation import KWARGS
 from .type_object import (
     EXCLUDED_PROTOCOL_MEMBERS,
     AttributePolicy,
@@ -105,7 +103,6 @@ from .value import (
     VariableNameValue,
     _iter_typevar_map_items,
     _typevar_map_from_varlike_pairs,
-    bound_self_type_from_class_key,
     flatten_values,
     get_self_param,
     is_union,
@@ -158,15 +155,14 @@ def _bound_method_self_value_from_typevars(
     return None
 
 
-def _apply_type_parameter_defaults(
-    type_params: Sequence[TypeParam], checker: "Checker"
-) -> list[Value]:
+def _apply_type_parameter_defaults(type_params: Sequence[TypeParam]) -> list[Value]:
     specialized: list[Value] = []
     substitutions = TypeVarMap()
     for type_param in type_params:
-        value = pycroscope.type_object_builder._default_type_argument_for_param(
-            type_param, substitutions, checker
-        )
+        if type_param.default is not None:
+            value = type_param.default.substitute_typevars(substitutions)
+        else:
+            value = type_param_to_value(type_param)
         if isinstance(type_param, TypeVarParam):
             substitutions = substitutions.with_typevar(type_param, value)
         elif isinstance(type_param, ParamSpecParam):
@@ -1257,7 +1253,7 @@ class Checker:
     def _runtime_constructor_instance_value(self, typ: type) -> Value:
         type_params = self.arg_spec_cache.get_type_parameters(typ)
         if type_params:
-            return GenericValue(typ, _apply_type_parameter_defaults(type_params, self))
+            return GenericValue(typ, _apply_type_parameter_defaults(type_params))
         return TypedValue(typ)
 
     def _get_runtime_constructor_method_signature(
@@ -1554,7 +1550,7 @@ class Checker:
         type_params = self.get_type_parameters(value.class_type.typ)
         if type_params:
             args = (
-                _apply_type_parameter_defaults(type_params, self)
+                _apply_type_parameter_defaults(type_params)
                 if apply_default_type_args
                 else [type_param_to_value(type_param) for type_param in type_params]
             )
@@ -2441,7 +2437,7 @@ class Checker:
                 return ANY_SIGNATURE
             if isinstance(typ, str):
                 call_access = self.make_type_object(typ).get_attribute(
-                    "__call__", AttributePolicy(receiver_value=value)
+                    "__call__", AttributePolicy(receiver=value)
                 )
                 if call_access is not None and call_access.symbol.is_method:
                     if call_access.owner.typ != typ:
@@ -2581,6 +2577,20 @@ class Checker:
                 get_call_attribute=get_call_attribute,
             ):
                 preserve_exact_return = True
+        elif isinstance(root, SubclassValue) and isinstance(root.typ, TypedValue):
+            class_type = root.typ.typ
+            synthetic_root = self.get_synthetic_class(class_type)
+            origin_argspec = self.signature_from_value(
+                KnownValue(class_type),
+                get_return_override=get_return_override,
+                get_call_attribute=get_call_attribute,
+            )
+            if origin_argspec is None:
+                origin_argspec = self.arg_spec_cache.get_argspec(class_type)
+            if isinstance(class_type, type):
+                preserve_exact_return = (
+                    self._runtime_has_explicit_new_return_annotation(class_type)
+                )
         else:
             return None
         if origin_argspec is None:
@@ -2588,8 +2598,11 @@ class Checker:
         if class_type is None:
             return origin_argspec
         type_params = self.get_type_parameters(class_type)
+        annotation_ctx = Context(can_assign_ctx=self, self_key=class_type)
         explicit_member_values = [
-            type_from_value(member, self, value.node, suppress_errors=True)
+            type_from_value(
+                member, node=value.node, ctx=annotation_ctx, suppress_errors=True
+            )
             for member in value.members
         ]
         member_values = self.arg_spec_cache._specialize_generic_type_params(
@@ -2824,22 +2837,6 @@ class CheckerAttrContext(AttrContext):
 
     def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
         return self.checker.get_synthetic_class(typ)
-
-    def get_bound_self_type(self) -> Value | None:
-        root_value = replace_fallback(self.root_value)
-        if isinstance(root_value, AnnotatedValue):
-            root_value = root_value.value
-        if isinstance(root_value, TypeVarValue) and root_value.typevar_param.is_self:
-            return root_value
-        if isinstance(root_value, (TypedValue, GenericValue)):
-            return bound_self_type_from_class_key(root_value.typ)
-        if isinstance(root_value, SubclassValue) and isinstance(
-            root_value.typ, TypedValue
-        ):
-            return bound_self_type_from_class_key(root_value.typ.typ)
-        if isinstance(root_value, KnownValue) and not isinstance(root_value.val, type):
-            return bound_self_type_from_class_key(type(root_value.val))
-        return None
 
 
 def get_synthetic_member_initializer(tobj: TypeObject, name: str) -> Value | None:

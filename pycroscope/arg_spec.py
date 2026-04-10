@@ -98,6 +98,7 @@ from .value import (
     TypeVarValue,
     Value,
     get_namedtuple_field_annotation,
+    get_self_param,
     is_async_iterable,
     is_iterable,
     iter_type_params_in_value,
@@ -221,18 +222,52 @@ def is_dot_asynq_function(obj: Any) -> bool:
     return getattr(obj, "__name__", None) in ("async", "asynq")
 
 
-@dataclass
+@dataclass(kw_only=True)
 class AnnotationsContext(Context):
-    arg_spec_cache: "ArgSpecCache"
     globals: Mapping[str, object] | None = None
-
-    def __post_init__(self) -> None:
-        super().__init__()
 
     def get_name(self, node: ast.Name) -> Value:
         if self.globals is not None:
             return self.get_name_from_globals(node.id, self.globals)
         return self.handle_undefined_name(node.id)
+
+
+def _get_callable_owner(callable_obj: object | None) -> type | None:
+    if isinstance(callable_obj, MethodType):
+        self_obj = callable_obj.__self__
+        if isinstance(self_obj, type):
+            return self_obj
+        return type(self_obj)
+    if not isinstance(callable_obj, FunctionType):
+        return None
+    module = inspect.getmodule(callable_obj)
+    if module is None:
+        return None
+    qualname_parts = callable_obj.__qualname__.split(".")
+    if len(qualname_parts) < 2:
+        return None
+    owner: object = module
+    for part in qualname_parts[:-1]:
+        if part == "<locals>":
+            return None
+        try:
+            owner = getattr(owner, part)
+        except AttributeError:
+            return None
+    try:
+        member = inspect.getattr_static(owner, qualname_parts[-1])
+    except AttributeError:
+        return None
+    if isinstance(member, staticmethod):
+        return None
+    return owner if isinstance(owner, type) else None
+
+
+def _make_annotations_context(
+    globals: Mapping[str, object] | None = None, callable_obj: object | None = None
+) -> AnnotationsContext:
+    owner = _get_callable_owner(callable_obj)
+    return AnnotationsContext(globals=globals, self_key=owner)
 
 
 class IgnoredCallees(PyObjectSequenceOption[object]):
@@ -430,7 +465,6 @@ class ArgSpecCache:
         self.known_argspecs: dict[object, MaybeSignature] = {}
         self.generic_bases_cache = {}
         self.type_params_cache = {}
-        self.default_context = AnnotationsContext(self)
         self.safe_bases = tuple(self.options.get_value_for(ClassesSafeToInstantiate))
         self._did_load_default_argspecs_with_cache = False
         self._loading_default_argspecs_with_cache = False
@@ -467,6 +501,7 @@ class ArgSpecCache:
 
         """
         func_globals = getattr(function_object, "__globals__", None)
+        owner_for_self = _get_callable_owner(function_object)
         # Signature preserves the return annotation for wrapped functions,
         # because @functools.wraps copies the __annotations__ of the wrapped function. We
         # don't want that, because the wrapper may have changed the return type.
@@ -490,7 +525,8 @@ class ArgSpecCache:
                 has_return_annotation = False
             else:
                 returns = type_from_runtime(
-                    sig.return_annotation, ctx=AnnotationsContext(self, func_globals)
+                    sig.return_annotation,
+                    ctx=_make_annotations_context(func_globals, function_object),
                 )
                 has_return_annotation = True
             if is_async:
@@ -532,6 +568,9 @@ class ArgSpecCache:
             is_asynq=is_asynq,
             allow_call=allow_call
             or FunctionsSafeToCall.contains(callable_object, self.options),
+            self_param=(
+                get_self_param(owner_for_self) if owner_for_self is not None else None
+            ),
         )
 
     def _infer_contextmanager_wrapper_return(
@@ -555,7 +594,8 @@ class ArgSpecCache:
         if sig.return_annotation is inspect.Signature.empty:
             return None
         wrapped_return = type_from_runtime(
-            sig.return_annotation, ctx=AnnotationsContext(self, func_globals)
+            sig.return_annotation,
+            ctx=_make_annotations_context(func_globals, function_object),
         )
         if inspect.isasyncgenfunction(wrapped):
             maybe_iterable = is_async_iterable(wrapped_return, self.ctx)
@@ -642,7 +682,7 @@ class ArgSpecCache:
     ) -> Value:
         if parameter.annotation is not inspect.Parameter.empty:
             kind = ParameterKind(parameter.kind)
-            ctx = AnnotationsContext(self, func_globals)
+            ctx = _make_annotations_context(func_globals, function_object)
             expr = annotation_expr_from_runtime(parameter.annotation, ctx=ctx)
             return translate_vararg_type(kind, expr, self.ctx)
         # If this is the self argument of a method, try to infer the self type.
@@ -785,7 +825,10 @@ class ArgSpecCache:
             if not isinstance(evaluator_node, ast.FunctionDef):
                 return None
             evaluator = RuntimeEvaluator(
-                evaluator_node, sig.return_value, evaluation_func.__globals__
+                evaluator_node,
+                sig.return_value,
+                evaluation_func.__globals__,
+                self_key=None,
             )
             sigs.append(replace(sig, evaluator=evaluator))
         if len(sigs) == 1:
@@ -945,7 +988,9 @@ class ArgSpecCache:
 
         if is_newtype(obj):
             assert hasattr(obj, "__supertype__")
-            supertype = type_from_runtime(obj.__supertype__, ctx=self.default_context)
+            supertype = type_from_runtime(
+                obj.__supertype__, ctx=AnnotationsContext(self_key=None)
+            )
             return Signature.make(
                 [
                     SigParameter(
@@ -1145,7 +1190,8 @@ class ArgSpecCache:
         field_annotations: dict[str, Value] = {}
         for field in fields:
             annotation = type_from_runtime(
-                get_namedtuple_field_annotation(obj, field), ctx=self.default_context
+                get_namedtuple_field_annotation(obj, field),
+                ctx=AnnotationsContext(self_key=obj),
             )
             field_annotations[field] = annotation
             default: Value | None
@@ -1169,7 +1215,7 @@ class ArgSpecCache:
             return_type = GenericValue(
                 obj,
                 [
-                    type_from_runtime(type_param, ctx=self.default_context)
+                    type_from_runtime(type_param, ctx=AnnotationsContext(self_key=obj))
                     for type_param in class_type_params
                 ],
             )
@@ -1283,7 +1329,7 @@ class ArgSpecCache:
         for type_param in runtime_type_params_iter:
             try:
                 type_params.append(
-                    make_type_param(type_param, ctx=self.default_context)
+                    make_type_param(type_param, ctx=AnnotationsContext(self_key=typ))
                 )
             except TypeError:
                 continue
@@ -1510,12 +1556,16 @@ class ArgSpecCache:
             if substitutions is not None:
                 default = default.substitute_typevars(substitutions)
             return default
+
+        # TODO: this shouldn't exist? we should already have put the default on the ParamSpecParam
         if use_defaults and isinstance(type_param, ParamSpecParam):
             runtime_default = safe_getattr(
                 type_param.param_spec, "__default__", _NO_DEFAULT
             )
             if runtime_default is not _NO_DEFAULT and runtime_default is not NoDefault:
-                return type_from_runtime(runtime_default, ctx=self.default_context)
+                return type_from_runtime(
+                    runtime_default, ctx=AnnotationsContext(self_key=None)
+                )
         return AnyValue(AnySource.generic_argument)
 
     def _get_generic_bases_cached(self, typ: type | str) -> GenericBases:
@@ -1539,7 +1589,9 @@ class ArgSpecCache:
             assert isinstance(
                 typ, type
             ), f"failed to extract typeshed bases for {typ!r}"
-            bases = [self._type_from_base(base) for base in self.get_runtime_bases(typ)]
+            bases = [
+                self._type_from_base(base, typ) for base in self.get_runtime_bases(typ)
+            ]
             generic_bases = self._extract_bases(typ, bases)
             assert (
                 generic_bases is not None
@@ -1547,13 +1599,13 @@ class ArgSpecCache:
         self.generic_bases_cache[typ] = generic_bases
         return generic_bases
 
-    def _type_from_base(self, base: object) -> Value:
+    def _type_from_base(self, base: object, owner: type) -> Value:
         # Avoid promoting float to float|int here.
         if base is float:
             return TypedValue(float)
         elif base is complex:
             return TypedValue(complex)
-        return type_from_runtime(base, ctx=self.default_context)
+        return type_from_runtime(base, ctx=AnnotationsContext(self_key=owner))
 
     def _extract_bases(
         self, typ: type | str, bases: Sequence[Value] | None

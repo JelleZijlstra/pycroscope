@@ -144,6 +144,7 @@ from .reexport import ImplicitReexportTracker
 from .relations import (
     Relation,
     check_hashability,
+    get_tv_map,
     has_relation,
     intersect_multi,
     intersect_values,
@@ -234,6 +235,7 @@ from .type_object import (
     direct_bases_from_values,
     get_mro,
     lookup_declared_symbol_with_owner,
+    typevar_map_from_generic_args,
 )
 from .typeshed import TypeshedFinder
 from .value import (
@@ -280,7 +282,6 @@ from .value import (
     PredicateValue,
     PropertyInfo,
     ReferencingValue,
-    SelfParam,
     SequenceValue,
     SimpleType,
     SkipDeprecatedExtension,
@@ -312,7 +313,6 @@ from .value import (
     bound_self_type_from_class_key,
     concrete_values_from_iterable,
     flatten_values,
-    get_tv_map,
     get_typevar_variance,
     is_async_iterable,
     is_iterable,
@@ -742,20 +742,14 @@ class _AttrContext(CheckerAttrContext):
         return self.root_composite.value
 
     def get_type_object_attribute_policy(
-        self, *, on_class: bool, receiver_value: Value | None
+        self, *, on_class: bool, receiver: Value
     ) -> AttributePolicy:
         return AttributePolicy(
-            on_class=on_class,
-            receiver_value=receiver_value,
-            visitor=self.visitor,
-            node=self.node,
+            on_class=on_class, receiver=receiver, visitor=self.visitor, node=self.node
         )
 
     def should_ignore_none_attributes(self) -> bool:
         return self.ignore_none
-
-    def get_bound_self_type(self) -> Value | None:
-        return self.visitor.get_bound_self_type()
 
     def clone_for_attribute_lookup(
         self, root_composite: Composite, attr: str
@@ -3398,8 +3392,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         for candidate in self._property_attr_candidates(attr_name, class_name):
             attribute = type_object.get_attribute(
-                candidate,
-                AttributePolicy(receiver_value=TypedValue(class_key), visitor=self),
+                candidate, AttributePolicy(receiver=TypedValue(class_key), visitor=self)
             )
             if attribute is not None:
                 return candidate, attribute
@@ -3432,9 +3425,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 for subval in symbol.annotation.walk_values()
             ):
                 return set_self(
-                    symbol.annotation,
-                    self.get_bound_self_type()
-                    or bound_self_type_from_class_key(class_key),
+                    symbol.annotation, bound_self_type_from_class_key(class_key)
                 )
             return match[1].value
         return UNINITIALIZED_VALUE
@@ -3530,8 +3521,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return True
             base_tobj = self.checker.make_type_object(base_value.typ)
             attr = base_tobj.get_attribute(
-                varname,
-                AttributePolicy(receiver_value=base_value, visitor=self, node=node),
+                varname, AttributePolicy(receiver=base_value, visitor=self, node=node)
             )
             if attr is not None:
                 return True
@@ -3563,8 +3553,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 continue
             base_tobj = self.checker.make_type_object(base_value.typ)
             base_attr = base_tobj.get_attribute(
-                varname,
-                AttributePolicy(receiver_value=base_value, visitor=self, node=node),
+                varname, AttributePolicy(receiver=base_value, visitor=self, node=node)
             )
             if base_attr is None:
                 continue
@@ -4070,10 +4059,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._check_duplicate_type_params_in_generic_bases(node, base_values)
                 self._check_inconsistent_generic_base_specialization(node, base_values)
                 self._check_protocol_base_validity(node, base_values)
+                # TODO: clean up this extra AST walk
                 for base_node, base_value in zip(node.bases, base_values):
                     parsed_base_value = value_from_ast(
                         base_node,
-                        ctx=_SelfBaseDetectionContext(base_node, visitor=self),
+                        ctx=_SelfBaseDetectionContext(
+                            base_node, visitor=self, self_key=class_key
+                        ),
                         error_on_unrecognized=False,
                     )
                     if _base_expression_contains_self(parsed_base_value):
@@ -5497,7 +5489,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             converter_sig = self.signature_from_value(converter_value, result.node)
             converter_input_type = _callable_first_positional_parameter_type(
-                converter_sig, checker=self
+                converter_sig, visitor=self
             )
             if converter_input_type is None:
                 self._show_error_if_checking(
@@ -6237,7 +6229,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             for subval in flatten_values(replace_fallback(base_value)):
                 converted: Value = subval
                 if isinstance(converted, KnownValue):
-                    converted = self.arg_spec_cache._type_from_base(converted.val)
+                    converted = self.arg_spec_cache._type_from_base(
+                        converted.val, object
+                    )
                 elif isinstance(converted, SyntheticClassObjectValue):
                     converted = converted.class_type
                 if not isinstance(converted, TypedValue):
@@ -7451,14 +7445,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         return class_value
 
-    def get_bound_self_type(self) -> Value | None:
-        if (
-            enclosing_class := self._get_enclosing_class_value_for_method()
-        ) is not None:
-            return bound_self_type_from_class_key(enclosing_class.typ)
-        if self.current_class_key is None:
-            return None
-        return bound_self_type_from_class_key(self.current_class_key)
+    def get_self_key(self) -> type | str | None:
+        return self.current_class_key
 
     def _get_pending_overload_signature(
         self, node: FunctionDefNode
@@ -7821,8 +7809,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         overload_signature: ConcreteSignature,
         implementation_signature: ConcreteSignature,
     ) -> CanAssignError | None:
-        can_assign = get_tv_map(
-            implementation_signature.return_value, overload_signature.return_value, self
+        can_assign = self.get_tv_map(
+            implementation_signature.return_value, overload_signature.return_value
         )
         if isinstance(can_assign, CanAssignError):
             return can_assign
@@ -8150,7 +8138,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(root, SyntheticClassObjectValue):
             return replace(root, class_type=GenericValue(root.class_type.typ, members))
         if isinstance(root, KnownValue) and isinstance(root.val, type):
-            return GenericValue(root.val, members)
+            tobj = self.checker.make_type_object(root.val)
+            params = tobj.get_declared_type_params()
+            tv_map = typevar_map_from_generic_args(params, members)
+            return KnownValueWithTypeVars(root.val, tv_map)
         if isinstance(root, TypedValue):
             return GenericValue(root.typ, members)
         return None
@@ -10671,7 +10662,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return return_value
 
     def unpack_awaitable(self, composite: Composite, node: ast.AST) -> Value:
-        tv_map = get_tv_map(AwaitableValue, composite.value, self)
+        tv_map = self.get_tv_map(AwaitableValue, composite.value)
         if isinstance(tv_map, CanAssignError):
             result, _ = self._check_dunder_call(node, composite, "__await__", [])
             return result
@@ -10683,9 +10674,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def visit_YieldFrom(self, node: ast.YieldFrom) -> Value:
         self.is_generator = True
         value = self.visit(node.value)
-        tv_map = get_tv_map(GeneratorValue, value, self)
+        tv_map = self.get_tv_map(GeneratorValue, value)
         if isinstance(tv_map, CanAssignError):
-            can_assign = get_tv_map(AwaitableValue, value, self)
+            can_assign = self.get_tv_map(AwaitableValue, value)
             if not isinstance(can_assign, CanAssignError):
                 tv_map = TypeVarMap(
                     typevars={
@@ -10881,6 +10872,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 isinstance(subval, TypeVarValue) and subval.typevar_param.is_self
                 for subval in expected_return_values
             )
+            # TODO: I think all this is a workaround for not using inferable/noninferable
+            # typevars correctly.
             should_retry_with_tv_map = isinstance(can_assign, CanAssignError) and (
                 any(
                     isinstance(subval, TypeVarValue)
@@ -10898,7 +10891,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             )
             if should_retry_with_tv_map:
-                maybe_inferred = get_tv_map(self.expected_return_value, value, self)
+                maybe_inferred = self.get_tv_map(self.expected_return_value, value)
                 if not isinstance(maybe_inferred, CanAssignError):
                     can_assign = maybe_inferred
             if isinstance(can_assign, CanAssignError):
@@ -11217,7 +11210,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 protocol,
                 [TypeVarValue(TypeVarParam(T_co)), TypeVarValue(TypeVarParam(U_co))],
             )
-            can_assign = get_tv_map(val, member, self)
+            can_assign = self.get_tv_map(val, member)
             if isinstance(can_assign, CanAssignError):
                 errors.append(can_assign)
                 continue
@@ -12084,7 +12077,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         )
                         specialized_converter_input_type = (
                             _callable_first_positional_parameter_type_for_return(
-                                converter_sig, expected_type, checker=self
+                                converter_sig, expected_type, visitor=self
                             )
                         )
                         if specialized_converter_input_type is not None:
@@ -13515,16 +13508,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             meta_getitem = tobj.get_attribute(
                 "__getitem__",
                 AttributePolicy(
-                    on_class=True, is_special_lookup=True, visitor=self, node=node
+                    receiver=value,
+                    on_class=True,
+                    is_special_lookup=True,
+                    visitor=self,
+                    node=node,
                 ),
             )
             if meta_getitem is not None:
                 synthetic_class = self.checker.get_synthetic_class(synthetic_typ)
                 if synthetic_class is not None:
                     return self.check_call(
-                        node,
-                        meta_getitem.value,
-                        [Composite(synthetic_class), Composite(index, None, node)],
+                        node, meta_getitem.value, [Composite(index, None, node)]
                     )
             self._show_error_if_checking(
                 node,
@@ -14005,12 +14000,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return None
         attr = tobj.get_attribute(
             node.attr,
-            AttributePolicy(
-                on_class=on_class,
-                receiver_value=root if isinstance(root, TypedValue) else None,
-                visitor=self,
-                node=node,
-            ),
+            AttributePolicy(on_class=on_class, receiver=root, visitor=self, node=node),
         )
         if attr is None:
             return None
@@ -14163,12 +14153,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     return
         attr = tobj.get_attribute(
             node.attr,
-            AttributePolicy(
-                on_class=on_class,
-                receiver_value=root if isinstance(root, TypedValue) else None,
-                visitor=self,
-                node=node,
-            ),
+            AttributePolicy(on_class=on_class, receiver=root, visitor=self, node=node),
         )
         if attr is None:
             if (
@@ -14452,6 +14437,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if member_name in type_object.get_protocol_members():
                 return True
         return False
+
+    def get_tv_map(
+        self, left: Value, right: Value, relation: Relation = Relation.ASSIGNABLE
+    ) -> TypeVarMap | CanAssignError:
+        return get_tv_map(left, right, relation, self)
 
     def get_attribute(
         self,
@@ -15897,9 +15887,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             node.attr,
             AttributePolicy(
                 on_class=self._is_class_object_attribute_root(root_value) is not False,
-                receiver_value=(
-                    root_value if isinstance(root_value, TypedValue) else None
-                ),
+                receiver=root_value,
                 visitor=self,
                 node=node,
             ),
@@ -16059,8 +16047,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if config_file is None:
             config_filename = cls.config_filename
             if config_filename is not None:
-                module_path = Path(sys.modules[cls.__module__].__file__).parent
-                config_file = module_path / config_filename
+                module = sys.modules[cls.__module__]
+                if (
+                    safe_isinstance(module, types.ModuleType)
+                    and module.__file__ is not None
+                ):
+                    module_path = Path(module.__file__).parent
+                    config_file = module_path / config_filename
         options = Options.from_option_list(instances, config_file_path=config_file)
         if kwargs.pop("display_options", False):
             options.display()  # pragma: no cover
@@ -16778,12 +16771,12 @@ def _default_factory_return_value(
 
 
 def _specialize_first_positional_parameter_type_in_signature(
-    signature: Signature, expected_return: Value, *, checker: NameCheckVisitor
+    signature: Signature, expected_return: Value, *, visitor: NameCheckVisitor
 ) -> Value | None:
     parameter_type = _first_positional_parameter_type_in_signature(signature)
     if parameter_type is None:
         return None
-    typevar_map = get_tv_map(signature.return_value, expected_return, checker)
+    typevar_map = visitor.get_tv_map(signature.return_value, expected_return)
     if isinstance(typevar_map, CanAssignError):
         return None
     if not signature.all_typevars:
@@ -16824,10 +16817,10 @@ def _first_argument_type_for_var_positional_annotation(annotation: Value) -> Val
 
 
 def _callable_first_positional_parameter_type(
-    signature: MaybeSignature, *, checker: NameCheckVisitor
+    signature: MaybeSignature, *, visitor: NameCheckVisitor
 ) -> Value | None:
     if isinstance(signature, BoundMethodSignature):
-        signature = signature.get_signature(ctx=checker)
+        signature = signature.get_signature(ctx=visitor)
     if isinstance(signature, Signature):
         return _first_positional_parameter_type_in_signature(signature)
     if isinstance(signature, OverloadedSignature):
@@ -16846,25 +16839,25 @@ def _callable_first_positional_parameter_type(
 
 
 def _callable_first_positional_parameter_type_for_return(
-    signature: MaybeSignature, expected_return: Value, *, checker: NameCheckVisitor
+    signature: MaybeSignature, expected_return: Value, *, visitor: NameCheckVisitor
 ) -> Value | None:
     if isinstance(signature, BoundMethodSignature):
-        signature = signature.get_signature(ctx=checker)
+        signature = signature.get_signature(ctx=visitor)
     if isinstance(signature, Signature):
         return _specialize_first_positional_parameter_type_in_signature(
-            signature, expected_return, checker=checker
+            signature, expected_return, visitor=visitor
         )
     if isinstance(signature, OverloadedSignature):
         parameter_types: list[Value] = []
         for overload in signature.signatures:
             parameter_type = _specialize_first_positional_parameter_type_in_signature(
-                overload, expected_return, checker=checker
+                overload, expected_return, visitor=visitor
             )
             if parameter_type is not None:
                 parameter_types.append(parameter_type)
         if parameter_types:
             return unite_values(*parameter_types)
-    return _callable_first_positional_parameter_type(signature, checker=checker)
+    return _callable_first_positional_parameter_type(signature, visitor=visitor)
 
 
 def _get_dataclass_post_init_node(
@@ -17050,8 +17043,8 @@ def _function_signature_contains_self(info: FunctionInfo) -> bool:
 
 
 def _value_carries_self_binding(value: Value) -> bool:
-    if isinstance(value, KnownValueWithTypeVars) and value.typevars.has_typevar(
-        SelfParam
+    if isinstance(value, KnownValueWithTypeVars) and any(
+        param.is_self for param, _ in value.typevars.iter_typevars()
     ):
         return True
     return any(

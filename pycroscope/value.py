@@ -819,6 +819,23 @@ def get_mro(typ: object, *, include_virtual: bool = False) -> tuple[type, ...]:
     return ()
 
 
+def get_attribute(
+    obj: object,
+    attr: str,
+    /,
+    *,
+    on_class: bool = False,
+    is_special_lookup: bool = False,
+) -> object:
+    """Get an attribute of an object.
+
+    During static analysis, pycroscope replaces this with a value-level attribute
+    getter that preserves generic specialization for synthetic and runtime classes.
+
+    """
+    return None
+
+
 class AnySource(enum.Enum):
     """Sources of Any values."""
 
@@ -3232,12 +3249,6 @@ def shield_nested_self_typevars(value: Value) -> tuple[Value, TypeVarMap]:
 def receiver_to_self_type(
     self_value: Value, ctx: CanAssignContext | None = None
 ) -> Value:
-    if isinstance(
-        self_value, KnownValueWithTypeVars
-    ) and self_value.typevars.has_typevar(SelfParam):
-        self_substitution = self_value.typevars.get_typevar(SelfParam)
-        assert self_substitution is not None
-        return receiver_to_self_type(self_substitution, ctx)
     if (
         ctx is not None
         and isinstance(self_value, KnownValueWithTypeVars)
@@ -3255,18 +3266,8 @@ def receiver_to_self_type(
                     for type_param in type_params
                 ],
             )
-    if isinstance(self_value, SequenceValue):
-        if self_value.typ in (list, set):
-            return self_value.simplify()
-        return self_value
-    if isinstance(self_value, DictIncompleteValue):
-        return self_value.simplify()
     if isinstance(self_value, KnownValue):
         replaced = replace_known_sequence_value(self_value)
-        if isinstance(replaced, SequenceValue) and replaced.typ in (list, set):
-            return replaced.simplify()
-        if isinstance(replaced, DictIncompleteValue):
-            return replaced.simplify()
         if not isinstance(replaced, KnownValue):
             return replaced
         return TypedValue(
@@ -4773,9 +4774,6 @@ class ClassSymbol:
             assert not self.is_classmethod, self
             assert not self.is_staticmethod, self
             assert not self.returns_self_on_class_access, self
-            assert self.initializer is None or _is_property_initializer(
-                self.initializer
-            ), self
         if self.is_method:
             assert self.initializer is not None, self
             assert self.property_info is None, self
@@ -4855,13 +4853,21 @@ class ClassSymbol:
         return AnyValue(AnySource.inference)
 
 
+_PROPERTY_LIKE = (
+    property,
+    types.GetSetDescriptorType,
+    types.MemberDescriptorType,
+    *([enum.property] if sys.version_info >= (3, 11) else []),
+)
+
+
 def _is_property_initializer(value: Value) -> bool:
     value = replace_fallback(value)
     return (
         isinstance(value, KnownValue)
-        and isinstance(value.val, (property, types.GetSetDescriptorType))
+        and isinstance(value.val, _PROPERTY_LIKE)
         or isinstance(value, TypedValue)
-        and (value.typ is property or value.typ is types.GetSetDescriptorType)
+        and any(value.typ is typ for typ in _PROPERTY_LIKE)
     )
 
 
