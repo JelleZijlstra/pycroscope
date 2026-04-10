@@ -2577,6 +2577,20 @@ class Checker:
                 get_call_attribute=get_call_attribute,
             ):
                 preserve_exact_return = True
+        elif isinstance(root, SubclassValue) and isinstance(root.typ, TypedValue):
+            class_type = root.typ.typ
+            synthetic_root = self.get_synthetic_class(class_type)
+            origin_argspec = self.signature_from_value(
+                KnownValue(class_type),
+                get_return_override=get_return_override,
+                get_call_attribute=get_call_attribute,
+            )
+            if origin_argspec is None:
+                origin_argspec = self.arg_spec_cache.get_argspec(class_type)
+            if isinstance(class_type, type):
+                preserve_exact_return = (
+                    self._runtime_has_explicit_new_return_annotation(class_type)
+                )
         else:
             return None
         if origin_argspec is None:
