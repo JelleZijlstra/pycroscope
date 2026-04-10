@@ -4774,9 +4774,6 @@ class ClassSymbol:
             assert not self.is_classmethod, self
             assert not self.is_staticmethod, self
             assert not self.returns_self_on_class_access, self
-            assert self.initializer is None or _is_property_initializer(
-                self.initializer
-            ), self
         if self.is_method:
             assert self.initializer is not None, self
             assert self.property_info is None, self
