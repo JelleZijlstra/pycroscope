@@ -282,7 +282,6 @@ from .value import (
     PredicateValue,
     PropertyInfo,
     ReferencingValue,
-    SelfParam,
     SequenceValue,
     SimpleType,
     SkipDeprecatedExtension,
@@ -10873,6 +10872,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 isinstance(subval, TypeVarValue) and subval.typevar_param.is_self
                 for subval in expected_return_values
             )
+            # TODO: I think all this is a workaround for not using inferable/noninferable
+            # typevars correctly.
             should_retry_with_tv_map = isinstance(can_assign, CanAssignError) and (
                 any(
                     isinstance(subval, TypeVarValue)
@@ -17042,8 +17043,8 @@ def _function_signature_contains_self(info: FunctionInfo) -> bool:
 
 
 def _value_carries_self_binding(value: Value) -> bool:
-    if isinstance(value, KnownValueWithTypeVars) and value.typevars.has_typevar(
-        SelfParam
+    if isinstance(value, KnownValueWithTypeVars) and any(
+        param.is_self for param, _ in value.typevars.iter_typevars()
     ):
         return True
     return any(
