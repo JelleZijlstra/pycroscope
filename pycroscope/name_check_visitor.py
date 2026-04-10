@@ -107,6 +107,7 @@ from .extensions import (
     patch_typing_overload,
     real_overload,
 )
+from .extensions import reveal_type as runtime_reveal_type
 from .find_unused import UnusedObjectFinder, is_marked_used, used
 from .functions import (
     IMPLICIT_CLASSMETHODS,
@@ -16065,7 +16066,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     @classmethod
     def prepare_command_line_environment(cls) -> None:
-        setattr(builtins, "reveal_type", typing.reveal_type)
+        setattr(
+            builtins, "reveal_type", getattr(typing, "reveal_type", runtime_reveal_type)
+        )
 
     def is_enabled(self, error_code: node_visitor.ErrorCodeInstance) -> bool:
         if not isinstance(error_code, Error):
