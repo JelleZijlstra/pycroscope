@@ -144,6 +144,7 @@ from .reexport import ImplicitReexportTracker
 from .relations import (
     Relation,
     check_hashability,
+    get_tv_map,
     has_relation,
     intersect_multi,
     intersect_values,
@@ -313,7 +314,6 @@ from .value import (
     bound_self_type_from_class_key,
     concrete_values_from_iterable,
     flatten_values,
-    get_tv_map,
     get_typevar_variance,
     is_async_iterable,
     is_iterable,
@@ -5490,7 +5490,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             converter_sig = self.signature_from_value(converter_value, result.node)
             converter_input_type = _callable_first_positional_parameter_type(
-                converter_sig, checker=self
+                converter_sig, visitor=self
             )
             if converter_input_type is None:
                 self._show_error_if_checking(
@@ -7810,8 +7810,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         overload_signature: ConcreteSignature,
         implementation_signature: ConcreteSignature,
     ) -> CanAssignError | None:
-        can_assign = get_tv_map(
-            implementation_signature.return_value, overload_signature.return_value, self
+        can_assign = self.get_tv_map(
+            implementation_signature.return_value, overload_signature.return_value
         )
         if isinstance(can_assign, CanAssignError):
             return can_assign
@@ -10663,7 +10663,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return return_value
 
     def unpack_awaitable(self, composite: Composite, node: ast.AST) -> Value:
-        tv_map = get_tv_map(AwaitableValue, composite.value, self)
+        tv_map = self.get_tv_map(AwaitableValue, composite.value)
         if isinstance(tv_map, CanAssignError):
             result, _ = self._check_dunder_call(node, composite, "__await__", [])
             return result
@@ -10675,9 +10675,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def visit_YieldFrom(self, node: ast.YieldFrom) -> Value:
         self.is_generator = True
         value = self.visit(node.value)
-        tv_map = get_tv_map(GeneratorValue, value, self)
+        tv_map = self.get_tv_map(GeneratorValue, value)
         if isinstance(tv_map, CanAssignError):
-            can_assign = get_tv_map(AwaitableValue, value, self)
+            can_assign = self.get_tv_map(AwaitableValue, value)
             if not isinstance(can_assign, CanAssignError):
                 tv_map = TypeVarMap(
                     typevars={
@@ -10890,7 +10890,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             )
             if should_retry_with_tv_map:
-                maybe_inferred = get_tv_map(self.expected_return_value, value, self)
+                maybe_inferred = self.get_tv_map(self.expected_return_value, value)
                 if not isinstance(maybe_inferred, CanAssignError):
                     can_assign = maybe_inferred
             if isinstance(can_assign, CanAssignError):
@@ -11209,7 +11209,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 protocol,
                 [TypeVarValue(TypeVarParam(T_co)), TypeVarValue(TypeVarParam(U_co))],
             )
-            can_assign = get_tv_map(val, member, self)
+            can_assign = self.get_tv_map(val, member)
             if isinstance(can_assign, CanAssignError):
                 errors.append(can_assign)
                 continue
@@ -12076,7 +12076,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         )
                         specialized_converter_input_type = (
                             _callable_first_positional_parameter_type_for_return(
-                                converter_sig, expected_type, checker=self
+                                converter_sig, expected_type, visitor=self
                             )
                         )
                         if specialized_converter_input_type is not None:
@@ -14437,6 +14437,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return True
         return False
 
+    def get_tv_map(
+        self, left: Value, right: Value, relation: Relation = Relation.ASSIGNABLE
+    ):
+        return get_tv_map(left, right, relation, self)
+
     def get_attribute(
         self,
         root_composite: Composite,
@@ -16765,12 +16770,12 @@ def _default_factory_return_value(
 
 
 def _specialize_first_positional_parameter_type_in_signature(
-    signature: Signature, expected_return: Value, *, checker: NameCheckVisitor
+    signature: Signature, expected_return: Value, *, visitor: NameCheckVisitor
 ) -> Value | None:
     parameter_type = _first_positional_parameter_type_in_signature(signature)
     if parameter_type is None:
         return None
-    typevar_map = get_tv_map(signature.return_value, expected_return, checker)
+    typevar_map = visitor.get_tv_map(signature.return_value, expected_return)
     if isinstance(typevar_map, CanAssignError):
         return None
     if not signature.all_typevars:
@@ -16811,10 +16816,10 @@ def _first_argument_type_for_var_positional_annotation(annotation: Value) -> Val
 
 
 def _callable_first_positional_parameter_type(
-    signature: MaybeSignature, *, checker: NameCheckVisitor
+    signature: MaybeSignature, *, visitor: NameCheckVisitor
 ) -> Value | None:
     if isinstance(signature, BoundMethodSignature):
-        signature = signature.get_signature(ctx=checker)
+        signature = signature.get_signature(ctx=visitor)
     if isinstance(signature, Signature):
         return _first_positional_parameter_type_in_signature(signature)
     if isinstance(signature, OverloadedSignature):
@@ -16833,25 +16838,25 @@ def _callable_first_positional_parameter_type(
 
 
 def _callable_first_positional_parameter_type_for_return(
-    signature: MaybeSignature, expected_return: Value, *, checker: NameCheckVisitor
+    signature: MaybeSignature, expected_return: Value, *, visitor: NameCheckVisitor
 ) -> Value | None:
     if isinstance(signature, BoundMethodSignature):
-        signature = signature.get_signature(ctx=checker)
+        signature = signature.get_signature(ctx=visitor)
     if isinstance(signature, Signature):
         return _specialize_first_positional_parameter_type_in_signature(
-            signature, expected_return, checker=checker
+            signature, expected_return, visitor=visitor
         )
     if isinstance(signature, OverloadedSignature):
         parameter_types: list[Value] = []
         for overload in signature.signatures:
             parameter_type = _specialize_first_positional_parameter_type_in_signature(
-                overload, expected_return, checker=checker
+                overload, expected_return, visitor=visitor
             )
             if parameter_type is not None:
                 parameter_types.append(parameter_type)
         if parameter_types:
             return unite_values(*parameter_types)
-    return _callable_first_positional_parameter_type(signature, checker=checker)
+    return _callable_first_positional_parameter_type(signature, visitor=visitor)
 
 
 def _get_dataclass_post_init_node(

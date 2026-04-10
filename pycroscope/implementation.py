@@ -24,6 +24,7 @@ from .regex_check import check_regex_in_value
 from .relations import (
     Relation,
     check_hashability,
+    get_tv_map,
     has_relation,
     intersect_values,
     is_assignable,
@@ -105,7 +106,6 @@ from .value import (
     flatten_values,
     get_attribute,
     get_mro,
-    get_tv_map,
     kv_pairs_from_mapping,
     len_of_value,
     replace_fallback,
@@ -2216,7 +2216,9 @@ def _assert_type_impl(ctx: CallContext) -> Value:
     if isinstance(can_assign, CanAssignError) and any(
         isinstance(subval, TypeVarValue) for subval in expected_type.walk_values()
     ):
-        maybe_inferred = get_tv_map(expected_type, val, ctx.visitor)
+        maybe_inferred = get_tv_map(
+            expected_type, val, Relation.ASSIGNABLE, ctx.visitor
+        )
         if not isinstance(maybe_inferred, CanAssignError):
             return val
     if isinstance(can_assign, CanAssignError):
