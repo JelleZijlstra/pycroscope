@@ -4860,7 +4860,7 @@ _PROPERTY_LIKE = (
     property,
     types.GetSetDescriptorType,
     types.MemberDescriptorType,
-    enum.property,
+    *([enum.property] if sys.version_info >= (3, 11) else []),
 )
 
 

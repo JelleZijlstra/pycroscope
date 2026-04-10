@@ -18,8 +18,6 @@ from typing import TypeVar, cast
 
 from typing_extensions import assert_never
 
-from pycroscope.type_evaluation import KWARGS
-
 from . import dataclass as dataclass_helpers
 from .analysis_lib import object_from_string
 from .annotations import Context, type_from_runtime, type_from_value
@@ -57,6 +55,7 @@ from .signature import (
 )
 from .stacked_scopes import Composite
 from .suggested_type import CallableTracker
+from .type_evaluation import KWARGS
 from .type_object import (
     EXCLUDED_PROTOCOL_MEMBERS,
     AttributePolicy,
