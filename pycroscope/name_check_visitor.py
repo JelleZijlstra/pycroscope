@@ -2223,7 +2223,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         add_ignores: bool = False,
         checker: Checker,
         is_code_only: bool = False,
-        install_reveal_type_in_builtins: bool = False,
     ) -> None:
         super().__init__(
             filename,
@@ -2236,7 +2235,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             is_code_only=is_code_only,
         )
         self.checker = checker
-        self.install_reveal_type_in_builtins = install_reveal_type_in_builtins
 
         # State (to use in with override())
         self.state = VisitorState.collect_names
@@ -2267,9 +2265,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.in_comprehension_body = False
         self.prefer_static_module_assignments = False
         self.options = checker.options
-
-        if self.install_reveal_type_in_builtins:
-            setattr(builtins, "reveal_type", typing.reveal_type)
 
         if module is not None:
             self.module = module
@@ -16069,8 +16064,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return kwargs
 
     @classmethod
-    def get_command_line_run_kwargs(cls) -> Mapping[str, Any]:
-        return {"install_reveal_type_in_builtins": True}
+    def prepare_command_line_environment(cls) -> None:
+        setattr(builtins, "reveal_type", typing.reveal_type)
 
     def is_enabled(self, error_code: node_visitor.ErrorCodeInstance) -> bool:
         if not isinstance(error_code, Error):
