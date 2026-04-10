@@ -1907,7 +1907,6 @@ def _list_extend_or_iadd_impl(
 
 
 def _list_extend_impl(ctx: CallContext) -> ImplReturn:
-    print("CTX", ctx.vars)
     return _list_extend_or_iadd_impl(ctx, "iterable", "list.extend")
 
 
@@ -2087,7 +2086,6 @@ def _get_attribute_impl(ctx: CallContext) -> Value:
     )
     if attr is None:
         return AnyValue(AnySource.error)
-    print("FULL ATTR", attr_name, attr)
     return attr.value
 
 

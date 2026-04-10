@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from .relations import Relation
 
 from .annotations import make_type_param, type_from_runtime
+from .find_unused import used
 from .input_sig import AnySig, FullSignature, InputSigValue
 from .options import PyObjectSequenceOption
 from .relations import (
@@ -248,6 +249,8 @@ class AttributePolicy:
             return class_type_to_instance_type(self.receiver, ctx)
         return self.receiver
 
+    # TODO: we might need this later, if not let's kill it
+    @used
     def get_receiver_class(self, ctx: CanAssignContext) -> Value:
         if self.on_class:
             return self.receiver

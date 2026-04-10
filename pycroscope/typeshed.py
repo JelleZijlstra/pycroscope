@@ -147,7 +147,6 @@ class _ClassOwner:
 class _AnnotationContext(Context):
     finder: "TypeshedFinder"
     module: str
-    owner: _ClassOwner | None
 
     def show_error(
         self,
@@ -1256,7 +1255,7 @@ class TypeshedFinder:
         self, mod: str, owner: _ClassOwner | None
     ) -> _AnnotationContext:
         self_key = owner.class_key if owner is not None else None
-        return _AnnotationContext(self, mod, owner, self_key=self_key)
+        return _AnnotationContext(self, mod, self_key=self_key)
 
     def _get_signature_from_func_def(
         self,

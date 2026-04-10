@@ -752,9 +752,6 @@ class _AttrContext(CheckerAttrContext):
     def should_ignore_none_attributes(self) -> bool:
         return self.ignore_none
 
-    def get_self_key(self) -> type | str | None:
-        return self.visitor.get_self_key()
-
     def clone_for_attribute_lookup(
         self, root_composite: Composite, attr: str
     ) -> "_AttrContext":

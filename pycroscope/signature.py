@@ -889,7 +889,6 @@ class Signature:
                 return_value, ParameterTypeGuardExtension
             )
             for guard in ptg:
-                print("COMPS", guard.varname, composites)
                 if guard.varname in composites:
                     composite = composites[guard.varname]
                     if composite.varname is not None:
