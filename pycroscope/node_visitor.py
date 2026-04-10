@@ -410,6 +410,10 @@ class BaseNodeVisitor(ast.NodeVisitor):
         return kwargs
 
     @classmethod
+    def prepare_command_line_environment(cls) -> None:
+        pass
+
+    @classmethod
     def perform_final_checks(cls, kwargs: Mapping[str, Any]) -> list[Failure]:
         return []
 
@@ -464,6 +468,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
         assert isinstance(autofix, bool)
         assert isinstance(repeat_until_no_errors, bool)
         assert isinstance(num_iterations, int)
+        cls.prepare_command_line_environment()
         kwargs = cls.prepare_constructor_kwargs(kwargs)
         if repeat_until_no_errors:
             iteration = 0

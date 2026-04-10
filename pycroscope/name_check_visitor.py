@@ -11,6 +11,7 @@ the system.
 import abc
 import ast
 import asyncio
+import builtins
 import collections
 import collections.abc
 import contextlib
@@ -106,6 +107,7 @@ from .extensions import (
     patch_typing_overload,
     real_overload,
 )
+from .extensions import reveal_type as runtime_reveal_type
 from .find_unused import UnusedObjectFinder, is_marked_used, used
 from .functions import (
     IMPLICIT_CLASSMETHODS,
@@ -16061,6 +16063,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         kwargs.setdefault("checker", Checker(raw_options=options))
         patch_typing_overload()
         return kwargs
+
+    @classmethod
+    def prepare_command_line_environment(cls) -> None:
+        setattr(
+            builtins, "reveal_type", getattr(typing, "reveal_type", runtime_reveal_type)
+        )
 
     def is_enabled(self, error_code: node_visitor.ErrorCodeInstance) -> bool:
         if not isinstance(error_code, Error):
