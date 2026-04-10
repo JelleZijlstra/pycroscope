@@ -381,7 +381,7 @@ class TestConstructors(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_typed_class_value_preserves_explicit_new_return(self):
-        from typing import Any, Generic, TypeVar, cast
+        from typing import Any, Generic, TypeVar
 
         from typing_extensions import assert_type
 
@@ -394,8 +394,8 @@ class TestConstructors(TestNameCheckVisitorBase):
         def capybara(factory: type[Box[Any]]) -> None:
             assert_type(factory[int](), Box[list[int]])
             assert_type(factory[str](), Box[list[str]])
-            assert_type(cast(type[Box[Any]], Box)[int](), Box[list[int]])
-            assert_type(cast(type[Box[Any]], Box)[str](), Box[list[str]])
+            assert_type(Box[int](), Box[list[int]])
+            assert_type(Box[str](), Box[list[str]])
 
         capybara(Box)
 
