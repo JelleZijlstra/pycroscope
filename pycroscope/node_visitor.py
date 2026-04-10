@@ -410,6 +410,10 @@ class BaseNodeVisitor(ast.NodeVisitor):
         return kwargs
 
     @classmethod
+    def get_command_line_run_kwargs(cls) -> Mapping[str, Any]:
+        return {}
+
+    @classmethod
     def perform_final_checks(cls, kwargs: Mapping[str, Any]) -> list[Failure]:
         return []
 
@@ -465,6 +469,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
         assert isinstance(repeat_until_no_errors, bool)
         assert isinstance(num_iterations, int)
         kwargs = cls.prepare_constructor_kwargs(kwargs)
+        kwargs = {**kwargs, **cls.get_command_line_run_kwargs()}
         if repeat_until_no_errors:
             iteration = 0
             print("Running iteration 0")

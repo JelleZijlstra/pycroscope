@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Make the command-line runner inject `typing.reveal_type` into `builtins` before importing user modules, so top-level runtime use of `reveal_type()` no longer fails during CLI analysis.
 - Avoid internal errors for some constructor-style generic patterns like `type[T] | T`, and stop showing a misleading `None.` module prefix in messages for generated callables.
 - Make `type()` results more consistent for imprecise values like `str`, `type[T]`, and `super()`, so pycroscope preserves subclass-aware class objects where appropriate and stops relying on implicit fallback behavior for internal type values.
 - Simplify `type()` lookups through narrowed intersections, so `hasattr()`-guarded class-object calls preserve the real constructor signature instead of picking up confusing fallback overloads like `object.__init__`.
