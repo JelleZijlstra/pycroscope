@@ -12,7 +12,6 @@ from typing import NewType, TypeVar, cast
 import typing_extensions
 
 import pycroscope
-from pycroscope.type_object import AttributePolicy
 
 from . import runtime
 from .annotations import annotation_expr_from_value, is_typevarlike, type_from_value
@@ -63,6 +62,7 @@ from .stacked_scopes import (
     VarnameWithOrigin,
     annotate_with_constraint,
 )
+from .type_object import AttributePolicy
 from .value import (
     NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,

@@ -19,7 +19,6 @@ from .annotations import (
     type_from_runtime,
 )
 from .arg_spec import ArgSpecCache
-from .checker import Checker
 from .safe import is_namedtuple_class, safe_getattr, safe_isinstance
 from .type_object import DataclassFieldRecord
 from .value import (
@@ -45,14 +44,12 @@ from .value import (
     SyntheticModuleValue,
     TypedValue,
     TypeFormValue,
-    TypeParam,
     TypeVarMap,
     UnboundMethodValue,
     Value,
     get_namedtuple_field_annotation,
     match_typevar_arguments,
     replace_fallback,
-    type_param_to_value,
 )
 
 
@@ -160,19 +157,6 @@ def _iter_base_type_values_from_simple(
         pass
     else:
         assert_never(value)
-
-
-def _default_type_argument_for_param(
-    type_param: TypeParam, substitutions: TypeVarMap, checker: "Checker"
-) -> Value:
-    if type_param.default is not None:
-        default = type_param.default
-        if isinstance(default, KnownValue):
-            default = type_from_runtime(
-                default.val, ctx=checker.arg_spec_cache.default_context
-            )
-        return default.substitute_typevars(substitutions)
-    return type_param_to_value(type_param)
 
 
 def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) -> None:

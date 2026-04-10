@@ -15881,7 +15881,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             node.attr,
             AttributePolicy(
                 on_class=self._is_class_object_attribute_root(root_value) is not False,
-                receiver=(root_value),
+                receiver=root_value,
                 visitor=self,
                 node=node,
             ),

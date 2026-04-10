@@ -18,7 +18,6 @@ from typing import TypeVar, cast
 
 from typing_extensions import assert_never
 
-import pycroscope
 from pycroscope.type_evaluation import KWARGS
 
 from . import dataclass as dataclass_helpers
@@ -157,15 +156,14 @@ def _bound_method_self_value_from_typevars(
     return None
 
 
-def _apply_type_parameter_defaults(
-    type_params: Sequence[TypeParam], checker: "Checker"
-) -> list[Value]:
+def _apply_type_parameter_defaults(type_params: Sequence[TypeParam]) -> list[Value]:
     specialized: list[Value] = []
     substitutions = TypeVarMap()
     for type_param in type_params:
-        value = pycroscope.type_object_builder._default_type_argument_for_param(
-            type_param, substitutions, checker
-        )
+        if type_param.default is not None:
+            value = type_param.default.substitute_typevars(substitutions)
+        else:
+            value = type_param_to_value(type_param)
         if isinstance(type_param, TypeVarParam):
             substitutions = substitutions.with_typevar(type_param, value)
         elif isinstance(type_param, ParamSpecParam):
@@ -1256,7 +1254,7 @@ class Checker:
     def _runtime_constructor_instance_value(self, typ: type) -> Value:
         type_params = self.arg_spec_cache.get_type_parameters(typ)
         if type_params:
-            return GenericValue(typ, _apply_type_parameter_defaults(type_params, self))
+            return GenericValue(typ, _apply_type_parameter_defaults(type_params))
         return TypedValue(typ)
 
     def _get_runtime_constructor_method_signature(
@@ -1553,7 +1551,7 @@ class Checker:
         type_params = self.get_type_parameters(value.class_type.typ)
         if type_params:
             args = (
-                _apply_type_parameter_defaults(type_params, self)
+                _apply_type_parameter_defaults(type_params)
                 if apply_default_type_args
                 else [type_param_to_value(type_param) for type_param in type_params]
             )
