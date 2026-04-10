@@ -1,10 +1,10 @@
 # static analysis: ignore
 import functools
 from dataclasses import dataclass
-from typing import List, NewType, Self
+from typing import List, NewType
 
 import pytest
-from typing_extensions import ParamSpec, TypeVar, TypeVarTuple
+from typing_extensions import ParamSpec, Self, TypeVar, TypeVarTuple
 
 from .checker import Checker
 from .maybe_asynq import asynq
