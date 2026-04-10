@@ -2895,15 +2895,19 @@ def _make_merged_attribute(
     if runtime_attribute is None and typeshed_attribute is None:
         return None
 
-    # We ignore the typeshed attribute if it's later in the MRO
-    # and we have a useful runtime attribute
-    if (
-        runtime_attribute is not None
-        and typeshed_attribute is not None
-        and typeshed_attribute.selected.mro_index > runtime_attribute.selected.mro_index
-        and _is_informative_runtime_attribute(runtime_attribute)
-    ):
-        typeshed_attribute = None
+    if runtime_attribute is not None and typeshed_attribute is not None:
+        # We ignore the typeshed attribute if it's later in the MRO
+        # and we have a useful runtime attribute
+        if (
+            typeshed_attribute.selected.mro_index > runtime_attribute.selected.mro_index
+            and _is_informative_runtime_attribute(runtime_attribute)
+        ):
+            typeshed_attribute = None
+        # Similarly, we ignore the runtime attribute if the stub attribute is on a child class.
+        elif (
+            typeshed_attribute.selected.mro_index < runtime_attribute.selected.mro_index
+        ):
+            runtime_attribute = None
     runtime_symbol = (
         runtime_attribute.as_symbol() if runtime_attribute is not None else None
     )
