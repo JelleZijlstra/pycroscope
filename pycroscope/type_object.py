@@ -3916,28 +3916,6 @@ def _bind_protocol_call_expected(
     return value
 
 
-def _get_protocol_call_member_initializer(
-    protocol_typ: type | str, self_value: Value, ctx: CanAssignContext
-) -> Value:
-    call_member = UNINITIALIZED_VALUE
-    if isinstance(protocol_typ, str):
-        checker_ctx = safe_getattr(ctx, "checker", ctx)
-        get_synthetic_class = safe_getattr(checker_ctx, "get_synthetic_class", None)
-        if callable(get_synthetic_class):
-            synthetic_class = get_synthetic_class(protocol_typ)
-            if synthetic_class is not None:
-                call_member = ctx.get_attribute_from_value(synthetic_class, "__call__")
-    if call_member is UNINITIALIZED_VALUE:
-        call_member = ctx.get_attribute_from_value(
-            self_value, "__call__", prefer_typeshed=True
-        )
-    if call_member is UNINITIALIZED_VALUE:
-        return call_member
-    return _bind_protocol_call_expected(
-        call_member, self_value, ctx, member="__call__", protocol_self_value=self_value
-    )
-
-
 def _should_mark_protocol_call_tail(value: Value) -> bool:
     return not isinstance(replace_fallback(value), GenericValue)
 
