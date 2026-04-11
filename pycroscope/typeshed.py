@@ -78,6 +78,7 @@ from .value import (
     UninitializedValue,
     Value,
     annotate_value,
+    get_self_param,
     iter_type_params_in_value,
     make_coro_type,
     replace_fallback,
@@ -354,8 +355,17 @@ class TypeshedFinder:
                     if maybe_info is not None:
                         info, mod = maybe_info
                         fq_name = f"{parent_fqn}.{own_name}"
+                        owner = None
+                        if isinstance(
+                            parent_info, typeshed_client.NameInfo
+                        ) and isinstance(parent_info.ast, ast.ClassDef):
+                            parent_obj = _obj_from_qualname(module_name, parent_name)
+                            if safe_isinstance(parent_obj, type):
+                                owner = self._make_owner(parent_obj)
+                            else:
+                                owner = self._make_owner(parent_fqn)
                         sig = self._get_signature_from_info(
-                            info, obj, fq_name, mod, allow_call=allow_call
+                            info, obj, fq_name, mod, owner, allow_call=allow_call
                         )
                         return sig
 
@@ -1397,6 +1407,7 @@ class TypeshedFinder:
             allow_call=allow_call,
             evaluator=evaluator,
             deprecated=deprecated,
+            self_param=(get_self_param(owner.class_key) if owner is not None else None),
         )
 
     def _parse_param_list(
@@ -1683,14 +1694,19 @@ class TypeshedFinder:
             return AnyValue(AnySource.inference)
 
 
-def _obj_from_qualname_is(module_name: str, qualname: str, obj: object) -> bool:
+def _obj_from_qualname(module_name: str, qualname: str) -> object | None:
     try:
         if module_name not in sys.modules:
             __import__(module_name)
         mod = sys.modules[module_name]
-        actual = mod
+        actual: object = mod
         for piece in qualname.split("."):
             actual = getattr(actual, piece)
-        return obj is actual
+        return actual
     except Exception:
-        return False
+        return None
+
+
+def _obj_from_qualname_is(module_name: str, qualname: str, obj: object) -> bool:
+    actual = _obj_from_qualname(module_name, qualname)
+    return obj is actual

@@ -264,9 +264,13 @@ def _get_callable_owner(callable_obj: object | None) -> type | None:
 
 
 def _make_annotations_context(
-    globals: Mapping[str, object] | None = None, callable_obj: object | None = None
+    globals: Mapping[str, object] | None = None,
+    callable_obj: object | None = None,
+    *,
+    owner: type | None = None,
 ) -> AnnotationsContext:
-    owner = _get_callable_owner(callable_obj)
+    if owner is None:
+        owner = _get_callable_owner(callable_obj)
     return AnnotationsContext(globals=globals, self_key=owner)
 
 
@@ -490,6 +494,7 @@ class ArgSpecCache:
         is_asynq: bool = False,
         returns: Value | None = None,
         allow_call: bool = False,
+        owner_for_self: type | None = None,
     ) -> Signature:
         """Constructs a pycroscope Signature from an inspect.Signature.
 
@@ -501,7 +506,8 @@ class ArgSpecCache:
 
         """
         func_globals = getattr(function_object, "__globals__", None)
-        owner_for_self = _get_callable_owner(function_object)
+        if owner_for_self is None:
+            owner_for_self = _get_callable_owner(function_object)
         # Signature preserves the return annotation for wrapped functions,
         # because @functools.wraps copies the __annotations__ of the wrapped function. We
         # don't want that, because the wrapper may have changed the return type.
@@ -513,7 +519,7 @@ class ArgSpecCache:
         else:
             if is_wrapped:
                 inferred = self._infer_contextmanager_wrapper_return(
-                    function_object, sig, func_globals
+                    function_object, sig, func_globals, owner_for_self
                 )
                 if inferred is not None:
                     returns, has_return_annotation = inferred
@@ -526,7 +532,9 @@ class ArgSpecCache:
             else:
                 returns = type_from_runtime(
                     sig.return_annotation,
-                    ctx=_make_annotations_context(func_globals, function_object),
+                    ctx=_make_annotations_context(
+                        func_globals, function_object, owner=owner_for_self
+                    ),
                 )
                 has_return_annotation = True
             if is_async:
@@ -543,6 +551,7 @@ class ArgSpecCache:
                 parameter,
                 func_globals,
                 function_object,
+                owner_for_self,
                 is_wrapped,
                 i,
                 seen_paramspec_args,
@@ -578,6 +587,7 @@ class ArgSpecCache:
         function_object: object,
         sig: inspect.Signature,
         func_globals: Mapping[str, object] | None,
+        owner_for_self: type | None,
     ) -> tuple[Value, bool] | None:
         wrapped = safe_getattr(function_object, "__wrapped__", None)
         if wrapped is None:
@@ -595,7 +605,9 @@ class ArgSpecCache:
             return None
         wrapped_return = type_from_runtime(
             sig.return_annotation,
-            ctx=_make_annotations_context(func_globals, function_object),
+            ctx=_make_annotations_context(
+                func_globals, function_object, owner=owner_for_self
+            ),
         )
         if inspect.isasyncgenfunction(wrapped):
             maybe_iterable = is_async_iterable(wrapped_return, self.ctx)
@@ -625,6 +637,7 @@ class ArgSpecCache:
         parameter: inspect.Parameter,
         func_globals: Mapping[str, object] | None,
         function_object: object | None,
+        owner_for_self: type | None,
         is_wrapped: bool,
         index: int,
         seen_paramspec_args: ParamSpecArgsValue | None,
@@ -636,7 +649,7 @@ class ArgSpecCache:
             typ = AnyValue(AnySource.inference)
         else:
             typ = self._get_type_for_parameter(
-                parameter, func_globals, function_object, index
+                parameter, func_globals, function_object, owner_for_self, index
             )
         if (
             isinstance(typ, ParamSpecArgsValue)
@@ -678,11 +691,14 @@ class ArgSpecCache:
         parameter: inspect.Parameter,
         func_globals: Mapping[str, object] | None,
         function_object: object | None,
+        owner_for_self: type | None,
         index: int,
     ) -> Value:
         if parameter.annotation is not inspect.Parameter.empty:
             kind = ParameterKind(parameter.kind)
-            ctx = _make_annotations_context(func_globals, function_object)
+            ctx = _make_annotations_context(
+                func_globals, function_object, owner=owner_for_self
+            )
             expr = annotation_expr_from_runtime(parameter.annotation, ctx=ctx)
             return translate_vararg_type(kind, expr, self.ctx)
         # If this is the self argument of a method, try to infer the self type.

@@ -669,14 +669,12 @@ class TestPEP673(TestNameCheckVisitorBase):
         import typing_extensions as typing_ext
         from typing_extensions import Self
 
-        # TODO: remove duplicate complaints
-        def foo(  # E: invalid_self_usage
+        def foo(
             bar: Self,  # E: invalid_self_usage
             long_argument_name_so_everything_is_on_its_own_line: list[int],
         ) -> Self: ...  # E: invalid_self_usage
 
-        # TODO: remove duplicate complaints
-        def qualified_foo(  # E: invalid_self_usage
+        def qualified_foo(
             bar: typing_ext.Self,  # E: invalid_self_usage
             long_argument_name_so_everything_is_on_its_own_line: list[int],
         ) -> typing_ext.Self: ...  # E: invalid_self_usage

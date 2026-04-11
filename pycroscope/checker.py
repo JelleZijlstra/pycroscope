@@ -262,6 +262,19 @@ def _strip_signature_deprecation(signature: MaybeSignature) -> MaybeSignature:
     )
 
 
+# TODO: Ideally we should set self_param correctly from the beginning instead
+# of patching it in later
+def _set_missing_signature_self_param(
+    signature: MaybeSignature, self_param: TypeVarParam
+) -> MaybeSignature:
+    def transform(sig: Signature) -> Signature:
+        if sig.self_param is not None:
+            return sig
+        return dataclass_replace(sig, self_param=self_param)
+
+    return _map_maybe_signature(signature, transform)
+
+
 def _signature_has_return_annotation(signature: ConcreteSignature) -> bool:
     if isinstance(signature, Signature):
         return signature.has_return_annotation
@@ -1277,7 +1290,27 @@ class Checker:
             typ, method_name
         )
         if method_sig is None:
-            method_sig = self.arg_spec_cache.get_argspec(method_object)
+            if (
+                use_direct_method
+                and method_name == "__new__"
+                and isinstance(method_object, types.FunctionType)
+            ):
+                inspect_sig = self.arg_spec_cache._safe_get_signature(method_object)
+                if inspect_sig is not None:
+                    method_sig = self.arg_spec_cache.from_signature(
+                        inspect_sig,
+                        function_object=method_object,
+                        callable_object=method_object,
+                        owner_for_self=typ,
+                    )
+                else:
+                    method_sig = self.arg_spec_cache.get_argspec(method_object)
+            else:
+                method_sig = self.arg_spec_cache.get_argspec(method_object)
+        if use_direct_method and method_name in {"__new__", "__init__"}:
+            method_sig = _set_missing_signature_self_param(
+                method_sig, get_self_param(typ)
+            )
         binding_self_annotation = self_annotation_value
         if binding_self_annotation is not None and any(
             isinstance(subval, TypeVarValue)
@@ -1595,6 +1628,10 @@ class Checker:
             get_return_override=get_return_override,
             get_call_attribute=get_call_attribute,
         )
+        if use_direct_method and method_name in {"__new__", "__init__"}:
+            method_sig = _set_missing_signature_self_param(
+                method_sig, get_self_param(value.class_type.typ)
+            )
         binding_self_annotation = self_annotation_value
         if binding_self_annotation is not None and any(
             True for _ in iter_type_params_in_value(binding_self_annotation)
