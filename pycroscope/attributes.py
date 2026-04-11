@@ -332,10 +332,10 @@ def get_attribute(ctx: AttrContext) -> Value:
             assert_never(root_value.typ)
         if synthetic_name is not None:
             can_assign_ctx = ctx.get_can_assign_context()
-            type_object = can_assign_ctx.make_type_object(synthetic_name)
+            tobj = can_assign_ctx.make_type_object(synthetic_name)
             bound_self_type = bound_self_type_from_class_key(synthetic_name)
             attribute = _get_type_object_attribute(
-                type_object, ctx.attr, ctx, on_class=True, receiver_value=root_value.typ
+                tobj, ctx.attr, ctx, on_class=True, receiver_value=root_value.typ
             )
             if attribute is None:
                 return UNINITIALIZED_VALUE
@@ -347,7 +347,6 @@ def get_attribute(ctx: AttrContext) -> Value:
                     synthetic_name, synthetic_class, ctx, seen={id(synthetic_class)}
                 )
                 if attribute_value is UNINITIALIZED_VALUE:
-                    tobj = ctx.get_can_assign_context().make_type_object(synthetic_name)
                     if tobj.has_any_base():
                         attribute_value = AnyValue(AnySource.from_another)
                 else:
