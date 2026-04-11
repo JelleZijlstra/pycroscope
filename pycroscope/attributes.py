@@ -165,7 +165,7 @@ class AttrContext:
 
     def get_attribute_from_typeshed_recursively(
         self, fq_name: str, *, on_class: bool
-    ) -> tuple[Value, object]:
+    ) -> tuple[Value, type | str]:
         raise NotImplementedError
 
     def should_ignore_none_attributes(self) -> bool:
@@ -864,7 +864,7 @@ def _get_attribute_from_synthetic_class(
     if attribute is not None and _should_use_resolved_class_attribute(attribute):
         return attribute.value
     result = _get_attribute_from_synthetic_class_inner(
-        fq_name, self_value, ctx, seen={id(self_value)}, runtime_type=runtime_type
+        fq_name, self_value, ctx, seen={id(self_value)}
     )
     if result is UNINITIALIZED_VALUE:
         tobj = ctx.get_can_assign_context().make_type_object(fq_name)
@@ -880,7 +880,6 @@ def _get_attribute_from_synthetic_class_inner(
     ctx: AttrContext,
     *,
     seen: set[int],
-    runtime_type: type | None = None,
 ) -> Value:
     direct = _get_direct_attribute_from_synthetic_class(self_value, ctx.attr, ctx)
     if direct is not UNINITIALIZED_VALUE:
@@ -906,11 +905,6 @@ def _get_attribute_from_synthetic_class_inner(
                 return result
 
     result, _ = ctx.get_attribute_from_typeshed_recursively(fq_name, on_class=True)
-    if result is not UNINITIALIZED_VALUE:
-        return result
-
-    if runtime_type is not None:
-        return _get_attribute_from_subclass(runtime_type, self_value.class_type, ctx)
     return result
 
 
@@ -1025,7 +1019,8 @@ def _should_use_resolved_class_attribute(attribute: TypeObjectAttribute) -> bool
         attribute.is_metaclass_owner
         or attribute.is_property
         or symbol.is_classmethod
-        or (symbol.annotation is not None and not symbol.is_classmethod)
+        or symbol.annotation is not None
+        or (not symbol.is_method and not attribute.owner.is_enum())
     )
 
 
@@ -1481,10 +1476,11 @@ def _get_attribute_from_typed(
         return TypedValue(dict)
     elif ctx.attr == "__doc__" and typ is type and generic_args:
         return unite_values(TypedValue(str), KnownValue(None))
-    classvar_type = _get_classvar_attribute_type_from_runtime_annotations(typ, ctx)
-    if classvar_type is not None:
+    pair = _get_classvar_attribute_type_from_runtime_annotations(typ, ctx)
+    if pair is not None:
+        classvar_type, owner = pair
         ctx.record_usage(typ, classvar_type)
-        return set_self(classvar_type, ctx.get_self_value())
+        return set_self(classvar_type, ctx.get_self_value(), owner)
     elif ctx.attr in {"__name__", "__qualname__", "__module__"} and (
         typ in {types.FunctionType, types.BuiltinFunctionType}
     ):
@@ -1834,10 +1830,9 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
         return hooked_value
 
     if not safe_isinstance(obj, type):
-        classvar_type = _get_classvar_attribute_type_from_runtime_annotations(
-            type(obj), ctx
-        )
-        if classvar_type is not None:
+        pair = _get_classvar_attribute_type_from_runtime_annotations(type(obj), ctx)
+        if pair is not None:
+            classvar_type, _ = pair
             ctx.record_usage(type(obj), classvar_type)
             return classvar_type
         can_assign_ctx = ctx.get_can_assign_context()
@@ -1949,7 +1944,7 @@ def _get_triple_from_annotations(
 
 def _get_classvar_attribute_type_from_runtime_annotations(
     typ: type[object], ctx: AttrContext
-) -> Value | None:
+) -> tuple[Value, type] | None:
     """Returns the declared type of a runtime ClassVar attribute, if available."""
     try:
         mro = list(type.mro(typ))
@@ -1981,7 +1976,7 @@ def _get_classvar_attribute_type_from_runtime_annotations(
             and Qualifier.InitVar not in qualifiers
             and attr_type is not None
         ):
-            return attr_type
+            return attr_type, base_cls
 
     return None
 

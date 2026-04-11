@@ -1334,6 +1334,9 @@ class TypeObject:
             self._is_thrift_enum = self._compute_is_thrift_enum()
         return self._is_thrift_enum
 
+    def is_enum(self) -> bool:
+        return self.is_assignable_to_type(enum.Enum)
+
     def get_enum_value_type(self) -> Value | None:
         if not self.is_assignable_to_type(enum.Enum):
             return None
