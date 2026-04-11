@@ -1192,29 +1192,27 @@ def _get_attribute_from_typed(
         types.BuiltinFunctionType,
     }:
         return GenericValue(dict, [TypedValue(str), AnyValue(AnySource.explicit)])
-    receiver_value = _get_instance_lookup_receiver(ctx)
-    if receiver_value is not None:
-        can_assign_ctx = ctx.get_can_assign_context()
-        attribute = _get_type_object_attribute(
-            can_assign_ctx.make_type_object(typ),
-            ctx.attr,
-            ctx,
-            on_class=False,
-            receiver_value=receiver_value,
+    can_assign_ctx = ctx.get_can_assign_context()
+    attribute = _get_type_object_attribute(
+        can_assign_ctx.make_type_object(typ),
+        ctx.attr,
+        ctx,
+        on_class=False,
+        receiver_value=ctx.root_composite.value,
+    )
+    if attribute is not None:
+        resolved_value = _substitute_typevars(
+            typ, generic_args, attribute.value, typ, ctx
         )
-        if attribute is not None:
-            resolved_value = _substitute_typevars(
-                typ, generic_args, attribute.value, typ, ctx
-            )
-            resolved_instance = _maybe_use_resolved_typed_instance_attribute(
-                attribute, resolved_value=resolved_value, typ=typ, ctx=ctx
-            )
-            if resolved_instance is not None:
-                return resolved_instance
+        resolved_instance = _maybe_use_resolved_typed_instance_attribute(
+            attribute, resolved_value=resolved_value, typ=typ, ctx=ctx
+        )
+        if resolved_instance is not None:
+            return resolved_instance
     synthetic_class = ctx.get_synthetic_class(typ)
     if synthetic_class is not None and _contains_self_typevar(ctx.get_self_value()):
         synthetic_result = _get_direct_attribute_from_synthetic_instance(
-            synthetic_class, ctx.attr, ctx, receiver_value=receiver_value
+            synthetic_class, ctx.attr, ctx, receiver_value=ctx.root_composite.value
         )
         if synthetic_result is not UNINITIALIZED_VALUE:
             synthetic_result = (
