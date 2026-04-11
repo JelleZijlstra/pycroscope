@@ -362,16 +362,9 @@ def get_attribute(ctx: AttrContext) -> Value:
     elif isinstance(root_value, SyntheticClassObjectValue):
         if isinstance(root_value.class_type, TypedDictValue):
             attribute_value = _get_attribute_from_subclass(dict, root_value, ctx)
-        elif isinstance(root_value.class_type.typ, str):
-            attribute_value = _get_attribute_from_synthetic_class(
-                root_value.class_type.typ, root_value, ctx
-            )
         else:
             attribute_value = _get_attribute_from_synthetic_class(
-                stringify_object(root_value.class_type.typ),
-                root_value,
-                ctx,
-                runtime_type=root_value.class_type.typ,
+                root_value.class_type.typ, root_value, ctx
             )
     else:
         assert_never(root_value)
@@ -757,7 +750,10 @@ def _get_instance_lookup_receiver(ctx: AttrContext) -> Value | None:
 
 
 def _get_attribute_from_synthetic_class(
-    fq_name: str, self_value: Value, ctx: AttrContext, runtime_type: type | None = None
+    class_key: type | str,
+    self_value: Value,
+    ctx: AttrContext,
+    runtime_type: type | None = None,
 ) -> Value:
     # First check values that are special in Python.
     if ctx.attr == "__class__":
@@ -767,7 +763,7 @@ def _get_attribute_from_synthetic_class(
     assert isinstance(self_value, SyntheticClassObjectValue)
     can_assign_ctx = ctx.get_can_assign_context()
     attribute = _get_type_object_attribute(
-        can_assign_ctx.make_type_object(fq_name),
+        can_assign_ctx.make_type_object(class_key),
         ctx.attr,
         ctx,
         on_class=True,
@@ -782,7 +778,7 @@ def _get_attribute_from_synthetic_class(
     if _should_use_resolved_class_attribute(attribute):
         return attribute.value
     result = _get_attribute_from_synthetic_class_inner(
-        fq_name, self_value, ctx, seen={id(self_value)}
+        class_key, self_value, ctx, seen={id(self_value)}
     )
     if result is UNINITIALIZED_VALUE:
         return result
@@ -790,7 +786,7 @@ def _get_attribute_from_synthetic_class(
 
 
 def _get_attribute_from_synthetic_class_inner(
-    fq_name: str,
+    class_key: type | str,
     self_value: SyntheticClassObjectValue,
     ctx: AttrContext,
     *,
@@ -819,6 +815,10 @@ def _get_attribute_from_synthetic_class_inner(
             if result is not UNINITIALIZED_VALUE:
                 return result
 
+    if isinstance(class_key, str):
+        fq_name = class_key
+    else:
+        fq_name = stringify_object(class_key)
     result, _ = ctx.get_attribute_from_typeshed_recursively(fq_name, on_class=True)
     return result
 
