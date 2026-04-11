@@ -3284,16 +3284,22 @@ def _has_nested_self_typevar(value: Value) -> bool:
     )
 
 
-def set_self(value: Value, self_value: Value) -> Value:
+def set_self(
+    value: Value, self_value: Value, class_key: type | str | None = None
+) -> Value:
     self_type = receiver_to_self_type(self_value)
     if _has_nested_self_typevar(self_type):
         return value
     self_type, restore_typevars = shield_nested_self_typevars(self_type)
+    if class_key is not None:
+        self_param = get_self_param(class_key)
+    else:
+        self_param = SelfParam
     if isinstance(value, KnownValueWithTypeVars):
-        merged_typevars = value.typevars.with_typevar(SelfParam, self_type)
+        merged_typevars = value.typevars.with_typevar(self_param, self_type)
         result: Value = KnownValueWithTypeVars(value.val, merged_typevars)
     else:
-        result = value.substitute_typevars(TypeVarMap(typevars={SelfParam: self_type}))
+        result = value.substitute_typevars(TypeVarMap(typevars={self_param: self_type}))
     if restore_typevars:
         result = result.substitute_typevars(restore_typevars)
     return result

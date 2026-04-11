@@ -10,6 +10,7 @@ import enum
 import functools
 import inspect
 import sys
+import types
 from collections.abc import (
     Callable,
     Iterable,
@@ -1332,6 +1333,9 @@ class TypeObject:
         if self._is_thrift_enum is None:
             self._is_thrift_enum = self._compute_is_thrift_enum()
         return self._is_thrift_enum
+
+    def is_enum(self) -> bool:
+        return self.is_assignable_to_type(enum.Enum)
 
     def get_enum_value_type(self) -> Value | None:
         if not self.is_assignable_to_type(enum.Enum):
@@ -3200,7 +3204,12 @@ def _resolve_descriptor_access(
         and not merged_attribute.is_staticmethod
         and _is_callable_member_value(typed_descriptor_value, ctx)
     ):
-        if descriptor_like_instance_access and receiver_value is not None:
+        if descriptor_like_instance_access or (
+            isinstance(merged_attribute.initializer, KnownValue)
+            and safe_isinstance(
+                merged_attribute.initializer.val, types.ClassMethodDescriptorType
+            )
+        ):
             typed_descriptor_value = _bind_attribute_signature(
                 typed_descriptor_value, receiver_value=receiver_value, ctx=ctx
             )

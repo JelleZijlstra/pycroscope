@@ -359,3 +359,17 @@ class TestIteration(TestNameCheckVisitorBase):
         def capybara(x: Sequence[Literal[0, 1, 2]]) -> None:
             for i in x:
                 assert_type(i, Literal[0, 1, 2])
+
+
+class TestClassGetItem(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_class_getitem(self):
+        import types
+
+        from typing_extensions import assert_type
+
+        def capybara(x: list[int]):
+            # This is interesting because list.__class_getitem__ is classmethod_descriptor,
+            # a fairly unusual type.
+            assert_type(list.__class_getitem__(int), types.GenericAlias)
+            assert_type(x.__class_getitem__(int), types.GenericAlias)

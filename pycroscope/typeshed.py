@@ -568,7 +568,7 @@ class TypeshedFinder:
 
     def get_attribute_recursively(
         self, typ: type | str, attr: str, *, on_class: bool
-    ) -> tuple[Value, type | str | None]:
+    ) -> tuple[Value, type | str]:
         """Get an attribute from a fully qualified class.
 
         Returns a tuple (value, provider).
@@ -579,7 +579,7 @@ class TypeshedFinder:
                 possible_value = self.get_attribute(base.typ, attr, on_class=on_class)
                 if possible_value is not UNINITIALIZED_VALUE:
                     return possible_value, base.typ
-        return UNINITIALIZED_VALUE, None
+        return UNINITIALIZED_VALUE, object
 
     def has_attribute(self, typ: type | str, attr: str) -> bool:
         """Whether this type has this attribute in the stubs.

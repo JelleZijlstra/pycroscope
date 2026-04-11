@@ -2123,7 +2123,7 @@ class Checker:
                 and safe_isinstance(value.val.__self__, type)
             ):
                 receiver_self = _bound_method_self_value_from_typevars(
-                    value.typevars, type(value.val.__self__)
+                    value.typevars, value.val.__self__
                 )
                 if receiver_self is not None:
                     unbound_sig = self.arg_spec_cache.get_argspec(value.val.__func__)
@@ -2850,7 +2850,7 @@ class CheckerAttrContext(AttrContext):
 
     def get_attribute_from_typeshed_recursively(
         self, fq_name: str, *, on_class: bool
-    ) -> tuple[Value, object]:
+    ) -> tuple[Value, type | str]:
         return self.checker.ts_finder.get_attribute_recursively(
             fq_name, self.attr, on_class=on_class
         )

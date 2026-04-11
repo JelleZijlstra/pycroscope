@@ -269,17 +269,29 @@ class TestAttributes(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_custom_descriptor_on_class_object(self):
+        from typing import Any
+
+        from typing_extensions import assert_type
+
         class CustomDescriptor:
             def __get__(self, obj, typ):
                 if obj is None:
                     return self
                 return 3
 
+        class TypedCustomDescriptor:
+            def __get__(self, obj, typ) -> int:
+                if obj is None:
+                    return self  # E: incompatible_return_value
+                return 3
+
         class Capybara:
             prop = CustomDescriptor()
+            typed_prop = TypedCustomDescriptor()
 
         def use_it(cls: type[Capybara]) -> None:
-            assert_is_value(cls.prop, AnyValue(AnySource.inference))
+            assert_type(cls.prop, Any)
+            assert_type(cls.typed_prop, int)
 
     @assert_passes()
     def test_tuple_subclass_with_getattr(self):

@@ -99,7 +99,6 @@ from .value import (
     _iter_typevar_map_items,
     _typevar_map_from_varlike_pairs,
     annotate_value,
-    bound_self_type_from_class_key,
     receiver_to_self_type,
     replace_fallback,
     set_self,
@@ -165,7 +164,7 @@ class AttrContext:
 
     def get_attribute_from_typeshed_recursively(
         self, fq_name: str, *, on_class: bool
-    ) -> tuple[Value, object]:
+    ) -> tuple[Value, type | str]:
         raise NotImplementedError
 
     def should_ignore_none_attributes(self) -> bool:
@@ -332,59 +331,13 @@ def get_attribute(ctx: AttrContext) -> Value:
             assert_never(root_value.typ)
         if synthetic_name is not None:
             can_assign_ctx = ctx.get_can_assign_context()
-            type_object = can_assign_ctx.make_type_object(synthetic_name)
-            bound_self_type = bound_self_type_from_class_key(synthetic_name)
+            tobj = can_assign_ctx.make_type_object(synthetic_name)
             attribute = _get_type_object_attribute(
-                type_object, ctx.attr, ctx, on_class=True, receiver_value=root_value.typ
+                tobj, ctx.attr, ctx, on_class=True, receiver_value=root_value.typ
             )
-            if attribute is not None and _should_use_resolved_class_attribute(
-                attribute
-            ):
-                self_value: Value = root_value.typ
-                if (
-                    attribute.symbol.returns_self_on_class_access
-                    or _contains_self_typevar(attribute.value)
-                ):
-                    self_value = bound_self_type
-                attribute_value = _rebind_resolved_lookup_value(
-                    attribute.value,
-                    lookup_receiver=root_value.typ,
-                    self_value=self_value,
-                )
-                return attribute_value
-            synthetic_class = ctx.get_synthetic_class(synthetic_name)
-            if synthetic_class is not None:
-                attribute_value = _get_attribute_from_synthetic_class_inner(
-                    synthetic_name, synthetic_class, ctx, seen={id(synthetic_class)}
-                )
-                if attribute_value is UNINITIALIZED_VALUE:
-                    tobj = ctx.get_can_assign_context().make_type_object(synthetic_name)
-                    if tobj.has_any_base():
-                        attribute_value = AnyValue(AnySource.from_another)
-                else:
-                    self_value = root_value.typ
-                    symbol = (
-                        ctx.get_can_assign_context()
-                        .make_type_object(synthetic_name)
-                        .get_declared_symbol_from_mro(
-                            ctx.attr, ctx.get_can_assign_context()
-                        )
-                    )
-                    if (
-                        symbol is not None
-                        and not symbol.is_method
-                        and symbol.annotation is not None
-                        and _contains_self_typevar(symbol.annotation)
-                    ):
-                        attribute_value = symbol.annotation
-                        self_value = bound_self_type
-                    elif _is_synthetic_self_classmethod_attribute(
-                        synthetic_class, ctx.attr, ctx
-                    ) or _contains_self_typevar(attribute_value):
-                        self_value = bound_self_type
-                    attribute_value = set_self(attribute_value, self_value)
-            else:
-                attribute_value = AnyValue(AnySource.inference)
+            if attribute is None:
+                return UNINITIALIZED_VALUE
+            return attribute.value
     elif isinstance(root_value, UnboundMethodValue):
         attribute_value = _get_attribute_from_unbound(root_value, ctx)
     elif isinstance(root_value, AnyValue):
@@ -595,7 +548,7 @@ def _get_attribute_from_super_value(super_value: SuperValue, ctx: AttrContext) -
                 )
             ):
                 result = TypedValue(property)
-            result = set_self(result, receiver_value)
+            result = set_self(result, receiver_value, owner_tobj.typ)
             ctx.record_usage(super, result)
             return result
     return UNINITIALIZED_VALUE
@@ -686,24 +639,23 @@ def _get_attribute_from_subclass(
         on_class=True,
         receiver_value=self_value,
     )
-    if attribute is not None and _should_use_resolved_class_attribute(attribute):
+    if attribute is None:
+        return UNINITIALIZED_VALUE
+    # TODO: If we unconditionally use attribute.value here, some tests fail:
+    # pycroscope/test_name_check_visitor.py::TestImportFailureHandlingCodeSamples
+    # pycroscope/test_operations.py::TestBinOps::test_enum_flag_binop
+    if _should_use_resolved_class_attribute(attribute):
         ctx.record_usage(typ, attribute.value)
         return attribute.value
     result, provider, should_unwrap = _get_attribute_from_mro(typ, ctx, on_class=True)
     if result is UNINITIALIZED_VALUE:
-        synthetic_attr = _get_runtime_attribute_from_synthetic_class(
-            typ, (), ctx, on_class=True
-        )
-        if synthetic_attr is not UNINITIALIZED_VALUE:
-            return synthetic_attr
-        tobj = ctx.get_can_assign_context().make_type_object(typ)
-        if tobj.has_any_base():
-            return AnyValue(AnySource.from_another)
+        return result
     if should_unwrap:
         result = _unwrap_value_from_subclass(result, ctx)
     if isinstance(self_value, GenericValue):
         result = _substitute_typevars(typ, self_value.args, result, provider, ctx)
-    result = set_self(result, self_value)
+    assert safe_isinstance(provider, type)
+    result = set_self(result, self_value, provider)
     ctx.record_usage(typ, result)
     return result
 
@@ -842,17 +794,6 @@ def _get_instance_lookup_receiver(ctx: AttrContext) -> Value | None:
     return _get_typed_instance_lookup_receiver(ctx)
 
 
-def _rebind_resolved_lookup_value(
-    value: Value, *, lookup_receiver: Value, self_value: Value
-) -> Value:
-    """Upgrade a resolved attribute from a lookup approximation to the true self."""
-    if _contains_self_typevar(value):
-        return set_self(value, self_value)
-    if receiver_to_self_type(lookup_receiver) == receiver_to_self_type(self_value):
-        return value
-    return set_self(value, self_value)
-
-
 def _get_attribute_from_synthetic_class(
     fq_name: str, self_value: Value, ctx: AttrContext, runtime_type: type | None = None
 ) -> Value:
@@ -870,10 +811,16 @@ def _get_attribute_from_synthetic_class(
         on_class=True,
         receiver_value=self_value,
     )
-    if attribute is not None and _should_use_resolved_class_attribute(attribute):
+    if attribute is None:
+        return UNINITIALIZED_VALUE
+    # If we always use attribute.value these tests fail:
+    # pycroscope/test_enum.py::TestEnum::test_enum_value_literals_on_class_and_instance
+    # pycroscope/test_typeshed.py::TestConstructors::test_init_new
+    # TODO: figure it out
+    if _should_use_resolved_class_attribute(attribute):
         return attribute.value
     result = _get_attribute_from_synthetic_class_inner(
-        fq_name, self_value, ctx, seen={id(self_value)}, runtime_type=runtime_type
+        fq_name, self_value, ctx, seen={id(self_value)}
     )
     if result is UNINITIALIZED_VALUE:
         tobj = ctx.get_can_assign_context().make_type_object(fq_name)
@@ -889,7 +836,6 @@ def _get_attribute_from_synthetic_class_inner(
     ctx: AttrContext,
     *,
     seen: set[int],
-    runtime_type: type | None = None,
 ) -> Value:
     direct = _get_direct_attribute_from_synthetic_class(self_value, ctx.attr, ctx)
     if direct is not UNINITIALIZED_VALUE:
@@ -915,11 +861,6 @@ def _get_attribute_from_synthetic_class_inner(
                 return result
 
     result, _ = ctx.get_attribute_from_typeshed_recursively(fq_name, on_class=True)
-    if result is not UNINITIALIZED_VALUE:
-        return result
-
-    if runtime_type is not None:
-        return _get_attribute_from_subclass(runtime_type, self_value.class_type, ctx)
     return result
 
 
@@ -972,48 +913,15 @@ def _get_direct_attribute_from_synthetic_instance(
 ) -> Value:
     class_type = self_value.class_type
     can_assign_ctx = ctx.get_can_assign_context()
-    typed_receiver_value = (
-        can_assign_ctx.make_type_object(class_type.typ)
-        if isinstance(class_type.typ, str)
-        else None
-    )
-    receiver_type_value = (
-        replace_fallback(receiver_value) if receiver_value is not None else None
-    )
-    receiver_class_key = (
-        _class_key_from_value(receiver_type_value)
-        if receiver_type_value is not None
-        else None
-    )
-    if receiver_class_key is not None:
-        typed_receiver_value = can_assign_ctx.make_type_object(receiver_class_key)
-    if receiver_value is not None and typed_receiver_value is not None:
-        attribute = _get_type_object_attribute(
-            typed_receiver_value,
-            attr_name,
-            ctx,
-            on_class=False,
-            receiver_value=receiver_value,
-        )
-        if attribute is not None and _should_use_resolved_instance_attribute(attribute):
-            return attribute.value
     attribute = _get_type_object_attribute(
         can_assign_ctx.make_type_object(class_type.typ),
         attr_name,
         ctx,
         on_class=False,
-        receiver_value=class_type,
+        receiver_value=receiver_value if receiver_value is not None else class_type,
     )
     if attribute is not None and _should_use_resolved_instance_attribute(attribute):
         return attribute.value
-    symbol = _get_synthetic_declared_symbol(self_value, attr_name, ctx)
-    if (
-        symbol is not None
-        and not symbol.is_method
-        and not symbol.is_classvar
-        and not symbol.is_initvar
-    ):
-        return symbol.get_effective_type()
     return _get_direct_attribute_from_synthetic_class(self_value, attr_name, ctx)
 
 
@@ -1034,7 +942,8 @@ def _should_use_resolved_class_attribute(attribute: TypeObjectAttribute) -> bool
         attribute.is_metaclass_owner
         or attribute.is_property
         or symbol.is_classmethod
-        or (symbol.annotation is not None and not symbol.is_classmethod)
+        or symbol.annotation is not None
+        or (not symbol.is_method and not attribute.owner.is_enum())
     )
 
 
@@ -1042,9 +951,6 @@ def _maybe_use_resolved_typed_instance_attribute(
     attribute: TypeObjectAttribute,
     *,
     resolved_value: Value,
-    receiver_value: Value,
-    self_value: Value,
-    plain_typed_receiver: bool,
     typ: type,
     ctx: AttrContext,
 ) -> Value | None:
@@ -1055,18 +961,11 @@ def _maybe_use_resolved_typed_instance_attribute(
         if isinstance(legacy_method_value, UnboundMethodValue):
             return legacy_method_value
     if attribute.is_property:
-        if plain_typed_receiver:
-            runtime_property = (
-                raw_runtime_value.val
-                if isinstance(raw_runtime_value, KnownValue)
-                and isinstance(raw_runtime_value.val, property)
-                else None
-            )
-            if runtime_property is None:
-                return None
-        return _rebind_resolved_lookup_value(
-            resolved_value, lookup_receiver=receiver_value, self_value=self_value
-        )
+        if isinstance(raw_runtime_value, KnownValue) and isinstance(
+            raw_runtime_value.val, property
+        ):
+            return resolved_value
+        return None
     if symbol.is_classmethod:
         return resolved_value
     if (
@@ -1075,32 +974,21 @@ def _maybe_use_resolved_typed_instance_attribute(
         and not symbol.is_initvar
         and not symbol.is_method
     ):
-        if plain_typed_receiver and _contains_typevar(attribute.value):
+        if _contains_typevar(attribute.value):
             return None
-        return _rebind_resolved_lookup_value(
-            resolved_value, lookup_receiver=receiver_value, self_value=self_value
-        )
     if (
         not symbol.is_classvar
         and not symbol.is_initvar
         and attribute.value != attribute.declared_value
+        and not symbol.is_method
     ):
-        if symbol.is_method:
-            if _contains_self_typevar(receiver_value) or not isinstance(
-                replace_fallback(receiver_value), TypedValue
-            ):
-                return resolved_value
-        else:
-            normalized_resolved_value = replace_fallback(resolved_value)
-            if plain_typed_receiver and (
-                isinstance(normalized_resolved_value, TypedValue)
-                and isinstance(raw_runtime_value, KnownValue)
-                and _static_hasattr(raw_runtime_value.val, "fn")
-            ):
-                return None
-            return _rebind_resolved_lookup_value(
-                resolved_value, lookup_receiver=receiver_value, self_value=self_value
-            )
+        normalized_resolved_value = replace_fallback(resolved_value)
+        if (
+            isinstance(normalized_resolved_value, TypedValue)
+            and isinstance(raw_runtime_value, KnownValue)
+            and _static_hasattr(raw_runtime_value.val, "fn")
+        ):
+            return None
     return resolved_value
 
 
@@ -1459,6 +1347,10 @@ def _get_attribute_from_synthetic_base(
 
 
 def _contains_self_typevar(value: Value) -> bool:
+    if isinstance(value, KnownValueWithTypeVars) and any(
+        type_param.is_self for type_param, _ in value.typevars.iter_typevars()
+    ):
+        return True
     return any(
         isinstance(subval, TypeVarValue) and subval.typevar_param.is_self
         for subval in value.walk_values()
@@ -1492,10 +1384,11 @@ def _get_attribute_from_typed(
         return TypedValue(dict)
     elif ctx.attr == "__doc__" and typ is type and generic_args:
         return unite_values(TypedValue(str), KnownValue(None))
-    classvar_type = _get_classvar_attribute_type_from_runtime_annotations(typ, ctx)
-    if classvar_type is not None:
+    pair = _get_classvar_attribute_type_from_runtime_annotations(typ, ctx)
+    if pair is not None:
+        classvar_type, owner = pair
         ctx.record_usage(typ, classvar_type)
-        return set_self(classvar_type, ctx.get_self_value())
+        return set_self(classvar_type, ctx.get_self_value(), owner)
     elif ctx.attr in {"__name__", "__qualname__", "__module__"} and (
         typ in {types.FunctionType, types.BuiltinFunctionType}
     ):
@@ -1516,7 +1409,6 @@ def _get_attribute_from_typed(
     receiver_value = _get_instance_lookup_receiver(ctx)
     if receiver_value is not None:
         can_assign_ctx = ctx.get_can_assign_context()
-        plain_typed_receiver = isinstance(replace_fallback(receiver_value), TypedValue)
         attribute = _get_type_object_attribute(
             can_assign_ctx.make_type_object(typ),
             ctx.attr,
@@ -1529,13 +1421,7 @@ def _get_attribute_from_typed(
                 typ, generic_args, attribute.value, typ, ctx
             )
             resolved_instance = _maybe_use_resolved_typed_instance_attribute(
-                attribute,
-                resolved_value=resolved_value,
-                receiver_value=receiver_value,
-                self_value=ctx.get_self_value(),
-                plain_typed_receiver=plain_typed_receiver,
-                typ=typ,
-                ctx=ctx,
+                attribute, resolved_value=resolved_value, typ=typ, ctx=ctx
             )
             if resolved_instance is not None:
                 return resolved_instance
@@ -1597,7 +1483,7 @@ def _get_attribute_from_typed(
             if "__hash__" not in base_dict:
                 continue
             if base_dict["__hash__"] is None:
-                return set_self(KnownValue(None), ctx.get_self_value())
+                return set_self(KnownValue(None), ctx.get_self_value(), base_cls)
             break
 
     result, provider, should_unwrap = _get_attribute_from_mro(typ, ctx, on_class=False)
@@ -1605,7 +1491,8 @@ def _get_attribute_from_typed(
     if should_unwrap:
         result = _unwrap_value_from_typed(result, typ, ctx)
     ctx.record_usage(typ, result)
-    result = set_self(result, ctx.get_self_value())
+    assert safe_isinstance(provider, type), repr(provider)
+    result = set_self(result, ctx.get_self_value(), provider)
     if ctx.attr in {"value", "_value_"} and safe_issubclass(typ, Enum):
         enum_value_type = (
             ctx.get_can_assign_context().make_type_object(typ).get_enum_value_type()
@@ -1679,7 +1566,7 @@ def _get_runtime_attribute_from_synthetic_class(
                 direct = _unwrap_value_from_subclass(direct, ctx)
             else:
                 direct = _unwrap_value_from_typed(direct, typ, ctx)
-            return set_self(direct, ctx.get_self_value())
+            return set_self(direct, ctx.get_self_value(), typ)
     return UNINITIALIZED_VALUE
 
 
@@ -1844,10 +1731,9 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
         return hooked_value
 
     if not safe_isinstance(obj, type):
-        classvar_type = _get_classvar_attribute_type_from_runtime_annotations(
-            type(obj), ctx
-        )
-        if classvar_type is not None:
+        pair = _get_classvar_attribute_type_from_runtime_annotations(type(obj), ctx)
+        if pair is not None:
+            classvar_type, _ = pair
             ctx.record_usage(type(obj), classvar_type)
             return classvar_type
         can_assign_ctx = ctx.get_can_assign_context()
@@ -1889,7 +1775,7 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
         )
         if synthetic_attr is not UNINITIALIZED_VALUE:
             return synthetic_attr
-    result, _, _ = _get_attribute_from_mro(obj, ctx, on_class=True)
+    result, provider, _ = _get_attribute_from_mro(obj, ctx, on_class=True)
     if result is UNINITIALIZED_VALUE and safe_isinstance(obj, type):
         if synthetic_attr is UNINITIALIZED_VALUE:
             synthetic_attr = _get_runtime_attribute_from_synthetic_class(
@@ -1900,14 +1786,16 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
         tobj = ctx.get_can_assign_context().make_type_object(obj)
         if tobj.has_any_base():
             result = AnyValue(AnySource.from_another)
+    if not safe_isinstance(provider, type):
+        provider = type(provider)
     if isinstance(result, KnownValue) and (
         safe_isinstance(result.val, types.MethodType)
         or safe_isinstance(result.val, types.BuiltinFunctionType)
         and result.val.__self__ is obj
     ):
-        result = set_self(result, ctx.get_self_value())
+        result = set_self(result, ctx.get_self_value(), provider)
     elif safe_isinstance(obj, type):
-        result = set_self(result, ctx.get_self_value())
+        result = set_self(result, ctx.get_self_value(), provider)
     if isinstance(obj, (types.ModuleType, type)):
         ctx.record_usage(obj, result)
     else:
@@ -1957,7 +1845,7 @@ def _get_triple_from_annotations(
 
 def _get_classvar_attribute_type_from_runtime_annotations(
     typ: type[object], ctx: AttrContext
-) -> Value | None:
+) -> tuple[Value, type] | None:
     """Returns the declared type of a runtime ClassVar attribute, if available."""
     try:
         mro = list(type.mro(typ))
@@ -1989,7 +1877,7 @@ def _get_classvar_attribute_type_from_runtime_annotations(
             and Qualifier.InitVar not in qualifiers
             and attr_type is not None
         ):
-            return attr_type
+            return attr_type, base_cls
 
     return None
 
