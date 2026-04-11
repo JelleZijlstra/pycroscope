@@ -1811,6 +1811,7 @@ class Signature:
             allow_call=self.allow_call,
             evaluator=self.evaluator,
             deprecated=self.deprecated,
+            self_param=self.self_param,
         )
 
     def get_param_of_kind(self, kind: ParameterKind) -> SigParameter | None:
@@ -1971,6 +1972,7 @@ class Signature:
             allow_call=self.allow_call,
             evaluator=self.evaluator,
             deprecated=self.deprecated,
+            self_param=self.self_param,
             bound_receiver_param_name=self.bound_receiver_param_name,
             bound_receiver_composite=bound_receiver_composite,
         )
@@ -2020,6 +2022,7 @@ class Signature:
             is_asynq=False,
             allow_call=self.allow_call,
             evaluator=self.evaluator,
+            self_param=self.self_param,
         )
 
     @classmethod
@@ -2096,8 +2099,6 @@ class Signature:
             rendered += " (with impl)"
         if self.evaluator:
             rendered += " (with evaluator)"
-        if self.self_param is not None:
-            rendered += f" (Self={self.self_param})"
         return rendered
 
     def _render_parameters(self) -> Iterable[str]:
@@ -2196,10 +2197,8 @@ class Signature:
             has_return_annotation=self.has_return_value(),
             allow_call=self.allow_call,
             deprecated=self.deprecated,
-            bound_receiver_param_name=receiver_param_name
-            # if preserve_impl and self_value is not None
-            # else None
-            ,
+            self_param=self.self_param,
+            bound_receiver_param_name=receiver_param_name,
             bound_receiver_composite=(
                 self_composite
                 if self_composite is not None

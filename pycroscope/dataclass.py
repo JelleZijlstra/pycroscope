@@ -26,6 +26,7 @@ from .value import (
     TypedValue,
     Value,
     annotate_value,
+    get_self_param,
     replace_fallback,
 )
 
@@ -89,6 +90,7 @@ def get_synthetic_init_value(
                 *params,
             ],
             KnownValue(None),
+            self_param=get_self_param(type_object.typ),
         )
     except InvalidSignature:
         return AnyValue(AnySource.inference)

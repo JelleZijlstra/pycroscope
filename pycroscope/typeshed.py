@@ -78,6 +78,7 @@ from .value import (
     UninitializedValue,
     Value,
     annotate_value,
+    get_self_param,
     iter_type_params_in_value,
     make_coro_type,
     replace_fallback,
@@ -1397,6 +1398,7 @@ class TypeshedFinder:
             allow_call=allow_call,
             evaluator=evaluator,
             deprecated=deprecated,
+            self_param=(get_self_param(owner.class_key) if owner is not None else None),
         )
 
     def _parse_param_list(

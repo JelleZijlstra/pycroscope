@@ -2122,10 +2122,16 @@ def _merge_runtime_and_typeshed_property_info(
         return runtime_info
     # Else, we try to use typeshed's annotation to get more precise getter/setter types
     # This helps with cases like type.__doc__
+    self_param = (
+        get_self_param(typeshed_attribute.selected.owner.typ)
+        if isinstance(typeshed_attribute, SpecializedAttribute)
+        else None
+    )
     fget = CallableValue(
         Signature.make(
             [SigParameter(name="self", kind=ParameterKind.POSITIONAL_ONLY)],
             typeshed_attribute.annotation,
+            self_param=self_param,
         )
     )
     fget_symbol = ClassSymbol(initializer=fget, is_method=True)
@@ -2147,6 +2153,7 @@ def _merge_runtime_and_typeshed_property_info(
                     ),
                 ],
                 KnownValue(None),
+                self_param=self_param,
             )
         )
         fset_symbol = ClassSymbol(initializer=fset, is_method=True)
@@ -4490,7 +4497,10 @@ def _add_namedtuple_dunder_new_symbol(
         }
     )
     signature = Signature(
-        parameters=parameters, return_value=SelfTVV, impl=constructor_impl
+        parameters=parameters,
+        return_value=SelfTVV,
+        impl=constructor_impl,
+        self_param=get_self_param(tobj.typ),
     )
     symbol = ClassSymbol(
         annotation=None,

@@ -154,6 +154,7 @@ class FunctionInfo:
     is_async_generator: bool
     potential_function: object | None
     type_params: Sequence[TypeParam]
+    self_param: TypeVarParam | None
 
     def get_generator_yield_type(self, ctx: CanAssignContext) -> Value:
         if self.return_annotation is None:
@@ -814,6 +815,7 @@ def compute_value_of_function(
         ),
         result,
         has_return_annotation=info.return_annotation is not None,
+        self_param=info.self_param,
     )
     val = CallableValue(sig, types.FunctionType)
     for unapplied, decorator, node in reversed(info.decorators):

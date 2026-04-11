@@ -315,6 +315,7 @@ from .value import (
     bound_self_type_from_class_key,
     concrete_values_from_iterable,
     flatten_values,
+    get_self_param,
     get_typevar_variance,
     is_async_iterable,
     is_iterable,
@@ -7142,6 +7143,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ),
                 potential_function=potential_function,
                 type_params=type_params,
+                self_param=(
+                    get_self_param(enclosing_class.typ)
+                    if enclosing_class is not None
+                    else None
+                ),
             )
 
     def visit_FunctionDef(self, node: FunctionDefNode) -> Value:
