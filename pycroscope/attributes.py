@@ -915,37 +915,12 @@ def _get_direct_attribute_from_synthetic_instance(
 ) -> Value:
     class_type = self_value.class_type
     can_assign_ctx = ctx.get_can_assign_context()
-    typed_receiver_value = (
-        can_assign_ctx.make_type_object(class_type.typ)
-        if isinstance(class_type.typ, str)
-        else None
-    )
-    receiver_type_value = (
-        replace_fallback(receiver_value) if receiver_value is not None else None
-    )
-    receiver_class_key = (
-        _class_key_from_value(receiver_type_value)
-        if receiver_type_value is not None
-        else None
-    )
-    if receiver_class_key is not None:
-        typed_receiver_value = can_assign_ctx.make_type_object(receiver_class_key)
-    if receiver_value is not None and typed_receiver_value is not None:
-        attribute = _get_type_object_attribute(
-            typed_receiver_value,
-            attr_name,
-            ctx,
-            on_class=False,
-            receiver_value=receiver_value,
-        )
-        if attribute is not None and _should_use_resolved_instance_attribute(attribute):
-            return attribute.value
     attribute = _get_type_object_attribute(
         can_assign_ctx.make_type_object(class_type.typ),
         attr_name,
         ctx,
         on_class=False,
-        receiver_value=class_type,
+        receiver_value=receiver_value if receiver_value is not None else class_type,
     )
     if attribute is not None and _should_use_resolved_instance_attribute(attribute):
         return attribute.value
