@@ -1331,7 +1331,7 @@ class TypeObject:
         return self.is_assignable_to_type(enum.Enum)
 
     def get_enum_value_type(self) -> Value | None:
-        if not self.is_assignable_to_type(enum.Enum):
+        if not self.is_enum():
             return None
 
         values: list[Value] = []
