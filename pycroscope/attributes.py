@@ -1206,11 +1206,8 @@ def _get_attribute_from_typed(
     # TestImportFailureHandling::test_explicit_type_alias_uses_runtime_attribute_semantics
     # (some weirdness about how we represent type aliases?)
     if attribute is not None:
-        resolved_value = _substitute_typevars(
-            typ, generic_args, attribute.value, typ, ctx
-        )
         resolved_instance = _maybe_use_resolved_typed_instance_attribute(
-            attribute, resolved_value=resolved_value, typ=typ, ctx=ctx
+            attribute, resolved_value=attribute.value, typ=typ, ctx=ctx
         )
         if resolved_instance is not None:
             return resolved_instance
