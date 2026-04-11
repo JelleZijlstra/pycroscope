@@ -1459,6 +1459,10 @@ def _get_attribute_from_synthetic_base(
 
 
 def _contains_self_typevar(value: Value) -> bool:
+    if isinstance(value, KnownValueWithTypeVars) and any(
+        type_param.is_self for type_param, _ in value.typevars.iter_typevars()
+    ):
+        return True
     return any(
         isinstance(subval, TypeVarValue) and subval.typevar_param.is_self
         for subval in value.walk_values()
