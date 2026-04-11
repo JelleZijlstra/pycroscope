@@ -763,8 +763,6 @@ def _get_attribute_from_synthetic_typed_value(
     root_value: TypedValue, ctx: AttrContext
 ) -> Value:
     """Resolve a synthetic instance attribute via ``TypeObject.get_attribute()``."""
-    if not isinstance(root_value.typ, str):
-        return UNINITIALIZED_VALUE
     can_assign_ctx = ctx.get_can_assign_context()
     type_object = can_assign_ctx.make_type_object(root_value.typ)
     attribute = _get_type_object_attribute(
@@ -823,9 +821,6 @@ def _get_attribute_from_synthetic_class(
         fq_name, self_value, ctx, seen={id(self_value)}
     )
     if result is UNINITIALIZED_VALUE:
-        tobj = ctx.get_can_assign_context().make_type_object(fq_name)
-        if tobj.has_any_base():
-            return AnyValue(AnySource.from_another)
         return result
     return set_self(result, self_value.class_type)
 
