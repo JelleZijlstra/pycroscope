@@ -1200,6 +1200,11 @@ def _get_attribute_from_typed(
         on_class=False,
         receiver_value=ctx.root_composite.value,
     )
+    # Adding "if attribute is None: return UNINITIALIZED_VALUE" here breaks two tests:
+    # pycroscope/test_attributes.py::TestAttributes::test_attrs
+    # (missing attrs support in type_object.py?)
+    # TestImportFailureHandling::test_explicit_type_alias_uses_runtime_attribute_semantics
+    # (some weirdness about how we represent type aliases?)
     if attribute is not None:
         resolved_value = _substitute_typevars(
             typ, generic_args, attribute.value, typ, ctx
