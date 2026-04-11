@@ -84,7 +84,6 @@ from .value import (
     PredicateValue,
     PropertyInfo,
     Qualifier,
-    SelfTVV,
     SequenceValue,
     SimpleType,
     SubclassValue,
@@ -218,6 +217,7 @@ class ResolvedAttribute:
         if self.symbol.is_method:
             return normalize_synthetic_descriptor_attribute(
                 self.raw_value,
+                owner=self.owner.typ,
                 is_self_returning_classmethod=self.symbol.returns_self_on_class_access,
             )
         if self.symbol.annotation is not None:
@@ -2465,6 +2465,7 @@ def _transform_known_class_attribute(
 def normalize_synthetic_descriptor_attribute(
     value: Value,
     *,
+    owner: type | str | None = None,
     is_self_returning_classmethod: bool = False,
     unknown_descriptor_means_any: bool = True,
 ) -> Value:
@@ -2503,8 +2504,9 @@ def normalize_synthetic_descriptor_attribute(
                     is_self_returning_classmethod
                     and isinstance(return_annotation, AnyValue)
                     and return_annotation.source is AnySource.generic_argument
+                    and owner is not None
                 ):
-                    return_annotation = SelfTVV
+                    return_annotation = TypeVarValue(get_self_param(owner))
                 return CallableValue(
                     replace(wrapped.input_sig.sig, return_value=return_annotation)
                 )
@@ -2517,8 +2519,9 @@ def normalize_synthetic_descriptor_attribute(
                 is_self_returning_classmethod
                 and isinstance(return_annotation, AnyValue)
                 and return_annotation.source is AnySource.generic_argument
+                and owner is not None
             ):
-                return_annotation = SelfTVV
+                return_annotation = TypeVarValue(get_self_param(owner))
             return CallableValue(
                 replace(wrapped.signature, return_value=return_annotation)
             )
@@ -3136,6 +3139,7 @@ def _resolve_descriptor_access(
 
     lookup_descriptor_value = normalize_synthetic_descriptor_attribute(
         lookup_value,
+        owner=merged_attribute.owner.typ,
         is_self_returning_classmethod=merged_attribute.returns_self_on_class_access,
         unknown_descriptor_means_any=False,
     )
@@ -3290,6 +3294,7 @@ def _get_nondescriptor_value(
     effective_value = _merged_attribute_effective_value(merged_attribute)
     lookup_value = normalize_synthetic_descriptor_attribute(
         _merged_attribute_lookup_value(merged_attribute),
+        owner=merged_attribute.owner.typ,
         is_self_returning_classmethod=merged_attribute.returns_self_on_class_access,
         unknown_descriptor_means_any=False,
     )
@@ -3327,6 +3332,7 @@ def _get_typed_descriptor_value(
         return lookup_value
     typed_value = normalize_synthetic_descriptor_attribute(
         initializer,
+        owner=merged_attribute.owner.typ,
         is_self_returning_classmethod=merged_attribute.returns_self_on_class_access,
         unknown_descriptor_means_any=False,
     )
@@ -4018,7 +4024,7 @@ def _get_protocol_receiver_annotation(
             return SubclassValue.make(raw_attr.args[0]), receiver_for_match
     else:
         receiver_for_match = receiver_value
-    callable_obj = _get_protocol_member_callable(symbol)
+    callable_obj = _get_protocol_member_callable(symbol, owner=owner_tobj.typ)
     if callable_obj is None:
         return None
     signature = as_concrete_signature(ctx.signature_from_value(callable_obj), ctx)
@@ -4050,7 +4056,9 @@ def _default_protocol_receiver_annotation(
     return owner_value
 
 
-def _get_protocol_member_callable(symbol: ClassSymbol) -> Value | None:
+def _get_protocol_member_callable(
+    symbol: ClassSymbol, *, owner: type | str | None = None
+) -> Value | None:
     initializer = symbol.initializer
     if initializer is None:
         return None
@@ -4065,6 +4073,7 @@ def _get_protocol_member_callable(symbol: ClassSymbol) -> Value | None:
         return None
     return normalize_synthetic_descriptor_attribute(
         initializer,
+        owner=owner,
         is_self_returning_classmethod=symbol.returns_self_on_class_access,
         unknown_descriptor_means_any=False,
     )
@@ -4498,7 +4507,7 @@ def _add_namedtuple_dunder_new_symbol(
     )
     signature = Signature(
         parameters=parameters,
-        return_value=SelfTVV,
+        return_value=TypeVarValue(get_self_param(tobj.typ)),
         impl=constructor_impl,
         self_param=get_self_param(tobj.typ),
     )
