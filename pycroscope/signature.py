@@ -90,7 +90,6 @@ from .value import (
     PartialValue,
     PartialValueOperation,
     PredicateValue,
-    SelfParam,
     SequenceValue,
     SimpleType,
     SubclassValue,
@@ -2171,13 +2170,13 @@ class Signature:
                 return None
         else:
             tv_map = TypeVarMap()
-        if tv_map.get_value(SelfParam) is None:
+        if self.self_param is not None and tv_map.get_value(self.self_param) is None:
             if self_value is None:
                 derived_self = _self_type_from_annotation(self_annotation)
                 if derived_self is not None:
-                    tv_map = tv_map.with_typevar(SelfParam, derived_self)
+                    tv_map = tv_map.with_typevar(self.self_param, derived_self)
             else:
-                tv_map = tv_map.with_typevar(SelfParam, self_value)
+                tv_map = tv_map.with_typevar(self.self_param, self_value)
         if tv_map:
             new_params = {
                 param.name: param.substitute_typevars(tv_map) for param in new_params
