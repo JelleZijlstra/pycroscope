@@ -99,7 +99,6 @@ from .value import (
     _iter_typevar_map_items,
     _typevar_map_from_varlike_pairs,
     annotate_value,
-    bound_self_type_from_class_key,
     receiver_to_self_type,
     replace_fallback,
     set_self,
@@ -333,7 +332,6 @@ def get_attribute(ctx: AttrContext) -> Value:
         if synthetic_name is not None:
             can_assign_ctx = ctx.get_can_assign_context()
             tobj = can_assign_ctx.make_type_object(synthetic_name)
-            bound_self_type = bound_self_type_from_class_key(synthetic_name)
             attribute = _get_type_object_attribute(
                 tobj, ctx.attr, ctx, on_class=True, receiver_value=root_value.typ
             )
@@ -924,14 +922,6 @@ def _get_direct_attribute_from_synthetic_instance(
     )
     if attribute is not None and _should_use_resolved_instance_attribute(attribute):
         return attribute.value
-    symbol = _get_synthetic_declared_symbol(self_value, attr_name, ctx)
-    if (
-        symbol is not None
-        and not symbol.is_method
-        and not symbol.is_classvar
-        and not symbol.is_initvar
-    ):
-        return symbol.get_effective_type()
     return _get_direct_attribute_from_synthetic_class(self_value, attr_name, ctx)
 
 
@@ -961,9 +951,6 @@ def _maybe_use_resolved_typed_instance_attribute(
     attribute: TypeObjectAttribute,
     *,
     resolved_value: Value,
-    receiver_value: Value,
-    self_value: Value,
-    plain_typed_receiver: bool,
     typ: type,
     ctx: AttrContext,
 ) -> Value | None:
@@ -974,16 +961,11 @@ def _maybe_use_resolved_typed_instance_attribute(
         if isinstance(legacy_method_value, UnboundMethodValue):
             return legacy_method_value
     if attribute.is_property:
-        if plain_typed_receiver:
-            runtime_property = (
-                raw_runtime_value.val
-                if isinstance(raw_runtime_value, KnownValue)
-                and isinstance(raw_runtime_value.val, property)
-                else None
-            )
-            if runtime_property is None:
-                return None
-        return resolved_value
+        if isinstance(raw_runtime_value, KnownValue) and isinstance(
+            raw_runtime_value.val, property
+        ):
+            return resolved_value
+        return None
     if symbol.is_classmethod:
         return resolved_value
     if (
@@ -992,28 +974,21 @@ def _maybe_use_resolved_typed_instance_attribute(
         and not symbol.is_initvar
         and not symbol.is_method
     ):
-        if plain_typed_receiver and _contains_typevar(attribute.value):
+        if _contains_typevar(attribute.value):
             return None
-        return resolved_value
     if (
         not symbol.is_classvar
         and not symbol.is_initvar
         and attribute.value != attribute.declared_value
+        and not symbol.is_method
     ):
-        if symbol.is_method:
-            if _contains_self_typevar(receiver_value) or not isinstance(
-                replace_fallback(receiver_value), TypedValue
-            ):
-                return resolved_value
-        else:
-            normalized_resolved_value = replace_fallback(resolved_value)
-            if plain_typed_receiver and (
-                isinstance(normalized_resolved_value, TypedValue)
-                and isinstance(raw_runtime_value, KnownValue)
-                and _static_hasattr(raw_runtime_value.val, "fn")
-            ):
-                return None
-            return resolved_value
+        normalized_resolved_value = replace_fallback(resolved_value)
+        if (
+            isinstance(normalized_resolved_value, TypedValue)
+            and isinstance(raw_runtime_value, KnownValue)
+            and _static_hasattr(raw_runtime_value.val, "fn")
+        ):
+            return None
     return resolved_value
 
 
@@ -1434,7 +1409,6 @@ def _get_attribute_from_typed(
     receiver_value = _get_instance_lookup_receiver(ctx)
     if receiver_value is not None:
         can_assign_ctx = ctx.get_can_assign_context()
-        plain_typed_receiver = isinstance(replace_fallback(receiver_value), TypedValue)
         attribute = _get_type_object_attribute(
             can_assign_ctx.make_type_object(typ),
             ctx.attr,
@@ -1447,13 +1421,7 @@ def _get_attribute_from_typed(
                 typ, generic_args, attribute.value, typ, ctx
             )
             resolved_instance = _maybe_use_resolved_typed_instance_attribute(
-                attribute,
-                resolved_value=resolved_value,
-                receiver_value=receiver_value,
-                self_value=ctx.get_self_value(),
-                plain_typed_receiver=plain_typed_receiver,
-                typ=typ,
-                ctx=ctx,
+                attribute, resolved_value=resolved_value, typ=typ, ctx=ctx
             )
             if resolved_instance is not None:
                 return resolved_instance
