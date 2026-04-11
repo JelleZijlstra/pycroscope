@@ -103,7 +103,6 @@ from .value import (
     replace_fallback,
     set_self,
     shield_nested_self_typevars,
-    stringify_object,
     unite_values,
 )
 
@@ -160,11 +159,6 @@ class AttrContext:
         raise NotImplementedError
 
     def get_attribute_from_typeshed(self, typ: type, *, on_class: bool) -> Value:
-        raise NotImplementedError
-
-    def get_attribute_from_typeshed_recursively(
-        self, fq_name: str, *, on_class: bool
-    ) -> tuple[Value, type | str]:
         raise NotImplementedError
 
     def should_ignore_none_attributes(self) -> bool:
@@ -750,11 +744,9 @@ def _get_instance_lookup_receiver(ctx: AttrContext) -> Value | None:
 
 
 def _get_attribute_from_synthetic_class(
-    class_key: type | str,
-    self_value: Value,
-    ctx: AttrContext,
-    runtime_type: type | None = None,
+    class_key: type | str, self_value: Value, ctx: AttrContext
 ) -> Value:
+    # TODO: shouldn't be needed, should be handled by TypeObject.get_attribute
     # First check values that are special in Python.
     if ctx.attr == "__class__":
         return KnownValue(type)
@@ -771,56 +763,7 @@ def _get_attribute_from_synthetic_class(
     )
     if attribute is None:
         return UNINITIALIZED_VALUE
-    # If we always use attribute.value these tests fail:
-    # pycroscope/test_enum.py::TestEnum::test_enum_value_literals_on_class_and_instance
-    # pycroscope/test_typeshed.py::TestConstructors::test_init_new
-    # TODO: figure it out
-    if _should_use_resolved_class_attribute(attribute):
-        return attribute.value
-    result = _get_attribute_from_synthetic_class_inner(
-        class_key, self_value, ctx, seen={id(self_value)}
-    )
-    if result is UNINITIALIZED_VALUE:
-        return result
-    return set_self(result, self_value.class_type)
-
-
-def _get_attribute_from_synthetic_class_inner(
-    class_key: type | str,
-    self_value: SyntheticClassObjectValue,
-    ctx: AttrContext,
-    *,
-    seen: set[int],
-) -> Value:
-    direct = _get_direct_attribute_from_synthetic_class(self_value, ctx.attr, ctx)
-    if direct is not UNINITIALIZED_VALUE:
-        direct = dataclass_helpers.maybe_resolve_synthetic_descriptor_attribute(
-            self_value,
-            ctx.attr,
-            direct,
-            ctx,
-            on_class=True,
-            descriptor_get_type=_synthetic_descriptor_get_type,
-        )
-        return direct
-    if _is_instance_only_enum_attr(self_value.class_type, ctx.attr):
-        return UNINITIALIZED_VALUE
-
-    tobj = ctx.get_can_assign_context().make_type_object(self_value.class_type.typ)
-    if not tobj.has_stubs():
-        for base in tobj.get_direct_bases():
-            result = _get_attribute_from_synthetic_base(
-                base, self_value, ctx, seen=seen
-            )
-            if result is not UNINITIALIZED_VALUE:
-                return result
-
-    if isinstance(class_key, str):
-        fq_name = class_key
-    else:
-        fq_name = stringify_object(class_key)
-    result, _ = ctx.get_attribute_from_typeshed_recursively(fq_name, on_class=True)
-    return result
+    return attribute.value
 
 
 def _get_direct_attribute_from_synthetic_class(
@@ -893,17 +836,6 @@ def _should_use_resolved_instance_attribute(attribute: TypeObjectAttribute) -> b
     if not symbol.is_method:
         return True
     return attribute.value != attribute.declared_value
-
-
-def _should_use_resolved_class_attribute(attribute: TypeObjectAttribute) -> bool:
-    symbol = attribute.symbol
-    return (
-        attribute.is_metaclass_owner
-        or attribute.is_property
-        or symbol.is_classmethod
-        or symbol.annotation is not None
-        or (not symbol.is_method and not attribute.owner.is_enum())
-    )
 
 
 def _maybe_use_resolved_typed_instance_attribute(
@@ -1147,15 +1079,6 @@ def _normalize_synthetic_class_attribute(
     )
 
 
-def _is_instance_only_enum_attr(value: Value, attr_name: str) -> bool:
-    class_type = replace_fallback(value)
-    if not isinstance(class_type, TypedValue) or not isinstance(class_type.typ, type):
-        return False
-    if not safe_issubclass(class_type.typ, Enum):
-        return False
-    return isinstance(Enum.__dict__.get(attr_name), _ENUM_INSTANCE_DESCRIPTOR_TYPES)
-
-
 def _should_deliteralize_synthetic_enum_attr(
     self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
 ) -> bool:
@@ -1207,107 +1130,6 @@ def _deliteralize_simple_value(value: SimpleType) -> Value:
         return value
     else:
         assert_never(value)
-
-
-def _get_attribute_from_synthetic_base(
-    base: Value,
-    self_value: SyntheticClassObjectValue,
-    ctx: AttrContext,
-    *,
-    seen: set[int],
-) -> Value:
-    if (
-        isinstance(base, PartialValue)
-        and base.operation is PartialValueOperation.SUBSCRIPT
-    ):
-        runtime_value = replace_fallback(base.runtime_value)
-        if isinstance(runtime_value, GenericValue):
-            base = runtime_value
-        else:
-            root = replace_fallback(base.root)
-            members = tuple(base.members)
-            if isinstance(root, SyntheticClassObjectValue):
-                class_type = root.class_type
-                base = GenericValue(class_type.typ, members)
-            elif isinstance(root, KnownValue) and isinstance(root.val, type):
-                base = GenericValue(root.val, members)
-            elif isinstance(root, TypedValue):
-                base = GenericValue(root.typ, members)
-
-    base = replace_fallback(base)
-
-    if isinstance(base, GenericValue):
-        if isinstance(base.typ, str):
-            synthetic_base = ctx.get_synthetic_class(base.typ)
-            if synthetic_base is not None:
-                base_id = id(synthetic_base)
-                if base_id not in seen:
-                    seen_with_base = {*seen, base_id}
-                    result = _get_attribute_from_synthetic_class_inner(
-                        base.typ, synthetic_base, ctx, seen=seen_with_base
-                    )
-                    if result is not UNINITIALIZED_VALUE:
-                        return _substitute_typevars(
-                            base.typ, base.args, result, base.typ, ctx
-                        )
-            result, provider = ctx.get_attribute_from_typeshed_recursively(
-                base.typ, on_class=True
-            )
-            if result is not UNINITIALIZED_VALUE:
-                return _substitute_typevars(base.typ, base.args, result, provider, ctx)
-            return UNINITIALIZED_VALUE
-        elif isinstance(base.typ, type):
-            result = _get_attribute_from_subclass(base.typ, self_value.class_type, ctx)
-            if result is not UNINITIALIZED_VALUE:
-                return _substitute_typevars(base.typ, base.args, result, base.typ, ctx)
-            return result
-        else:
-            assert_never(base.typ)
-
-    if isinstance(base, SyntheticClassObjectValue):
-        base_id = id(base)
-        if base_id in seen:
-            return UNINITIALIZED_VALUE
-        seen_with_base = {*seen, base_id}
-        if isinstance(base.class_type, TypedDictValue):
-            return _get_attribute_from_subclass(dict, self_value.class_type, ctx)
-        if isinstance(base.class_type.typ, str):
-            return _get_attribute_from_synthetic_class_inner(
-                base.class_type.typ, base, ctx, seen=seen_with_base
-            )
-        return _get_attribute_from_subclass(
-            base.class_type.typ, self_value.class_type, ctx
-        )
-
-    if isinstance(base, KnownValue):
-        if isinstance(base.val, type):
-            return _get_attribute_from_subclass(base.val, self_value.class_type, ctx)
-        origin = get_origin(base.val)
-        if isinstance(origin, type):
-            return _get_attribute_from_subclass(origin, self_value.class_type, ctx)
-
-    if isinstance(base, TypedValue):
-        if isinstance(base.typ, str):
-            synthetic_base = ctx.get_synthetic_class(base.typ)
-            if synthetic_base is not None:
-                base_id = id(synthetic_base)
-                if base_id not in seen:
-                    seen_with_base = {*seen, base_id}
-                    result = _get_attribute_from_synthetic_class_inner(
-                        base.typ, synthetic_base, ctx, seen=seen_with_base
-                    )
-                    if result is not UNINITIALIZED_VALUE:
-                        return result
-            result, _ = ctx.get_attribute_from_typeshed_recursively(
-                base.typ, on_class=True
-            )
-            return result
-        return _get_attribute_from_subclass(base.typ, self_value.class_type, ctx)
-
-    if isinstance(base, AnyValue):
-        return AnyValue(AnySource.from_another)
-
-    return UNINITIALIZED_VALUE
 
 
 def _contains_self_typevar(value: Value) -> bool:

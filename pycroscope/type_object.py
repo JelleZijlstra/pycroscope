@@ -531,7 +531,6 @@ class TypeObject:
     _resolving_synthetic_namedtuple_class: bool
     _is_universally_assignable: bool | None
     _protocol_positive_cache: dict[tuple[Value, Value], BoundsMap]
-    _has_stubs: bool | None
     _metaclass: MroValue | None
 
     def __init__(self, checker: "pycroscope.checker.Checker", typ: type | str) -> None:
@@ -560,13 +559,7 @@ class TypeObject:
         self._computing_namedtuple_data = False
         self._resolving_synthetic_namedtuple_class = False
         self._is_universally_assignable = None
-        self._has_stubs = None
         self._metaclass = None
-
-    def has_stubs(self) -> bool:
-        if self._has_stubs is None:
-            self._has_stubs = self._checker.ts_finder.has_stubs(self.typ)
-        return self._has_stubs
 
     def has_any_base(self) -> bool:
         return any(entry.is_any for entry in self.get_mro())
