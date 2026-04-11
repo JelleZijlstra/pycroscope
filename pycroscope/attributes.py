@@ -337,9 +337,9 @@ def get_attribute(ctx: AttrContext) -> Value:
             attribute = _get_type_object_attribute(
                 type_object, ctx.attr, ctx, on_class=True, receiver_value=root_value.typ
             )
-            if attribute is not None and _should_use_resolved_class_attribute(
-                attribute
-            ):
+            if attribute is None:
+                return UNINITIALIZED_VALUE
+            if _should_use_resolved_class_attribute(attribute):
                 return attribute.value
             synthetic_class = ctx.get_synthetic_class(synthetic_name)
             if synthetic_class is not None:
