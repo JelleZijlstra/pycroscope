@@ -339,52 +339,7 @@ def get_attribute(ctx: AttrContext) -> Value:
             )
             if attribute is None:
                 return UNINITIALIZED_VALUE
-            if _should_use_resolved_class_attribute(attribute):
-                return attribute.value
-            synthetic_class = ctx.get_synthetic_class(synthetic_name)
-            if synthetic_class is not None:
-                attribute_value = _get_attribute_from_synthetic_class_inner(
-                    synthetic_name, synthetic_class, ctx, seen={id(synthetic_class)}
-                )
-                if attribute_value is UNINITIALIZED_VALUE:
-                    if tobj.has_any_base():
-                        attribute_value = AnyValue(AnySource.from_another)
-                else:
-                    self_value = root_value.typ
-                    match = (
-                        ctx.get_can_assign_context()
-                        .make_type_object(synthetic_name)
-                        .get_declared_symbol_with_owner(
-                            ctx.attr, ctx.get_can_assign_context()
-                        )
-                    )
-                    if match is not None:
-                        owner, symbol = match
-                    else:
-                        # This should only happen if the two calls above
-                        # (_get_attribute_from_synthetic_class_inner and
-                        # get_declared_symbol_with_owner) are inconsistent about what
-                        # attributes the synthetic class has.
-                        # Why are we calling both of those? Good question, we should just
-                        # be using TypeObject.get_attribute.
-                        assert (
-                            False
-                        ), f"attribute {ctx.attr} not found on synthetic class {synthetic_name}"
-                    if (
-                        symbol is not None
-                        and not symbol.is_method
-                        and symbol.annotation is not None
-                        and _contains_self_typevar(symbol.annotation)
-                    ):
-                        attribute_value = symbol.annotation
-                        self_value = bound_self_type
-                    elif _is_synthetic_self_classmethod_attribute(
-                        synthetic_class, ctx.attr, ctx
-                    ) or _contains_self_typevar(attribute_value):
-                        self_value = bound_self_type
-                    attribute_value = set_self(attribute_value, self_value, owner.typ)
-            else:
-                attribute_value = AnyValue(AnySource.inference)
+            return attribute.value
     elif isinstance(root_value, UnboundMethodValue):
         attribute_value = _get_attribute_from_unbound(root_value, ctx)
     elif isinstance(root_value, AnyValue):
@@ -860,7 +815,13 @@ def _get_attribute_from_synthetic_class(
         on_class=True,
         receiver_value=self_value,
     )
-    if attribute is not None and _should_use_resolved_class_attribute(attribute):
+    if attribute is None:
+        return UNINITIALIZED_VALUE
+    # If we always use attribute.value these tests fail:
+    # pycroscope/test_enum.py::TestEnum::test_enum_value_literals_on_class_and_instance
+    # pycroscope/test_typeshed.py::TestConstructors::test_init_new
+    # TODO: figure it out
+    if _should_use_resolved_class_attribute(attribute):
         return attribute.value
     result = _get_attribute_from_synthetic_class_inner(
         fq_name, self_value, ctx, seen={id(self_value)}
