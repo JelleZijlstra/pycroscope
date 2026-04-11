@@ -641,19 +641,17 @@ def _get_attribute_from_subclass(
         on_class=True,
         receiver_value=self_value,
     )
-    if attribute is not None and _should_use_resolved_class_attribute(attribute):
+    if attribute is None:
+        return UNINITIALIZED_VALUE
+    # TODO: If we unconditionally use attribute.value here, some tests fail:
+    # pycroscope/test_name_check_visitor.py::TestImportFailureHandlingCodeSamples
+    # pycroscope/test_operations.py::TestBinOps::test_enum_flag_binop
+    if _should_use_resolved_class_attribute(attribute):
         ctx.record_usage(typ, attribute.value)
         return attribute.value
     result, provider, should_unwrap = _get_attribute_from_mro(typ, ctx, on_class=True)
     if result is UNINITIALIZED_VALUE:
-        synthetic_attr = _get_runtime_attribute_from_synthetic_class(
-            typ, (), ctx, on_class=True
-        )
-        if synthetic_attr is not UNINITIALIZED_VALUE:
-            return synthetic_attr
-        tobj = ctx.get_can_assign_context().make_type_object(typ)
-        if tobj.has_any_base():
-            return AnyValue(AnySource.from_another)
+        return result
     if should_unwrap:
         result = _unwrap_value_from_subclass(result, ctx)
     if isinstance(self_value, GenericValue):
