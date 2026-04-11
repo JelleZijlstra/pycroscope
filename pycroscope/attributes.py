@@ -320,7 +320,7 @@ def get_attribute(ctx: AttrContext) -> Value:
                 synthetic_name = root_value.typ.typ
             else:
                 attribute_value = _get_attribute_from_subclass(
-                    root_value.typ.typ, root_value.typ, ctx
+                    root_value.typ.typ, root_value, ctx
                 )
         elif isinstance(root_value.typ, TypeVarValue):
             if root_value.typ.typevar_param.bound is not None:
@@ -596,29 +596,8 @@ def _get_attribute_from_subclass(
 ) -> Value:
     ctx.record_attr_read(typ)
 
-    if isinstance(self_value, SubclassValue) and isinstance(
-        self_value.typ, TypeVarValue
-    ):
-        can_assign_ctx = ctx.get_can_assign_context()
-        type_object = can_assign_ctx.make_type_object(typ)
-        symbol = type_object.get_declared_symbol_from_mro(ctx.attr, can_assign_ctx)
-        if symbol is not None:
-            uses_self = (
-                symbol.annotation is not None
-                and _contains_self_typevar(symbol.annotation)
-            ) or (
-                symbol.initializer is not None
-                and _contains_self_typevar(symbol.initializer)
-            )
-            if uses_self or symbol.is_classmethod:
-                attribute = _get_type_object_attribute(
-                    type_object, ctx.attr, ctx, on_class=True, receiver_value=self_value
-                )
-                if attribute is not None:
-                    ctx.record_usage(typ, attribute.value)
-                    return attribute.value
-
     # First check values that are special in Python
+    # TODO: remove these eventually, they should be handled by TypeObject.get_attribute
     if ctx.attr == "__class__":
         return KnownValue(type(typ))
     elif ctx.attr == "__dict__":
@@ -641,23 +620,8 @@ def _get_attribute_from_subclass(
     )
     if attribute is None:
         return UNINITIALIZED_VALUE
-    # TODO: If we unconditionally use attribute.value here, some tests fail:
-    # pycroscope/test_name_check_visitor.py::TestImportFailureHandlingCodeSamples
-    # pycroscope/test_operations.py::TestBinOps::test_enum_flag_binop
-    if _should_use_resolved_class_attribute(attribute):
-        ctx.record_usage(typ, attribute.value)
-        return attribute.value
-    result, provider, should_unwrap = _get_attribute_from_mro(typ, ctx, on_class=True)
-    if result is UNINITIALIZED_VALUE:
-        return result
-    if should_unwrap:
-        result = _unwrap_value_from_subclass(result, ctx)
-    if isinstance(self_value, GenericValue):
-        result = _substitute_typevars(typ, self_value.args, result, provider, ctx)
-    assert safe_isinstance(provider, type)
-    result = set_self(result, self_value, provider)
-    ctx.record_usage(typ, result)
-    return result
+    ctx.record_usage(typ, attribute.value)
+    return attribute.value
 
 
 _TCAA = Callable[[object], bool]
@@ -969,6 +933,10 @@ def _maybe_use_resolved_typed_instance_attribute(
         and not symbol.is_initvar
         and not symbol.is_method
     ):
+        # Need this because of:
+        # pycroscope/test_namedtuple.py::TestNamedTuple
+        # ::test_specialized_namedtuple_base_after_import_failure
+        # TODO: something wrong here with generic namedtuples?
         if _contains_typevar(attribute.value):
             return None
     if (
@@ -1043,6 +1011,7 @@ def _synthetic_descriptor_method_match(
         return selected, 0
     # Synthetic dunder methods are often exposed unbound; retry with the
     # descriptor value as an explicit first argument.
+    # TODO: this is a hack, fix it at the source instead.
     selected = _select_matching_synthetic_signature(signature, [descriptor, *args], ctx)
     if selected is None:
         return None
