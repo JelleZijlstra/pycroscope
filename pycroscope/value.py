@@ -3099,9 +3099,6 @@ class TypeVarValue(Value):
         return str(self.typevar_param)
 
 
-SelfTVV = TypeVarValue(SelfParam)
-
-
 @dataclass(frozen=True)
 class InferenceVarValue(TypeVarValue):
     """A fresh inference variable created from a declared TypeVar."""

@@ -124,7 +124,6 @@ from .value import (
     PartialValue,
     PartialValueOperation,
     Qualifier,
-    SelfTVV,
     SequenceValue,
     SubclassValue,
     SyntheticClassObjectValue,
@@ -786,10 +785,7 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
         ctx.show_error(
             "Self cannot be used outside a class", ErrorCode.invalid_self_usage
         )
-        # fail
-        # # TODO: fail
-        # return AnyValue(AnySource.error)
-        return SelfTVV
+        return AnyValue(AnySource.error)
     elif is_typing_name(val, "LiteralString"):
         return TypedValue(str, literal_only=True)
     elif hasattr(val, "__supertype__"):
