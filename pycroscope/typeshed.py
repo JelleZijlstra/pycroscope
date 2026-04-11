@@ -885,7 +885,7 @@ class TypeshedFinder:
             method_nodes[0], mod, owner
         )
         value = self._get_value_from_child_info(
-            node, mod, on_class=False, parent_name="<overload>", owner=owner
+            node, mod, on_class=True, parent_name="<overload>", owner=owner
         )
         if isinstance(value, AnnotationExpr):
             value, _ = value.unqualify()

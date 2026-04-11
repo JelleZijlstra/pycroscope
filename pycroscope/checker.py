@@ -2848,13 +2848,6 @@ class CheckerAttrContext(AttrContext):
     def get_attribute_from_typeshed(self, typ: type, *, on_class: bool) -> Value:
         return self.checker.ts_finder.get_attribute(typ, self.attr, on_class=on_class)
 
-    def get_attribute_from_typeshed_recursively(
-        self, fq_name: str, *, on_class: bool
-    ) -> tuple[Value, type | str]:
-        return self.checker.ts_finder.get_attribute_recursively(
-            fq_name, self.attr, on_class=on_class
-        )
-
     def should_ignore_none_attributes(self) -> bool:
         return False
 
