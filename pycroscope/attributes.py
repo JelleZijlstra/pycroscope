@@ -340,18 +340,7 @@ def get_attribute(ctx: AttrContext) -> Value:
             if attribute is not None and _should_use_resolved_class_attribute(
                 attribute
             ):
-                self_value: Value = root_value.typ
-                if (
-                    attribute.symbol.returns_self_on_class_access
-                    or _contains_self_typevar(attribute.value)
-                ):
-                    self_value = bound_self_type
-                attribute_value = _rebind_resolved_lookup_value(
-                    attribute.value,
-                    lookup_receiver=root_value.typ,
-                    self_value=self_value,
-                )
-                return attribute_value
+                return attribute.value
             synthetic_class = ctx.get_synthetic_class(synthetic_name)
             if synthetic_class is not None:
                 attribute_value = _get_attribute_from_synthetic_class_inner(
@@ -363,13 +352,25 @@ def get_attribute(ctx: AttrContext) -> Value:
                         attribute_value = AnyValue(AnySource.from_another)
                 else:
                     self_value = root_value.typ
-                    symbol = (
+                    match = (
                         ctx.get_can_assign_context()
                         .make_type_object(synthetic_name)
-                        .get_declared_symbol_from_mro(
+                        .get_declared_symbol_with_owner(
                             ctx.attr, ctx.get_can_assign_context()
                         )
                     )
+                    if match is not None:
+                        owner, symbol = match
+                    else:
+                        # This should only happen if the two calls above
+                        # (_get_attribute_from_synthetic_class_inner and
+                        # get_declared_symbol_with_owner) are inconsistent about what
+                        # attributes the synthetic class has.
+                        # Why are we calling both of those? Good question, we should just
+                        # be using TypeObject.get_attribute.
+                        assert (
+                            False
+                        ), f"attribute {ctx.attr} not found on synthetic class {synthetic_name}"
                     if (
                         symbol is not None
                         and not symbol.is_method
@@ -382,7 +383,7 @@ def get_attribute(ctx: AttrContext) -> Value:
                         synthetic_class, ctx.attr, ctx
                     ) or _contains_self_typevar(attribute_value):
                         self_value = bound_self_type
-                    attribute_value = set_self(attribute_value, self_value)
+                    attribute_value = set_self(attribute_value, self_value, owner.typ)
             else:
                 attribute_value = AnyValue(AnySource.inference)
     elif isinstance(root_value, UnboundMethodValue):
@@ -595,7 +596,7 @@ def _get_attribute_from_super_value(super_value: SuperValue, ctx: AttrContext) -
                 )
             ):
                 result = TypedValue(property)
-            result = set_self(result, receiver_value)
+            result = set_self(result, receiver_value, owner_tobj.typ)
             ctx.record_usage(super, result)
             return result
     return UNINITIALIZED_VALUE
@@ -703,7 +704,8 @@ def _get_attribute_from_subclass(
         result = _unwrap_value_from_subclass(result, ctx)
     if isinstance(self_value, GenericValue):
         result = _substitute_typevars(typ, self_value.args, result, provider, ctx)
-    result = set_self(result, self_value)
+    assert safe_isinstance(provider, type)
+    result = set_self(result, self_value, provider)
     ctx.record_usage(typ, result)
     return result
 
@@ -840,17 +842,6 @@ def _get_instance_lookup_receiver(ctx: AttrContext) -> Value | None:
     if _contains_self_typevar(self_value):
         return self_value
     return _get_typed_instance_lookup_receiver(ctx)
-
-
-def _rebind_resolved_lookup_value(
-    value: Value, *, lookup_receiver: Value, self_value: Value
-) -> Value:
-    """Upgrade a resolved attribute from a lookup approximation to the true self."""
-    if _contains_self_typevar(value):
-        return set_self(value, self_value)
-    if receiver_to_self_type(lookup_receiver) == receiver_to_self_type(self_value):
-        return value
-    return set_self(value, self_value)
 
 
 def _get_attribute_from_synthetic_class(
@@ -1064,9 +1055,7 @@ def _maybe_use_resolved_typed_instance_attribute(
             )
             if runtime_property is None:
                 return None
-        return _rebind_resolved_lookup_value(
-            resolved_value, lookup_receiver=receiver_value, self_value=self_value
-        )
+        return resolved_value
     if symbol.is_classmethod:
         return resolved_value
     if (
@@ -1077,9 +1066,7 @@ def _maybe_use_resolved_typed_instance_attribute(
     ):
         if plain_typed_receiver and _contains_typevar(attribute.value):
             return None
-        return _rebind_resolved_lookup_value(
-            resolved_value, lookup_receiver=receiver_value, self_value=self_value
-        )
+        return resolved_value
     if (
         not symbol.is_classvar
         and not symbol.is_initvar
@@ -1098,9 +1085,7 @@ def _maybe_use_resolved_typed_instance_attribute(
                 and _static_hasattr(raw_runtime_value.val, "fn")
             ):
                 return None
-            return _rebind_resolved_lookup_value(
-                resolved_value, lookup_receiver=receiver_value, self_value=self_value
-            )
+            return resolved_value
     return resolved_value
 
 
@@ -1601,7 +1586,7 @@ def _get_attribute_from_typed(
             if "__hash__" not in base_dict:
                 continue
             if base_dict["__hash__"] is None:
-                return set_self(KnownValue(None), ctx.get_self_value())
+                return set_self(KnownValue(None), ctx.get_self_value(), base_cls)
             break
 
     result, provider, should_unwrap = _get_attribute_from_mro(typ, ctx, on_class=False)
@@ -1609,7 +1594,8 @@ def _get_attribute_from_typed(
     if should_unwrap:
         result = _unwrap_value_from_typed(result, typ, ctx)
     ctx.record_usage(typ, result)
-    result = set_self(result, ctx.get_self_value())
+    assert safe_isinstance(provider, type), repr(provider)
+    result = set_self(result, ctx.get_self_value(), provider)
     if ctx.attr in {"value", "_value_"} and safe_issubclass(typ, Enum):
         enum_value_type = (
             ctx.get_can_assign_context().make_type_object(typ).get_enum_value_type()
@@ -1683,7 +1669,7 @@ def _get_runtime_attribute_from_synthetic_class(
                 direct = _unwrap_value_from_subclass(direct, ctx)
             else:
                 direct = _unwrap_value_from_typed(direct, typ, ctx)
-            return set_self(direct, ctx.get_self_value())
+            return set_self(direct, ctx.get_self_value(), typ)
     return UNINITIALIZED_VALUE
 
 
@@ -1893,7 +1879,7 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
         )
         if synthetic_attr is not UNINITIALIZED_VALUE:
             return synthetic_attr
-    result, _, _ = _get_attribute_from_mro(obj, ctx, on_class=True)
+    result, provider, _ = _get_attribute_from_mro(obj, ctx, on_class=True)
     if result is UNINITIALIZED_VALUE and safe_isinstance(obj, type):
         if synthetic_attr is UNINITIALIZED_VALUE:
             synthetic_attr = _get_runtime_attribute_from_synthetic_class(
@@ -1904,14 +1890,16 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
         tobj = ctx.get_can_assign_context().make_type_object(obj)
         if tobj.has_any_base():
             result = AnyValue(AnySource.from_another)
+    if not safe_isinstance(provider, type):
+        provider = type(provider)
     if isinstance(result, KnownValue) and (
         safe_isinstance(result.val, types.MethodType)
         or safe_isinstance(result.val, types.BuiltinFunctionType)
         and result.val.__self__ is obj
     ):
-        result = set_self(result, ctx.get_self_value())
+        result = set_self(result, ctx.get_self_value(), provider)
     elif safe_isinstance(obj, type):
-        result = set_self(result, ctx.get_self_value())
+        result = set_self(result, ctx.get_self_value(), provider)
     if isinstance(obj, (types.ModuleType, type)):
         ctx.record_usage(obj, result)
     else:
