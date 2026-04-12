@@ -1494,53 +1494,7 @@ class TypeObject:
         if merged.is_initvar and not policy.on_class:
             return None
 
-        return _resolve_merged_attribute_access(
-            self, merged, self._checker, policy=policy
-        )
-
-    def _should_use_metaclass_attribute(
-        self,
-        declared_attribute: MergedAttribute | None,
-        metaclass_attribute: MergedAttribute | None,
-        ctx: CanAssignContext,
-        *,
-        policy: AttributePolicy,
-    ) -> bool:
-        """Apply Python lookup precedence after generic specialization."""
-        if (
-            policy.on_class
-            and metaclass_attribute is not None
-            and (
-                policy.is_special_lookup
-                or _is_data_descriptor(metaclass_attribute, ctx)
-            )
-        ):
-            return True
-        if declared_attribute is not None:
-            return False
-        return policy.on_class and metaclass_attribute is not None
-
-    def _choose_merged_attribute(
-        self,
-        declared_attribute: MergedAttribute | None,
-        metaclass_attribute: MergedAttribute | None,
-        ctx: CanAssignContext,
-        *,
-        policy: AttributePolicy,
-    ) -> MergedAttribute | None:
-        """Apply Python lookup precedence after generic specialization."""
-        if (
-            policy.on_class
-            and metaclass_attribute is not None
-            and (
-                policy.is_special_lookup
-                or _is_data_descriptor(metaclass_attribute, ctx)
-            )
-        ):
-            return metaclass_attribute
-        if declared_attribute is not None:
-            return declared_attribute
-        return metaclass_attribute if policy.on_class else None
+        return _resolve_merged_attribute_access(merged, self._checker, policy=policy)
 
     def _select_declared_attribute(
         self, name: str
@@ -3125,15 +3079,11 @@ def _make_resolved_attribute(
 
 
 def _resolve_merged_attribute_access(
-    receiver_tobj: TypeObject,
-    merged_attribute: MergedAttribute,
-    ctx: CanAssignContext,
-    *,
-    policy: AttributePolicy,
+    merged_attribute: MergedAttribute, ctx: CanAssignContext, *, policy: AttributePolicy
 ) -> TypeObjectAttribute:
     """Resolve a merged member to the final value seen by this access."""
     resolved_descriptor = _resolve_descriptor_access(
-        receiver_tobj, merged_attribute, ctx, policy=policy
+        merged_attribute, ctx, policy=policy
     )
     if resolved_descriptor is None:
         resolved_descriptor = _make_resolved_attribute(
@@ -3151,11 +3101,7 @@ def _resolve_merged_attribute_access(
 
 
 def _resolve_descriptor_access(
-    receiver_tobj: TypeObject,
-    merged_attribute: MergedAttribute,
-    ctx: CanAssignContext,
-    *,
-    policy: AttributePolicy,
+    merged_attribute: MergedAttribute, ctx: CanAssignContext, *, policy: AttributePolicy
 ) -> TypeObjectAttribute | None:
     """Apply descriptor behavior, including any receiver binding, to a member."""
     receiver_value = policy.receiver
@@ -3193,12 +3139,6 @@ def _resolve_descriptor_access(
                 return None
             fget = merged_attribute.property_info.fget.initializer
             assert fget is not None
-            # TODO this should be unnecessary if we set Self correctly when
-            # retrieving the signature
-            fget = fget.substitute_typevars(
-                # TODO: wrong Self, I think
-                TypeVarMap(typevars={get_self_param(receiver_tobj.typ): receiver_arg})
-            )
             if policy.visitor is None:
                 # Note this path means errors don't get shown!
                 value = ctx.get_call_result(fget, (receiver_arg,))
@@ -3459,7 +3399,6 @@ def _get_attribute_value_from_symbol(
         is_metaclass_owner=False,
     )
     value = _resolve_merged_attribute_access(
-        merged_attribute.owner,
         merged_attribute,
         ctx,
         policy=AttributePolicy(
@@ -3475,9 +3414,7 @@ def _is_selected_attribute_data_descriptor(
     """Whether this object represent a data descriptor."""
     if selected.symbol.property_info is not None:
         return True
-    if selected.symbol.is_method:
-        return False
-    if selected.symbol.initializer is None:
+    if selected.symbol.is_method or selected.symbol.initializer is None:
         return False
     return _descriptor_has_method(
         selected.symbol.initializer, "__set__", ctx

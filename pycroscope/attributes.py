@@ -737,13 +737,6 @@ def _get_typed_instance_lookup_receiver(ctx: AttrContext) -> Value | None:
     return None
 
 
-def _get_instance_lookup_receiver(ctx: AttrContext) -> Value | None:
-    self_value = ctx.get_self_value()
-    if _contains_self_typevar(self_value):
-        return self_value
-    return _get_typed_instance_lookup_receiver(ctx)
-
-
 def _get_attribute_from_synthetic_class(
     class_key: type | str, self_value: Value, ctx: AttrContext
 ) -> Value:
