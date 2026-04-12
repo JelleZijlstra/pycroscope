@@ -256,9 +256,9 @@ def _symbol_from_runtime_member(
         and (existing is None or existing.annotation is None),
         deprecation_message=_runtime_deprecation_message(raw_value),
         function_decorators=frozenset(function_decorators),
-        property_info=(_runtime_property_info(raw_value, owner)),
+        property_info=_runtime_property_info(raw_value, owner),
         initializer=_runtime_member_value(raw_value, owner),
-        dataclass_field=(existing.dataclass_field if existing is not None else None),
+        dataclass_field=existing.dataclass_field if existing is not None else None,
     )
 
 

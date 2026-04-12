@@ -211,6 +211,7 @@ class TypeObjectAttribute:
     is_property: bool
     property_has_setter: bool
     is_metaclass_owner: bool
+    error: CanAssignError | None
 
     # TODO: what is this? probably shouldn't exist
     @property
@@ -226,6 +227,9 @@ class TypeObjectAttribute:
         if self.symbol.annotation is not None:
             return self.declared_value
         return self.raw_value
+
+    def __str__(self) -> str:
+        return f"<attribute {self.name} of {self.owner.typ} with value {self.value}>"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3062,6 +3066,7 @@ def _make_resolved_attribute(
     value: Value,
     is_property: bool,
     property_has_setter: bool,
+    error: CanAssignError | None = None,
 ) -> TypeObjectAttribute:
     return TypeObjectAttribute(
         name=merged_attribute.name,
@@ -3076,6 +3081,147 @@ def _make_resolved_attribute(
         property_has_setter=property_has_setter,
         is_metaclass_owner=merged_attribute.is_metaclass_owner,
     )
+
+
+def _make_error_attribute(
+    merged_attribute: MergedAttribute, error: CanAssignError
+) -> TypeObjectAttribute:
+    return _make_resolved_attribute(
+        merged_attribute,
+        value=AnyValue(AnySource.error),
+        is_property=False,
+        property_has_setter=False,
+        error=error,
+    )
+
+
+def _apply_descriptor_protocol_to_property(
+    merged_attribute: MergedAttribute,
+    ctx: CanAssignContext,
+    policy: AttributePolicy,
+    property_info: PropertyInfo,
+    is_instance_access: bool,
+) -> TypeObjectAttribute:
+    if not is_instance_access:
+        return _make_resolved_attribute(
+            merged_attribute,
+            value=merged_attribute.initializer or TypedValue(property),
+            is_property=False,
+            property_has_setter=property_info.fset is not None,
+        )
+    if property_info.fget is None or property_info.fget.initializer is None:
+        return _make_error_attribute(
+            merged_attribute,
+            CanAssignError(
+                f"Property '{merged_attribute.name}' on {merged_attribute.owner} is not readable"
+            ),
+        )
+    receiver_arg = policy.get_self_value(
+        ctx, is_metaclass=merged_attribute.is_metaclass_owner
+    )
+    fget = property_info.fget.initializer is None
+    if policy.visitor is None:
+        # Note this path means errors don't get shown!
+        value = ctx.get_call_result(fget, (receiver_arg,))
+    else:
+        value = policy.visitor.get_call_result(fget, (receiver_arg,), node=policy.node)
+    return _make_resolved_attribute(
+        merged_attribute,
+        value=value,
+        is_property=True,
+        property_has_setter=property_info.fset is not None,
+    )
+
+
+def _apply_descriptor_protocol_to_staticmethod(
+    merged_attribute: MergedAttribute,
+) -> TypeObjectAttribute:
+    match merged_attribute.initializer:
+        case CallableValue():
+            value = merged_attribute.initializer
+        case KnownValueWithTypeVars(val=staticmethod() as val, typevars=typevars):
+            value = KnownValueWithTypeVars(val=val.__func__, typevars=typevars)
+        case KnownValue(val=staticmethod() as val):
+            value = KnownValue(val.__func__)
+        case GenericValue(
+            typ=staticmethod,
+            args=[InputSigValue(input_sig=FullSignature() as sig), return_value],
+        ):
+            value = CallableValue(replace(sig, return_value=return_value))
+        case _:
+            return _make_error_attribute(
+                merged_attribute,
+                CanAssignError(
+                    f"Unrecognized staticmethod object {merged_attribute.initializer}"
+                ),
+            )
+    return _make_resolved_attribute(
+        merged_attribute, value=value, is_property=False, property_has_setter=False
+    )
+
+
+def _apply_descriptor_protocol_to_classmethod(
+    merged_attribute: MergedAttribute,
+) -> TypeObjectAttribute:
+    match merged_attribute.initializer:
+        case CallableValue():
+            value = merged_attribute.initializer
+        case KnownValueWithTypeVars(val=classmethod() as val, typevars=typevars):
+            value = KnownValueWithTypeVars(val=val.__func__, typevars=typevars)
+        case KnownValue(val=classmethod() as val):
+            value = KnownValue(val.__func__)
+        case GenericValue(
+            typ=classmethod,
+            args=[InputSigValue(input_sig=FullSignature() as sig), return_value],
+        ):
+            value = CallableValue(replace(sig, return_value=return_value))
+        case _:
+            return _make_error_attribute(
+                merged_attribute,
+                CanAssignError(
+                    f"Unrecognized classmethod object {merged_attribute.initializer}"
+                ),
+            )
+    return _make_resolved_attribute(
+        merged_attribute, value=value, is_property=False, property_has_setter=False
+    )
+
+
+def _apply_descriptor_protocol(
+    merged_attribute: MergedAttribute, ctx: CanAssignContext, policy: AttributePolicy
+) -> TypeObjectAttribute:
+    # Class attribute transformer
+    transformed_value = _transform_known_class_attribute(
+        merged_attribute.initializer, ctx
+    )
+    if transformed_value is not None:
+        return _make_resolved_attribute(
+            merged_attribute,
+            value=transformed_value,
+            is_property=False,
+            property_has_setter=False,
+        )
+
+    is_instance_access = not policy.on_class or merged_attribute.is_metaclass_owner
+
+    if merged_attribute.property_info is not None:
+        return _apply_descriptor_protocol_to_property(
+            merged_attribute,
+            ctx,
+            policy,
+            property_info=merged_attribute.property_info,
+            is_instance_access=is_instance_access,
+        )
+
+    if merged_attribute.is_staticmethod:
+        return _apply_descriptor_protocol_to_staticmethod(merged_attribute)
+
+    if merged_attribute.is_classmethod:
+        return _apply_descriptor_protocol_to_classmethod(
+            merged_attribute, ctx, policy, is_instance_access=is_instance_access
+        )
+
+    return _make_error_attribute(merged_attribute, CanAssignError("TODO"))
 
 
 def _resolve_merged_attribute_access(
@@ -3419,21 +3565,6 @@ def _is_selected_attribute_data_descriptor(
     return _descriptor_has_method(
         selected.symbol.initializer, "__set__", ctx
     ) or _descriptor_has_method(selected.symbol.initializer, "__delete__", ctx)
-
-
-def _is_data_descriptor(
-    merged_attribute: MergedAttribute, ctx: CanAssignContext
-) -> bool:
-    """Whether the merged member should win descriptor precedence."""
-    if merged_attribute.property_info is not None:
-        return True
-    if merged_attribute.is_method:
-        return False
-    return _descriptor_has_method(
-        _merged_attribute_lookup_value(merged_attribute), "__set__", ctx
-    ) or _descriptor_has_method(
-        _merged_attribute_lookup_value(merged_attribute), "__delete__", ctx
-    )
 
 
 def _get_descriptor_get_value(
