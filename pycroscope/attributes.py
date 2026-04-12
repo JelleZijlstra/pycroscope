@@ -521,6 +521,7 @@ def _get_attribute_from_super_value(super_value: SuperValue, ctx: AttrContext) -
                 receiver_tobj, owner_tobj, symbol, can_assign_ctx, policy
             )
             result = _get_attribute_value_from_symbol(
+                ctx.attr,
                 symbol,
                 can_assign_ctx,
                 on_class=is_class_access and not symbol.is_method,
