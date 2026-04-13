@@ -3437,12 +3437,14 @@ def _apply_descriptor_protocol(
     if merged_attribute.is_classmethod or (
         merged_attribute.initializer is not None
         and _is_classmethod_like(merged_attribute.initializer)
+        and merged_attribute.annotation is None
     ):
         return _apply_descriptor_protocol_to_classmethod(merged_attribute, ctx, policy)
 
     if merged_attribute.is_method or (
         merged_attribute.initializer is not None
         and _is_method_like(merged_attribute.initializer)
+        and merged_attribute.annotation is None
     ):
         return _apply_descriptor_protocol_to_method(
             merged_attribute, ctx, policy, is_instance_access=is_instance_access
