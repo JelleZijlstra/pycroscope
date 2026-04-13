@@ -2074,6 +2074,9 @@ def _get_attribute_impl(ctx: CallContext) -> Value:
     tobj = ctx.visitor.checker.make_type_object(class_key)
     on_class = _enforce_literal_bool(ctx, "on_class", False)
     is_special_lookup = _enforce_literal_bool(ctx, "is_special_lookup", False)
+    use_apply_descriptor_protocol = _enforce_literal_bool(
+        ctx, "use_apply_descriptor_protocol", False
+    )
     receiver = ctx.vars.get("receiver", AnyValue(AnySource.inference))
     attr = tobj.get_attribute(
         attr_name.val,
@@ -2081,6 +2084,7 @@ def _get_attribute_impl(ctx: CallContext) -> Value:
             visitor=ctx.visitor,
             on_class=on_class,
             is_special_lookup=is_special_lookup,
+            use_apply_descriptor_protocol=use_apply_descriptor_protocol,
             receiver=receiver,
         ),
     )
@@ -2964,6 +2968,12 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
                 ),
                 SigParameter(
                     "is_special_lookup",
+                    ParameterKind.KEYWORD_ONLY,
+                    annotation=TypedValue(bool),
+                    default=KnownValue(False),
+                ),
+                SigParameter(
+                    "use_apply_descriptor_protocol",
                     ParameterKind.KEYWORD_ONLY,
                     annotation=TypedValue(bool),
                     default=KnownValue(False),

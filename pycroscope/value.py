@@ -826,11 +826,14 @@ def get_attribute(
     *,
     on_class: bool = False,
     is_special_lookup: bool = False,
+    use_apply_descriptor_protocol: bool = False,
+    receiver: object = None,
 ) -> object:
     """Get an attribute of an object.
 
     During static analysis, pycroscope replaces this with a value-level attribute
     getter that preserves generic specialization for synthetic and runtime classes.
+    If receiver is passed, it is used as the value being accessed.
 
     """
     return None

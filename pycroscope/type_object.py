@@ -5,6 +5,7 @@ An object that represents a type.
 """
 
 import ast
+import builtins
 import collections.abc
 import enum
 import functools
@@ -238,6 +239,8 @@ class AttributePolicy:
     """True if the attribute is being accessed on the class rather than an instance."""
     is_special_lookup: bool = False
     """True if the attribute lookup should use dunder lookup semantics."""
+    use_apply_descriptor_protocol: bool = False
+    """True to use the new descriptor protocol implementation."""
     receiver: Value
     """When implementing obj.attr, receiver is the type of obj. This should
     always be an instance type if on_class is False, else a class type."""
@@ -1498,6 +1501,8 @@ class TypeObject:
         if merged.is_initvar and not policy.on_class:
             return None
 
+        if policy.use_apply_descriptor_protocol:
+            return _apply_descriptor_protocol(merged, self._checker, policy)
         return _resolve_merged_attribute_access(merged, self._checker, policy=policy)
 
     def _select_declared_attribute(
@@ -3080,6 +3085,7 @@ def _make_resolved_attribute(
         is_property=is_property,
         property_has_setter=property_has_setter,
         is_metaclass_owner=merged_attribute.is_metaclass_owner,
+        error=error,
     )
 
 
@@ -3119,7 +3125,7 @@ def _apply_descriptor_protocol_to_property(
     receiver_arg = policy.get_self_value(
         ctx, is_metaclass=merged_attribute.is_metaclass_owner
     )
-    fget = property_info.fget.initializer is None
+    fget = property_info.fget.initializer
     if policy.visitor is None:
         # Note this path means errors don't get shown!
         value = ctx.get_call_result(fget, (receiver_arg,))
@@ -3139,15 +3145,17 @@ def _apply_descriptor_protocol_to_staticmethod(
     match merged_attribute.initializer:
         case CallableValue():
             value = merged_attribute.initializer
-        case KnownValueWithTypeVars(val=staticmethod() as val, typevars=typevars):
+        case KnownValueWithTypeVars(
+            val=builtins.staticmethod() as val, typevars=typevars
+        ):
             value = KnownValueWithTypeVars(val=val.__func__, typevars=typevars)
-        case KnownValue(val=staticmethod() as val):
+        case KnownValue(val=builtins.staticmethod() as val):
             value = KnownValue(val.__func__)
         case GenericValue(
-            typ=staticmethod,
+            typ=builtins.staticmethod,
             args=[InputSigValue(input_sig=FullSignature() as sig), return_value],
         ):
-            value = CallableValue(replace(sig, return_value=return_value))
+            value = CallableValue(replace(sig.sig, return_value=return_value))
         case _:
             return _make_error_attribute(
                 merged_attribute,
@@ -3161,20 +3169,22 @@ def _apply_descriptor_protocol_to_staticmethod(
 
 
 def _apply_descriptor_protocol_to_classmethod(
-    merged_attribute: MergedAttribute,
+    merged_attribute: MergedAttribute, ctx: CanAssignContext, policy: AttributePolicy
 ) -> TypeObjectAttribute:
     match merged_attribute.initializer:
         case CallableValue():
             value = merged_attribute.initializer
-        case KnownValueWithTypeVars(val=classmethod() as val, typevars=typevars):
+        case KnownValueWithTypeVars(
+            val=builtins.classmethod() as val, typevars=typevars
+        ):
             value = KnownValueWithTypeVars(val=val.__func__, typevars=typevars)
-        case KnownValue(val=classmethod() as val):
+        case KnownValue(val=builtins.classmethod() as val):
             value = KnownValue(val.__func__)
         case GenericValue(
-            typ=classmethod,
-            args=[InputSigValue(input_sig=FullSignature() as sig), return_value],
+            typ=builtins.classmethod,
+            args=[_, InputSigValue(input_sig=FullSignature() as sig), return_value],
         ):
-            value = CallableValue(replace(sig, return_value=return_value))
+            value = CallableValue(replace(sig.sig, return_value=return_value))
         case _:
             return _make_error_attribute(
                 merged_attribute,
@@ -3182,8 +3192,20 @@ def _apply_descriptor_protocol_to_classmethod(
                     f"Unrecognized classmethod object {merged_attribute.initializer}"
                 ),
             )
+
+    if merged_attribute.is_metaclass_owner:
+        receiver = policy.get_receiver_instance(ctx)
+    else:
+        receiver = policy.get_receiver_class(ctx)
+
+    bound_value = _bind_attribute_signature(
+        value, receiver_value=receiver, self_annotation_value=receiver, ctx=ctx
+    )
     return _make_resolved_attribute(
-        merged_attribute, value=value, is_property=False, property_has_setter=False
+        merged_attribute,
+        value=bound_value,
+        is_property=False,
+        property_has_setter=False,
     )
 
 
@@ -3217,9 +3239,7 @@ def _apply_descriptor_protocol(
         return _apply_descriptor_protocol_to_staticmethod(merged_attribute)
 
     if merged_attribute.is_classmethod:
-        return _apply_descriptor_protocol_to_classmethod(
-            merged_attribute, ctx, policy, is_instance_access=is_instance_access
-        )
+        return _apply_descriptor_protocol_to_classmethod(merged_attribute, ctx, policy)
 
     return _make_error_attribute(merged_attribute, CanAssignError("TODO"))
 
