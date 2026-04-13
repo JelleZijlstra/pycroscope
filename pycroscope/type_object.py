@@ -214,7 +214,7 @@ class TypeObjectAttribute:
     is_property: bool
     property_has_setter: bool
     is_metaclass_owner: bool
-    error: CanAssignError | None
+    error: CanAssignError | None = None
 
     # TODO: what is this? probably shouldn't exist
     @property
@@ -3200,14 +3200,17 @@ def _apply_descriptor_protocol_to_classmethod(
                 ),
             )
 
+    instance_receiver = policy.get_receiver_instance(ctx)
     if merged_attribute.is_metaclass_owner:
-        receiver = policy.get_receiver_instance(ctx)
+        receiver = instance_receiver
     else:
         receiver = policy.get_receiver_class(ctx)
+        print("RECEIVER", receiver)
 
     bound_value = _bind_attribute_signature(
-        value, receiver_value=receiver, self_annotation_value=receiver, ctx=ctx
+        value, receiver_value=instance_receiver, self_annotation_value=receiver, ctx=ctx
     )
+    print("BOUND VALE", bound_value)
     return _make_resolved_attribute(
         merged_attribute,
         value=bound_value,
@@ -3237,17 +3240,26 @@ def _apply_descriptor_protocol_to_method(
             property_has_setter=False,
         )
 
-    receiver = policy.get_receiver_instance(ctx)
-    bound_value = UnboundMethodValue(
-        attr_name=merged_attribute.name,
-        # TODO: do we need to preserve a Composite from the caller?
-        composite=Composite(receiver),
-        typevars=(
-            initializer.typevars
-            if isinstance(initializer, KnownValueWithTypeVars)
-            else None
-        ),
-    )
+    # We have to produce an UnboundMethodValue for some downstream reasons
+    # (e.g., use of secondary_attr_name), but UnboundMethodValue doesn't work
+    # if there's no runtime method.
+    if _is_method_like(initializer):
+        bound_value = UnboundMethodValue(
+            attr_name=merged_attribute.name,
+            # TODO: do we need to preserve a Composite from the caller?
+            composite=Composite(policy.get_receiver_class(ctx)),
+            typevars=(
+                initializer.typevars
+                if isinstance(initializer, KnownValueWithTypeVars)
+                else None
+            ),
+        )
+    else:
+        # We bind the initializer to the receiver
+        receiver = policy.get_receiver_instance(ctx)
+        bound_value = _bind_attribute_signature(
+            initializer, receiver_value=receiver, ctx=ctx
+        )
     return _make_resolved_attribute(
         merged_attribute,
         value=bound_value,
@@ -3911,13 +3923,20 @@ def _descriptor_method_signature_any(
         attribute = descriptor_tobj.get_attribute(method_name, policy)
         if attribute is not None:
             method_value = attribute.value
+    print("METHOD VAL", method_value, repr(method_value))
     if direct_signature is not None:
         if restore_typevars:
             direct_signature = direct_signature.substitute_typevars(restore_typevars)
         return direct_signature
     if method_value is UNINITIALIZED_VALUE:
         return None
+    print(
+        "RAW SIG",
+        ctx.signature_from_value(method_value),
+        repr(ctx.signature_from_value(method_value)),
+    )
     signature = as_concrete_signature(ctx.signature_from_value(method_value), ctx)
+    print("METHOD SIG", signature)
     if signature is None:
         return None
     if restore_typevars:

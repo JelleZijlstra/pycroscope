@@ -3096,7 +3096,7 @@ class TypeVarValue(Value):
         return AnyValue(AnySource.inference)  # TODO: should be object
 
     def get_type_value(self, ctx: CanAssignContext) -> Value:
-        return self.get_fallback_value().get_type_value(ctx)
+        return SubclassValue(self)
 
     def __str__(self) -> str:
         return str(self.typevar_param)

@@ -236,6 +236,10 @@ class TestAttributes(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_property_on_unhashable_object(self):
+        from typing import Any
+
+        from typing_extensions import assert_type
+
         class CustomDescriptor(object):
             __hash__ = None
 
@@ -250,7 +254,7 @@ class TestAttributes(TestNameCheckVisitorBase):
             prop = CustomDescriptor()
 
         def use_it():
-            assert_is_value(Unhashable().prop, AnyValue(AnySource.inference))
+            assert_type(Unhashable().prop, Any)
 
     @assert_passes(run_in_both_module_modes=True)
     def test_property_on_class_object(self):
