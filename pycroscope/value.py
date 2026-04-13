@@ -2797,7 +2797,7 @@ class SubclassValue(Value):
         return super().can_overlap(other, ctx, mode)
 
     def get_type(self) -> type | None:
-        if isinstance(self.typ, TypedValue):
+        if isinstance(self.typ, TypedValue) and isinstance(self.typ.typ, type):
             return type(self.typ.typ)
         else:
             return None

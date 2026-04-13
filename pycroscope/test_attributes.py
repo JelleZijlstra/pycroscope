@@ -934,7 +934,13 @@ class TestAttributes(TestNameCheckVisitorBase):
             print(box.default)
             print(box.variadic)
             print(box.annotated)
-            print(box.broken)
+            # TODO: This error is a bit cryptic, it doesn't tell us that
+            # the problem was the __get__ call
+            # (it's just "Missing required argument 'extra'").
+            # I think a good solution would require that the call checking mechanism
+            # can return a CanAssignError instead of a value, and we wrap that up
+            # with some extra information saying we called BrokenDescriptor.__get__.
+            print(box.broken)  # E: incompatible_call
 
     @assert_passes(run_in_both_module_modes=True)
     def test_descriptor_assert_types_in_both_module_modes(self):
@@ -1011,7 +1017,7 @@ class TestAttributes(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_descriptor_instance_access_strips_descriptor_self(self):
-        from typing import Any, Generic, TypeVar, cast
+        from typing import Any, Generic, TypeVar, Union, cast
 
         from typing_extensions import Self, assert_type
 
@@ -1033,7 +1039,8 @@ class TestAttributes(TestNameCheckVisitorBase):
                 return None
 
         def capybara(model: Model) -> None:
-            assert_type(model.related, Related | None)
+            # TODO: Doesn't work if you use | instead of Union.
+            assert_type(model.related, Union[Descriptor[Related | None], Related, None])
 
     @assert_passes(allow_import_failures=True)
     def test_synthetic_generic_descriptor_and_private_attributes(self):

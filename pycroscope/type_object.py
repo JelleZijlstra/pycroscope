@@ -243,6 +243,12 @@ class AttributePolicy:
     """True if the attribute lookup should use dunder lookup semantics."""
     use_apply_descriptor_protocol: bool = True
     """True to use the new descriptor protocol implementation."""
+    prefer_symbolic: bool = False
+    """If True, return symbolic values (e.g., CallableValue) instead of
+    more precise representations such as UnboundMethodValue.
+    Use this when checking compatibility, e.g. in protocols and
+    override checking.
+    """
     receiver: Value
     """When implementing obj.attr, receiver is the type of obj. This should
     always be an instance type if on_class is False, else a class type."""
@@ -1834,7 +1840,10 @@ class TypeObject:
                 actual = AnyValue(AnySource.inference)
             else:
                 expected_attr = self.get_attribute(
-                    member, AttributePolicy(receiver=self_val, self_value=other_val)
+                    member,
+                    AttributePolicy(
+                        receiver=self_val, self_value=other_val, prefer_symbolic=True
+                    ),
                 )
                 if expected_attr is None:
                     # In static fallback mode, synthetic protocol members may not have
@@ -2336,7 +2345,10 @@ def _resolve_member_access(
     receiver_value: Value,
 ) -> TypeObjectAttribute:
     access = tobj.get_attribute(
-        member, AttributePolicy(receiver=receiver_value, on_class=class_object_access)
+        member,
+        AttributePolicy(
+            receiver=receiver_value, on_class=class_object_access, prefer_symbolic=True
+        ),
     )
     if access is None:
         return TypeObjectAttribute(
@@ -3243,11 +3255,17 @@ def _apply_descriptor_protocol_to_method(
     # We have to produce an UnboundMethodValue for some downstream reasons
     # (e.g., use of secondary_attr_name), but UnboundMethodValue doesn't work
     # if there's no runtime method.
-    if _is_method_like(initializer):
+    receiver_class = policy.get_receiver_class(ctx)
+    print("REC CLASS", receiver_class, repr(receiver_class.get_type()))
+    if (
+        not policy.prefer_symbolic
+        and _is_method_like(initializer)
+        and receiver_class.get_type() is not None
+    ):
         bound_value = UnboundMethodValue(
             attr_name=merged_attribute.name,
             # TODO: do we need to preserve a Composite from the caller?
-            composite=Composite(policy.get_receiver_class(ctx)),
+            composite=Composite(receiver_class),
             typevars=(
                 initializer.typevars
                 if isinstance(initializer, KnownValueWithTypeVars)

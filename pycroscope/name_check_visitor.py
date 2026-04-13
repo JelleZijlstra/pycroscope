@@ -3556,7 +3556,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 continue
             base_tobj = self.checker.make_type_object(base_value.typ)
             base_attr = base_tobj.get_attribute(
-                varname, AttributePolicy(receiver=base_value, visitor=self, node=node)
+                varname,
+                AttributePolicy(
+                    receiver=base_value, visitor=self, node=node, prefer_symbolic=True
+                ),
             )
             if base_attr is None:
                 continue
