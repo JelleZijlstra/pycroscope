@@ -3204,6 +3204,13 @@ def _apply_descriptor_protocol_to_classmethod(
             args=[_, InputSigValue(input_sig=FullSignature() as sig), return_value],
         ):
             value = CallableValue(replace(sig.sig, return_value=return_value))
+            # This is already bound, don't bind again
+            return _make_resolved_attribute(
+                merged_attribute,
+                value=value,
+                is_property=False,
+                property_has_setter=False,
+            )
         case _:
             return _make_error_attribute(
                 merged_attribute,
