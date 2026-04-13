@@ -29,6 +29,8 @@ from typing_extensions import assert_never
 
 import pycroscope
 
+from .stacked_scopes import Composite
+
 if TYPE_CHECKING:
     from .relations import Relation
 
@@ -239,7 +241,7 @@ class AttributePolicy:
     """True if the attribute is being accessed on the class rather than an instance."""
     is_special_lookup: bool = False
     """True if the attribute lookup should use dunder lookup semantics."""
-    use_apply_descriptor_protocol: bool = False
+    use_apply_descriptor_protocol: bool = True
     """True to use the new descriptor protocol implementation."""
     receiver: Value
     """When implementing obj.attr, receiver is the type of obj. This should
@@ -3126,17 +3128,22 @@ def _apply_descriptor_protocol_to_property(
         ctx, is_metaclass=merged_attribute.is_metaclass_owner
     )
     fget = property_info.fget.initializer
-    if policy.visitor is None:
-        # Note this path means errors don't get shown!
-        value = ctx.get_call_result(fget, (receiver_arg,))
-    else:
-        value = policy.visitor.get_call_result(fget, (receiver_arg,), node=policy.node)
+    value = _make_call(fget, (receiver_arg,), policy=policy, ctx=ctx)
     return _make_resolved_attribute(
         merged_attribute,
         value=value,
         is_property=True,
         property_has_setter=property_info.fset is not None,
     )
+
+
+def _make_call(
+    callee: Value, args: Sequence[Value], policy: AttributePolicy, ctx: CanAssignContext
+) -> Value:
+    if policy.visitor is None:
+        # Note this path means errors don't get shown!
+        return ctx.get_call_result(callee, args)
+    return policy.visitor.get_call_result(callee, args, node=policy.node)
 
 
 def _apply_descriptor_protocol_to_staticmethod(
@@ -3209,6 +3216,134 @@ def _apply_descriptor_protocol_to_classmethod(
     )
 
 
+def _apply_descriptor_protocol_to_method(
+    merged_attribute: MergedAttribute,
+    ctx: CanAssignContext,
+    policy: AttributePolicy,
+    *,
+    is_instance_access: bool,
+) -> TypeObjectAttribute:
+    initializer = merged_attribute.initializer
+    if initializer is None:
+        return _make_error_attribute(
+            merged_attribute,
+            CanAssignError(f"Method '{merged_attribute.name}' has no initializer"),
+        )
+    if not is_instance_access:
+        return _make_resolved_attribute(
+            merged_attribute,
+            value=initializer,
+            is_property=False,
+            property_has_setter=False,
+        )
+
+    receiver = policy.get_receiver_instance(ctx)
+    bound_value = UnboundMethodValue(
+        attr_name=merged_attribute.name,
+        # TODO: do we need to preserve a Composite from the caller?
+        composite=Composite(receiver),
+        typevars=(
+            initializer.typevars
+            if isinstance(initializer, KnownValueWithTypeVars)
+            else None
+        ),
+    )
+    return _make_resolved_attribute(
+        merged_attribute,
+        value=bound_value,
+        is_property=False,
+        property_has_setter=False,
+    )
+
+
+def _static_hasattr(value: object, attr: str) -> bool:
+    """Returns whether this value has the given attribute, ignoring __getattr__ overrides."""
+    try:
+        object.__getattribute__(value, attr)
+    except AttributeError:
+        return False
+    else:
+        return True
+
+
+SlotWrapperType = type(type.__init__)
+
+
+def _is_classmethod_like(value: Value) -> bool:
+    value = replace_fallback(value)
+    if not isinstance(value, KnownValue):
+        return False
+    return safe_isinstance(value.val, types.ClassMethodDescriptorType)
+
+
+def _is_method_like(value: Value) -> bool:
+    value = replace_fallback(value)
+    if not isinstance(value, KnownValue):
+        return False
+    if isinstance(
+        value.val,
+        (
+            types.FunctionType,
+            types.MethodType,
+            types.MethodDescriptorType,
+            SlotWrapperType,
+        ),
+    ):
+        return True
+
+    # This is mostly weirdness for dealing with asynq/qcore
+    elif _static_hasattr(value.val, "binder_cls") and _static_hasattr(value.val, "fn"):
+        # qcore/asynq-style decorators expose a binder type on the descriptor but
+        # still behave like methods when accessed through instances.
+        return True
+    elif (
+        _static_hasattr(value.val, "decorator")
+        and _static_hasattr(value.val, "instance")
+        and not isinstance(value.val.instance, type)
+    ):
+        # non-static method
+        return True
+    elif _static_hasattr(value.val, "func_code"):
+        # Cython function probably
+        return True
+    return False
+
+
+def _apply_descriptor_protocol_to_descriptor(
+    merged_attribute: MergedAttribute,
+    ctx: CanAssignContext,
+    policy: AttributePolicy,
+    *,
+    is_instance_access: bool,
+) -> TypeObjectAttribute:
+    if merged_attribute.initializer is None:
+        return _make_error_attribute(
+            merged_attribute,
+            CanAssignError(f"Descriptor '{merged_attribute.name}' has no initializer"),
+        )
+    sig = _descriptor_method_signature_any(merged_attribute.initializer, "__get__", ctx)
+    if sig is None:
+        return _make_error_attribute(
+            merged_attribute,
+            CanAssignError(
+                f"Descriptor '{merged_attribute.name}' does not have a valid __get__ method"
+            ),
+        )
+
+    owner = policy.get_receiver_class(ctx)
+
+    if is_instance_access:
+        receiver = policy.get_receiver_instance(ctx)
+        args = [receiver, owner]
+    else:
+        args = [KnownValue(None), owner]
+
+    value = _make_call(CallableValue(sig), args, policy=policy, ctx=ctx)
+    return _make_resolved_attribute(
+        merged_attribute, value=value, is_property=False, property_has_setter=False
+    )
+
+
 def _apply_descriptor_protocol(
     merged_attribute: MergedAttribute, ctx: CanAssignContext, policy: AttributePolicy
 ) -> TypeObjectAttribute:
@@ -3238,10 +3373,46 @@ def _apply_descriptor_protocol(
     if merged_attribute.is_staticmethod:
         return _apply_descriptor_protocol_to_staticmethod(merged_attribute)
 
-    if merged_attribute.is_classmethod:
+    if merged_attribute.is_classmethod or (
+        merged_attribute.initializer is not None
+        and _is_classmethod_like(merged_attribute.initializer)
+    ):
         return _apply_descriptor_protocol_to_classmethod(merged_attribute, ctx, policy)
 
-    return _make_error_attribute(merged_attribute, CanAssignError("TODO"))
+    if merged_attribute.is_method or (
+        merged_attribute.initializer is not None
+        and _is_method_like(merged_attribute.initializer)
+    ):
+        return _apply_descriptor_protocol_to_method(
+            merged_attribute, ctx, policy, is_instance_access=is_instance_access
+        )
+
+    if merged_attribute.initializer is not None and _is_descriptor(
+        merged_attribute.initializer, ctx
+    ):
+        return _apply_descriptor_protocol_to_descriptor(
+            merged_attribute, ctx, policy, is_instance_access=is_instance_access
+        )
+
+    if merged_attribute.annotation is not None:
+        return _make_resolved_attribute(
+            merged_attribute,
+            value=merged_attribute.annotation,
+            is_property=False,
+            property_has_setter=False,
+        )
+
+    if merged_attribute.initializer is not None:
+        return _make_resolved_attribute(
+            merged_attribute,
+            value=merged_attribute.initializer,
+            is_property=False,
+            property_has_setter=False,
+        )
+
+    return _make_error_attribute(
+        merged_attribute, CanAssignError("Neither annotation nor initializer set")
+    )
 
 
 def _resolve_merged_attribute_access(
@@ -3587,6 +3758,15 @@ def _is_selected_attribute_data_descriptor(
     ) or _descriptor_has_method(selected.symbol.initializer, "__delete__", ctx)
 
 
+def _is_descriptor(value: Value, ctx: CanAssignContext) -> bool:
+    """Whether this value can be treated as a descriptor."""
+    return (
+        _descriptor_has_method(value, "__get__", ctx)
+        or _descriptor_has_method(value, "__set__", ctx)
+        or _descriptor_has_method(value, "__delete__", ctx)
+    )
+
+
 def _get_descriptor_get_value(
     descriptor: Value,
     ctx: CanAssignContext,
@@ -3652,6 +3832,8 @@ def _descriptor_type_object(
     return descriptor_tobj
 
 
+# TODO: this should be rewritten to use standard attribute lookup
+# mechanisms.
 def _descriptor_has_method(
     descriptor: Value, method_name: str, ctx: CanAssignContext
 ) -> bool:
@@ -3684,6 +3866,7 @@ def _descriptor_method_match(
     return selected, 1
 
 
+# TODO: replace this with something based on TypeObject.get_attribute()
 def _descriptor_method_signature_any(
     descriptor: Value, method_name: str, ctx: CanAssignContext
 ) -> Signature | OverloadedSignature | None:
