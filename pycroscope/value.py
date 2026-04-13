@@ -1713,7 +1713,9 @@ class KnownValue(Value):
             return f"Literal[{self.val!r}]"
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "KnownValue":
-        if not typevars or not callable(self.val):
+        if not typevars or not (
+            callable(self.val) or safe_isinstance(self.val, (classmethod, staticmethod))
+        ):
             return self
         return KnownValueWithTypeVars(self.val, typevars)
 
