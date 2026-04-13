@@ -3379,6 +3379,16 @@ def _apply_descriptor_protocol_to_descriptor(
             ),
         )
 
+    if merged_attribute.annotation is not None:
+        # If there's an annotation, believe it; it may have a more precise
+        # type than the __get__ method.
+        return _make_resolved_attribute(
+            merged_attribute,
+            value=merged_attribute.annotation,
+            is_property=False,
+            property_has_setter=False,
+        )
+
     owner = policy.get_receiver_class(ctx)
 
     if is_instance_access:
