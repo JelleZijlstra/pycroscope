@@ -232,6 +232,7 @@ def _symbol_from_runtime_member(
     raw_value: object, owner: type, existing: ClassSymbol | None = None
 ) -> ClassSymbol:
     function_decorators = set()
+    wrapped_method_kind = _get_runtime_wrapped_method_kind(raw_value, owner)
     maybe_func = raw_value
     if isinstance(raw_value, staticmethod):
         function_decorators.add(FunctionDecorator.staticmethod)
@@ -239,6 +240,14 @@ def _symbol_from_runtime_member(
     if isinstance(raw_value, classmethod):
         function_decorators.add(FunctionDecorator.classmethod)
         maybe_func = raw_value.__func__
+    if wrapped_method_kind == "staticmethod":
+        function_decorators.add(FunctionDecorator.staticmethod)
+        maybe_func = safe_getattr(raw_value, "fn", raw_value)
+    elif wrapped_method_kind == "classmethod":
+        function_decorators.add(FunctionDecorator.classmethod)
+        maybe_func = safe_getattr(raw_value, "fn", raw_value)
+    elif wrapped_method_kind == "instance":
+        maybe_func = safe_getattr(raw_value, "fn", raw_value)
     if safe_getattr(maybe_func, "__final__", False):
         function_decorators.add(FunctionDecorator.final)
     if safe_getattr(maybe_func, "__isabstractmethod__", False):
@@ -252,7 +261,9 @@ def _symbol_from_runtime_member(
         annotation=existing.annotation if existing is not None else None,
         qualifiers=frozenset(qualifiers),
         is_instance_only=(existing.is_instance_only if existing is not None else False),
-        is_method=_is_runtime_method_member(raw_value)
+        is_method=(
+            _is_runtime_method_member(raw_value) or wrapped_method_kind is not None
+        )
         and (existing is None or existing.annotation is None),
         deprecation_message=_runtime_deprecation_message(raw_value),
         function_decorators=frozenset(function_decorators),
@@ -299,6 +310,29 @@ def _is_runtime_method_member(raw_value: object) -> bool:
     ):
         return True
     return False
+
+
+def _get_runtime_wrapped_method_kind(raw_value: object, owner: type) -> str | None:
+    if (
+        safe_getattr(raw_value, "binder_cls", None) is None
+        or safe_getattr(raw_value, "fn", None) is None
+    ):
+        return None
+    descriptor_get = safe_getattr(raw_value, "__get__", None)
+    if descriptor_get is None:
+        return None
+    try:
+        class_access = descriptor_get(None, owner)
+    except Exception:
+        return None
+    decorator = safe_getattr(class_access, "decorator", None)
+    if decorator is not None and safe_getattr(class_access, "instance", None) is owner:
+        return "classmethod"
+    if decorator is not None and safe_getattr(class_access, "instance", None) is None:
+        return "instance"
+    if class_access is raw_value:
+        return "staticmethod"
+    return None
 
 
 def _is_runtime_member_final(raw_value: object) -> bool:

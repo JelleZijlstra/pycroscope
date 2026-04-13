@@ -3164,6 +3164,10 @@ def _apply_descriptor_protocol_to_staticmethod(
     match merged_attribute.initializer:
         case CallableValue():
             value = merged_attribute.initializer
+        case KnownValueWithTypeVars(val=val) if _is_qcore_method_wrapper(val):
+            value = merged_attribute.initializer
+        case KnownValue(val=val) if _is_qcore_method_wrapper(val):
+            value = merged_attribute.initializer
         case KnownValueWithTypeVars(
             val=builtins.staticmethod() as val, typevars=typevars
         ):
@@ -3192,6 +3196,10 @@ def _apply_descriptor_protocol_to_classmethod(
 ) -> TypeObjectAttribute:
     match merged_attribute.initializer:
         case CallableValue():
+            value = merged_attribute.initializer
+        case KnownValueWithTypeVars(val=val) if _is_qcore_method_wrapper(val):
+            value = merged_attribute.initializer
+        case KnownValue(val=val) if _is_qcore_method_wrapper(val):
             value = merged_attribute.initializer
         case KnownValueWithTypeVars(
             val=builtins.classmethod() as val, typevars=typevars
@@ -3306,6 +3314,10 @@ def _static_hasattr(value: object, attr: str) -> bool:
 SlotWrapperType = type(type.__init__)
 
 
+def _is_qcore_method_wrapper(value: object) -> bool:
+    return _static_hasattr(value, "binder_cls") and _static_hasattr(value, "fn")
+
+
 def _is_classmethod_like(value: Value) -> bool:
     value = replace_fallback(value)
     if not isinstance(value, KnownValue):
@@ -3329,7 +3341,7 @@ def _is_method_like(value: Value) -> bool:
         return True
 
     # This is mostly weirdness for dealing with asynq/qcore
-    elif _static_hasattr(value.val, "binder_cls") and _static_hasattr(value.val, "fn"):
+    elif _is_qcore_method_wrapper(value.val):
         # qcore/asynq-style decorators expose a binder type on the descriptor but
         # still behave like methods when accessed through instances.
         return True
