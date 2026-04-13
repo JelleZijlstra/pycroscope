@@ -3379,16 +3379,6 @@ def _apply_descriptor_protocol_to_descriptor(
             ),
         )
 
-    if merged_attribute.annotation is not None:
-        # If there's an annotation, believe it; it may have a more precise
-        # type than the __get__ method.
-        return _make_resolved_attribute(
-            merged_attribute,
-            value=merged_attribute.annotation,
-            is_property=False,
-            property_has_setter=False,
-        )
-
     owner = policy.get_receiver_class(ctx)
 
     if is_instance_access:
@@ -3398,6 +3388,18 @@ def _apply_descriptor_protocol_to_descriptor(
         args = [KnownValue(None), owner]
 
     value = _make_call(CallableValue(sig), args, policy=policy, ctx=ctx)
+
+    if merged_attribute.annotation is not None:
+        # If there's an annotation, believe it; it may have a more precise
+        # type than the __get__ method.
+        # (We still call __get__ first so we get errors from it.)
+        return _make_resolved_attribute(
+            merged_attribute,
+            value=merged_attribute.annotation,
+            is_property=False,
+            property_has_setter=False,
+        )
+
     return _make_resolved_attribute(
         merged_attribute, value=value, is_property=False, property_has_setter=False
     )
