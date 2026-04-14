@@ -40,3 +40,6 @@ typeddicts_type_consistency
 
 # pycroscope uses Literal[] over float
 namedtuples_define_class
+
+# https://github.com/python/typing/issues/2259
+dataclasses_descriptors
