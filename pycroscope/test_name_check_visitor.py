@@ -4579,6 +4579,8 @@ class TestAnnAssign(TestNameCheckVisitorBase):
     def test_typevar_classmethod_in_unimportable_module(self):
         from typing import TypeVar
 
+        from typing_extensions import assert_type
+
         T = TypeVar("T")
 
         class Box:
@@ -4586,7 +4588,8 @@ class TestAnnAssign(TestNameCheckVisitorBase):
             def identity(cls, value: T) -> T:
                 return value
 
-        def capybara():
+        def capybara(i: int):
+            assert_type(Box.identity(i), int)
             Box.identity(1).bit_length()
             Box.identity("x").upper()
 

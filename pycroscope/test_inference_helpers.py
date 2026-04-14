@@ -269,3 +269,52 @@ class TestGetMro(TestNameCheckVisitorBase):
 
         assert_type(get_mro(A), tuple[A, Any, object])
         assert_type(get_mro(C), tuple[C, A, Any, B, object])
+
+
+class TestGetAttribute(TestNameCheckVisitorBase):
+    @assert_passes(run_in_both_module_modes=True)
+    def test_apply_descriptor_protocol_property(self) -> None:
+        from typing import Generic, TypeVar
+
+        from pycroscope.extensions import assert_type
+        from pycroscope.value import get_attribute
+
+        T = TypeVar("T")
+
+        class Box(Generic[T]):
+            @property
+            def value(self) -> T:
+                raise NotImplementedError
+
+        assert_type(get_attribute(Box, "value", receiver=Box[int]()), int)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_apply_descriptor_protocol_classmethod(self) -> None:
+        from collections.abc import Callable
+
+        from pycroscope.extensions import assert_type
+        from pycroscope.value import get_attribute
+
+        class Box:
+            @classmethod
+            def make(cls) -> int:
+                return 1
+
+        assert_type(get_attribute(Box, "make", receiver=Box()), Callable[[], int])
+        assert_type(
+            get_attribute(Box, "make", on_class=True, receiver=Box), Callable[[], int]
+        )
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_apply_descriptor_protocol_staticmethod(self) -> None:
+        from collections.abc import Callable
+
+        from pycroscope.extensions import assert_type
+        from pycroscope.value import get_attribute
+
+        class Box:
+            @staticmethod
+            def parse(value: str, /) -> int:
+                return len(value)
+
+        assert_type(get_attribute(Box, "parse", receiver=Box()), Callable[[str], int])

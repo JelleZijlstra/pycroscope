@@ -3556,7 +3556,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 continue
             base_tobj = self.checker.make_type_object(base_value.typ)
             base_attr = base_tobj.get_attribute(
-                varname, AttributePolicy(receiver=base_value, visitor=self, node=node)
+                varname,
+                AttributePolicy(
+                    receiver=base_value, visitor=self, node=node, prefer_symbolic=True
+                ),
             )
             if base_attr is None:
                 continue
@@ -13610,6 +13613,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self, node: ast.AST | None, callee_val: Value, method_name: str
     ) -> Value:
         synthetic_lookup_val = callee_val
+        resolved_self_value = callee_val
         if (
             isinstance(callee_val, PredicateValue)
             and isinstance(callee_val.predicate, HasAttr)
@@ -13623,7 +13627,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     node,
                     ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
                 )
-        if isinstance(callee_val, TypedValue):
+        if isinstance(callee_val, TypeVarValue):
+            fallback_value = callee_val.get_fallback_value()
+            fallback_lookup_val = fallback_value.get_type_value(self)
+            if (
+                callee_val.typevar_param.bound is None
+                and not callee_val.typevar_param.constraints
+            ):
+                resolved_self_value = fallback_lookup_val
+        elif isinstance(callee_val, TypedValue):
             fallback_lookup_val = SubclassValue.make(callee_val)
         elif isinstance(callee_val, KnownValueWithTypeVars):
             fallback_lookup_val = callee_val
@@ -13658,7 +13670,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             node,
             ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
             record_reads=False,
-            self_value=callee_val,
+            self_value=resolved_self_value,
         )
         if method_object is UNINITIALIZED_VALUE:
             self.show_error(

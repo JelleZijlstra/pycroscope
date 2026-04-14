@@ -826,11 +826,13 @@ def get_attribute(
     *,
     on_class: bool = False,
     is_special_lookup: bool = False,
+    receiver: object = None,
 ) -> object:
     """Get an attribute of an object.
 
     During static analysis, pycroscope replaces this with a value-level attribute
     getter that preserves generic specialization for synthetic and runtime classes.
+    If receiver is passed, it is used as the value being accessed.
 
     """
     return None
@@ -1710,7 +1712,9 @@ class KnownValue(Value):
             return f"Literal[{self.val!r}]"
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "KnownValue":
-        if not typevars or not callable(self.val):
+        if not typevars or not (
+            callable(self.val) or safe_isinstance(self.val, (classmethod, staticmethod))
+        ):
             return self
         return KnownValueWithTypeVars(self.val, typevars)
 
@@ -1792,6 +1796,8 @@ class UnboundMethodValue(Value):
     """
     typevars: TypeVarMap | None = field(default=None, compare=False)
     """Extra TypeVars applied to this method."""
+    owner: object | None = field(default=None, compare=False)
+    """Owner that originally supplied the method, when known."""
 
     def __post_init__(self) -> None:
         if self.typevars is not None and not isinstance(self.typevars, TypeVarMap):
@@ -1802,14 +1808,20 @@ class UnboundMethodValue(Value):
     def get_method(self) -> Any | None:
         """Return the runtime callable for this ``UnboundMethodValue``, or
         None if it cannot be found."""
-        root = replace_fallback(self.composite.value)
         target: object
-        if isinstance(root, KnownValue):
-            target = root.val
+        if self.owner is not None and not isinstance(self.owner, str):
+            target = self.owner
         else:
-            target = root.get_type()
+            root = replace_fallback(self.composite.value)
+            if isinstance(root, KnownValue):
+                target = root.val
+            else:
+                target = root.get_type()
         try:
-            method = getattr(target, self.attr_name)
+            if self.owner is not None and not isinstance(self.owner, str):
+                method = inspect.getattr_static(target, self.attr_name)
+            else:
+                method = getattr(target, self.attr_name)
             if self.secondary_attr_name is not None:
                 try:
                     method = getattr(method, self.secondary_attr_name)
@@ -1850,7 +1862,18 @@ class UnboundMethodValue(Value):
         if signature is None:
             return None
         if isinstance(signature, pycroscope.signature.BoundMethodSignature):
-            signature = signature.get_signature(ctx=ctx)
+            self_annotation_value = None
+            receiver_value = self.composite.value
+            if (
+                isinstance(self.owner, type)
+                and isinstance(receiver_value, KnownValue)
+                and isinstance(receiver_value.val, type)
+                and isinstance(receiver_value.val, self.owner)
+            ):
+                self_annotation_value = receiver_value
+            signature = signature.get_signature(
+                ctx=ctx, self_annotation_value=self_annotation_value
+            )
         return signature
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "UnboundMethodValue":
@@ -1862,6 +1885,7 @@ class UnboundMethodValue(Value):
             self.composite.substitute_typevars(typevars),
             self.secondary_attr_name,
             typevars=merged_typevars,
+            owner=self.owner,
         )
 
     def __str__(self) -> str:
@@ -2794,7 +2818,7 @@ class SubclassValue(Value):
         return super().can_overlap(other, ctx, mode)
 
     def get_type(self) -> type | None:
-        if isinstance(self.typ, TypedValue):
+        if isinstance(self.typ, TypedValue) and isinstance(self.typ.typ, type):
             return type(self.typ.typ)
         else:
             return None
@@ -3093,7 +3117,7 @@ class TypeVarValue(Value):
         return AnyValue(AnySource.inference)  # TODO: should be object
 
     def get_type_value(self, ctx: CanAssignContext) -> Value:
-        return self.get_fallback_value().get_type_value(ctx)
+        return SubclassValue(self)
 
     def __str__(self) -> str:
         return str(self.typevar_param)
@@ -4671,9 +4695,10 @@ def stringify_object(obj: Any) -> str:
     if isinstance(obj, str):
         return obj
     try:
-        objclass = getattr(obj, "__objclass__", None)
-        if objclass is not None:
-            return f"{stringify_object(objclass)}.{obj.__name__}"
+        if not safe_isinstance(obj, type):
+            objclass = getattr(obj, "__objclass__", None)
+            if objclass is not None:
+                return f"{stringify_object(objclass)}.{obj.__name__}"
         module_name = getattr(obj, "__module__", None)
         qualname = getattr(obj, "__qualname__", None)
         name = getattr(obj, "__name__", None)

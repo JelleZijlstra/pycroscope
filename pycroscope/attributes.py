@@ -52,15 +52,10 @@ from .signature import (
 from .stacked_scopes import Composite
 from .type_object import (
     AttributePolicy,
-    MroValue,
     TypeObject,
     TypeObjectAttribute,
     _class_key_from_value,
-    _get_attribute_value_from_symbol,
     _get_cached_property_return_type,
-    _is_property_marker_value,
-    _specialize_symbol_for_owner,
-    class_keys_match,
     normalize_synthetic_descriptor_attribute,
 )
 from .value import (
@@ -476,69 +471,26 @@ def _super_thisclass_key(value: Value) -> type | str | None:
     return None
 
 
-def _super_mro_values(
-    receiver_value: TypedValue, ctx: CanAssignContext
-) -> Sequence[MroValue]:
-    # TODO: switch to just using the MRO; that currently doesn't work because it gets set too late
-    if isinstance(receiver_value.typ, type):
-        return [TypedValue(base) for base in receiver_value.typ.__mro__]
-    return [
-        entry.get_mro_value() for entry in receiver_value.get_type_object(ctx).get_mro()
-    ]
-
-
-# TODO: in principle this should be doable with TypeObject.get_attribute if we add a flag
-# that says to skip MRO elements up to a certain point.
 def _get_attribute_from_super_value(super_value: SuperValue, ctx: AttrContext) -> Value:
     if super_value.selfobj is None:
         return AnyValue(AnySource.inference)
     receiver_value, is_class_access = _super_receiver_type_value(super_value.selfobj)
-    policy = AttributePolicy(
-        receiver=receiver_value or AnyValue(AnySource.inference),
-        on_class=is_class_access,
-    )
     thisclass_key = _super_thisclass_key(super_value.thisclass)
-    can_assign_ctx = ctx.get_can_assign_context()
     if receiver_value is None or thisclass_key is None:
         return AnyValue(AnySource.inference)
 
-    receiver_tobj = receiver_value.get_type_object(can_assign_ctx)
-    saw_thisclass = False
-    for mro_value in _super_mro_values(receiver_value, can_assign_ctx):
-        if isinstance(mro_value, AnyValue):
-            continue
-        owner_key = _class_key_from_value(mro_value)
-        if owner_key is None:
-            continue
-        if not saw_thisclass:
-            if class_keys_match(owner_key, thisclass_key):
-                saw_thisclass = True
-            continue
-        owner_tobj = mro_value.get_type_object(can_assign_ctx)
-        symbol = owner_tobj.get_declared_symbol(ctx.attr)
-        if symbol is not None:
-            symbol = _specialize_symbol_for_owner(
-                receiver_tobj, owner_tobj, symbol, can_assign_ctx, policy
-            )
-            result = _get_attribute_value_from_symbol(
-                symbol,
-                can_assign_ctx,
-                on_class=is_class_access and not symbol.is_method,
-                receiver_value=receiver_value,
-            )
-            if (
-                is_class_access
-                and symbol.property_info is not None
-                and (
-                    result is UNINITIALIZED_VALUE
-                    or not _is_property_marker_value(result)
-                )
-            ):
-                result = TypedValue(property)
-            result = set_self(result, receiver_value, owner_tobj.typ)
-            ctx.record_usage(super, result)
-            return result
-    return UNINITIALIZED_VALUE
+    receiver_tobj = receiver_value.get_type_object(ctx.get_can_assign_context())
+    policy = AttributePolicy(
+        receiver=receiver_value,
+        on_class=is_class_access,
+        anchor=thisclass_key,
+        # TODO: Maybe shouldn't be necessary, but without this some methods get inferred wrong.
+        prefer_symbolic=True,
+    )
+    attr = receiver_tobj.get_attribute(ctx.attr, policy)
+    if attr is None:
+        return UNINITIALIZED_VALUE
+    return attr.value
 
 
 def _get_attribute_from_type_alias(value: TypeAliasValue, ctx: AttrContext) -> Value:
@@ -734,13 +686,6 @@ def _get_typed_instance_lookup_receiver(ctx: AttrContext) -> Value | None:
     if isinstance(root_value, (TypedValue, GenericValue)):
         return root_value
     return None
-
-
-def _get_instance_lookup_receiver(ctx: AttrContext) -> Value | None:
-    self_value = ctx.get_self_value()
-    if _contains_self_typevar(self_value):
-        return self_value
-    return _get_typed_instance_lookup_receiver(ctx)
 
 
 def _get_attribute_from_synthetic_class(
@@ -1192,29 +1137,29 @@ def _get_attribute_from_typed(
         types.BuiltinFunctionType,
     }:
         return GenericValue(dict, [TypedValue(str), AnyValue(AnySource.explicit)])
-    receiver_value = _get_instance_lookup_receiver(ctx)
-    if receiver_value is not None:
-        can_assign_ctx = ctx.get_can_assign_context()
-        attribute = _get_type_object_attribute(
-            can_assign_ctx.make_type_object(typ),
-            ctx.attr,
-            ctx,
-            on_class=False,
-            receiver_value=receiver_value,
+    can_assign_ctx = ctx.get_can_assign_context()
+    attribute = _get_type_object_attribute(
+        can_assign_ctx.make_type_object(typ),
+        ctx.attr,
+        ctx,
+        on_class=False,
+        receiver_value=ctx.root_composite.value,
+    )
+    # Adding "if attribute is None: return UNINITIALIZED_VALUE" here breaks two tests:
+    # pycroscope/test_attributes.py::TestAttributes::test_attrs
+    # (missing attrs support in type_object.py?)
+    # TestImportFailureHandling::test_explicit_type_alias_uses_runtime_attribute_semantics
+    # (some weirdness about how we represent type aliases?)
+    if attribute is not None:
+        resolved_instance = _maybe_use_resolved_typed_instance_attribute(
+            attribute, resolved_value=attribute.value, typ=typ, ctx=ctx
         )
-        if attribute is not None:
-            resolved_value = _substitute_typevars(
-                typ, generic_args, attribute.value, typ, ctx
-            )
-            resolved_instance = _maybe_use_resolved_typed_instance_attribute(
-                attribute, resolved_value=resolved_value, typ=typ, ctx=ctx
-            )
-            if resolved_instance is not None:
-                return resolved_instance
+        if resolved_instance is not None:
+            return resolved_instance
     synthetic_class = ctx.get_synthetic_class(typ)
     if synthetic_class is not None and _contains_self_typevar(ctx.get_self_value()):
         synthetic_result = _get_direct_attribute_from_synthetic_instance(
-            synthetic_class, ctx.attr, ctx, receiver_value=receiver_value
+            synthetic_class, ctx.attr, ctx, receiver_value=ctx.root_composite.value
         )
         if synthetic_result is not UNINITIALIZED_VALUE:
             synthetic_result = (
@@ -1425,31 +1370,43 @@ def _unwrap_value_from_typed(result: Value, typ: type, ctx: AttrContext) -> Valu
             if ctx.attr == "__new__":
                 # __new__ is implicitly a staticmethod
                 return result
-            return UnboundMethodValue(ctx.attr, ctx.root_composite, typevars=typevars)
+            return UnboundMethodValue(
+                ctx.attr, ctx.root_composite, typevars=typevars, owner=typ
+            )
         if isinstance(descriptor, staticmethod) or ctx.attr == "__new__":
             return result
         else:
-            return UnboundMethodValue(ctx.attr, ctx.root_composite, typevars=typevars)
+            return UnboundMethodValue(
+                ctx.attr, ctx.root_composite, typevars=typevars, owner=typ
+            )
     elif isinstance(cls_val, (types.MethodType, MethodDescriptorType, SlotWrapperType)):
         # built-in method; e.g. scope_lib.tests.SimpleDatabox.get
-        return UnboundMethodValue(ctx.attr, ctx.root_composite, typevars=typevars)
+        return UnboundMethodValue(
+            ctx.attr, ctx.root_composite, typevars=typevars, owner=typ
+        )
     elif _static_hasattr(cls_val, "binder_cls") and _static_hasattr(cls_val, "fn"):
         # qcore/asynq-style decorators expose a binder type on the descriptor but
         # still behave like methods when accessed through instances.
-        return UnboundMethodValue(ctx.attr, ctx.root_composite, typevars=typevars)
+        return UnboundMethodValue(
+            ctx.attr, ctx.root_composite, typevars=typevars, owner=typ
+        )
     elif (
         _static_hasattr(cls_val, "decorator")
         and _static_hasattr(cls_val, "instance")
         and not isinstance(cls_val.instance, type)
     ):
         # non-static method
-        return UnboundMethodValue(ctx.attr, ctx.root_composite, typevars=typevars)
+        return UnboundMethodValue(
+            ctx.attr, ctx.root_composite, typevars=typevars, owner=typ
+        )
     elif is_async_fn(cls_val):
         # static or class method
         return result
     elif _static_hasattr(cls_val, "func_code"):
         # Cython function probably
-        return UnboundMethodValue(ctx.attr, ctx.root_composite, typevars=typevars)
+        return UnboundMethodValue(
+            ctx.attr, ctx.root_composite, typevars=typevars, owner=typ
+        )
     transformed = ClassAttributeTransformer.transform_attribute(cls_val, ctx.options)
     if transformed is not None:
         return transformed
@@ -1602,7 +1559,10 @@ def _get_attribute_from_unbound(
     except AttributeError:
         return UNINITIALIZED_VALUE
     result = UnboundMethodValue(
-        root_value.attr_name, root_value.composite, secondary_attr_name=ctx.attr
+        root_value.attr_name,
+        root_value.composite,
+        secondary_attr_name=ctx.attr,
+        owner=root_value.owner,
     )
     ctx.record_usage(type(method), result)
     return result

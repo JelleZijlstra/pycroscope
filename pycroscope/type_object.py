@@ -5,6 +5,7 @@ An object that represents a type.
 """
 
 import ast
+import builtins
 import collections.abc
 import enum
 import functools
@@ -36,8 +37,6 @@ from .input_sig import AnySig, FullSignature, InputSigValue
 from .options import PyObjectSequenceOption
 from .relations import (
     infer_positional_generic_typevar_map,
-    intersect_values,
-    subtract_values,
     translate_generic_typevar_map,
 )
 from .safe import (
@@ -61,8 +60,8 @@ from .signature import (
     as_concrete_signature,
     mark_ellipsis_style_any_tail_parameters,
 )
+from .stacked_scopes import Composite
 from .value import (
-    NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
     AnnotatedValue,
     AnySource,
@@ -108,10 +107,8 @@ from .value import (
     get_single_typevartuple_param,
     get_tv_map,
     match_typevar_arguments,
-    receiver_to_self_type,
     replace_fallback,
     replace_known_sequence_value,
-    set_self,
     shield_nested_self_typevars,
     stringify_object,
     substitute_typevartuple_binding,
@@ -195,7 +192,8 @@ def class_keys_match(left: type | str, right: type | str) -> bool:
 
 
 @dataclass(frozen=True)
-class ResolvedAttribute:
+class TypeObjectAttribute:
+    name: str
     value: Value
     # Legacy compatibility view for callers that still expect the old
     # declared/raw split from TypeObjectAttribute.
@@ -210,7 +208,9 @@ class ResolvedAttribute:
     is_property: bool
     property_has_setter: bool
     is_metaclass_owner: bool
+    error: CanAssignError | None = None
 
+    # TODO: what is this? probably shouldn't exist
     @property
     def override_value(self) -> Value:
         if self.symbol.is_property:
@@ -225,8 +225,11 @@ class ResolvedAttribute:
             return self.declared_value
         return self.raw_value
 
-
-TypeObjectAttribute = ResolvedAttribute
+    def __str__(self) -> str:
+        text = f"attribute {self.name} of {self.owner.typ} with value {self.value}"
+        if self.error is None:
+            return f"<{text}"
+        return f"<{text} and error {self.error}>"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -235,12 +238,21 @@ class AttributePolicy:
     """True if the attribute is being accessed on the class rather than an instance."""
     is_special_lookup: bool = False
     """True if the attribute lookup should use dunder lookup semantics."""
+    prefer_symbolic: bool = False
+    """If True, return symbolic values (e.g., CallableValue) instead of
+    more precise representations such as UnboundMethodValue.
+    Use this when checking compatibility, e.g. in protocols and
+    override checking.
+    """
     receiver: Value
     """When implementing obj.attr, receiver is the type of obj. This should
     always be an instance type if on_class is False, else a class type."""
     self_value: Value | None = None
     """Value used to interpret typing.Self. Usually the same as receiver, but the
     difference matters for protocols."""
+    anchor: type | str | None = None
+    """Only attributes that appear in the MRO after the anchor are considered.
+    This is used for super()."""
     visitor: "pycroscope.name_check_visitor.NameCheckVisitor | None" = None
     node: ast.AST | None = None
 
@@ -249,11 +261,19 @@ class AttributePolicy:
             return class_type_to_instance_type(self.receiver, ctx)
         return self.receiver
 
-    def get_self_value(self, ctx: CanAssignContext) -> Value:
+    def get_receiver_class(self, ctx: CanAssignContext) -> Value:
+        if self.on_class:
+            return self.receiver
+        return self.receiver.get_type_value(ctx)
+
+    def get_self_value(self, ctx: CanAssignContext, *, is_metaclass: bool) -> Value:
         """Value to be used for specializing typing.Self."""
         if self.self_value is not None:
             return self.self_value
-        return self.get_receiver_instance(ctx)
+        if is_metaclass:
+            return self.get_receiver_class(ctx)
+        else:
+            return self.get_receiver_instance(ctx)
 
 
 def class_type_to_instance_type(value: Value, ctx: CanAssignContext) -> Value:
@@ -311,6 +331,7 @@ class MergedAttribute:
     candidates have been selected and specialized independently.
     """
 
+    name: str
     owner: "TypeObject"
     runtime_symbol: ClassSymbol | None
     typeshed_symbol: ClassSymbol | None
@@ -322,7 +343,6 @@ class MergedAttribute:
     is_staticmethod: bool
     is_classvar: bool
     is_initvar: bool
-    returns_self_on_class_access: bool
     is_metaclass_owner: bool
 
 
@@ -1374,20 +1394,14 @@ class TypeObject:
         assert self._declared_symbols is not None
         return self._declared_symbols
 
-    def get_attribute(
+    def _special_case_attribute(
         self, name: str, policy: AttributePolicy
     ) -> TypeObjectAttribute | None:
-        """Look up an attribute in three phases.
-
-        1. Select runtime/typeshed symbols from the relevant MROs.
-        2. Specialize the selected symbols for the receiver and owner.
-        3. Apply descriptor semantics to the merged result.
-        """
-        ctx = self._checker
         # TODO: Revisit whether __class__ and __dict__ should remain bespoke
         # get_attribute() special cases instead of falling out of general lookup.
         if not policy.on_class and name == "__class__":
             return TypeObjectAttribute(
+                name=name,
                 value=AnyValue(AnySource.inference),
                 declared_value=AnyValue(AnySource.inference),
                 raw_value=AnyValue(AnySource.inference),
@@ -1401,6 +1415,7 @@ class TypeObject:
             )
         if not policy.on_class and name == "__dict__":
             return TypeObjectAttribute(
+                name=name,
                 value=TypedValue(dict),
                 declared_value=TypedValue(dict),
                 raw_value=TypedValue(dict),
@@ -1412,29 +1427,68 @@ class TypeObject:
                 property_has_setter=False,
                 is_metaclass_owner=False,
             )
-        # Phase 1: select runtime/typeshed candidates from the declared MRO and,
-        # for class access, the metaclass MRO.
-        declared_selected = self._select_declared_attribute(name)
-        metaclass_selected = (
-            self._select_metaclass_attribute(name) if policy.on_class else None
+        return None
+
+    def get_attribute(
+        self, name: str, policy: AttributePolicy
+    ) -> TypeObjectAttribute | None:
+        """Look up an attribute.
+
+        This requires a number of operations, some of which can
+        be executed in multiple orders:
+        - Finding a symbol on the MRO
+        - Finding a symbol on the metaclass MRO (for class attributes)
+        - Figuring out whether to use the metaclass or class symbol
+        - Specializing the type variables in the symbol
+        - Merging the runtime and stub symbols
+        - Applying descriptor logic to the merged symbol
+        """
+        ctx = self._checker
+
+        attr = self._special_case_attribute(name, policy)
+        if attr is not None:
+            return attr
+
+        declared_selected = self._select_declared_attribute(name, anchor=policy.anchor)
+        if policy.on_class:
+            # Look for metaclass attributes
+            metaclass_selected = self._select_metaclass_attribute(name)
+            if metaclass_selected[0] is not None:
+                if (
+                    policy.is_special_lookup
+                    or _is_selected_attribute_data_descriptor(
+                        metaclass_selected[0], ctx
+                    )
+                    or declared_selected[0] is None
+                ):
+                    return metaclass_selected[0].owner._get_attribute_from_selected(
+                        metaclass_selected, name, policy, is_metaclass=True
+                    )
+
+        return self._get_attribute_from_selected(
+            declared_selected, name, policy, is_metaclass=False
         )
 
-        # Phase 2: specialize the selected candidates for the receiver and the
-        # owner they were found on, then choose the lookup winner according to
-        # Python's class-vs-metaclass precedence rules.
-        merged_declared = self._specialize_selected_attribute_pair(
-            ctx, policy=policy, selected=declared_selected
+    def _get_attribute_from_selected(
+        self,
+        selected: tuple[SelectedAttribute | None, SelectedAttribute | None],
+        name: str,
+        policy: AttributePolicy,
+        *,
+        is_metaclass: bool,
+    ) -> TypeObjectAttribute | None:
+        merged = self._specialize_selected_attribute_pair(
+            name,
+            self._checker,
+            policy=policy,
+            selected=selected,
+            is_metaclass=is_metaclass,
         )
-        merged_metaclass = self._specialize_selected_attribute_pair(
-            ctx, policy=policy, selected=metaclass_selected
-        )
-        merged_attribute = self._choose_merged_attribute(
-            merged_declared, merged_metaclass, ctx, policy=policy
-        )
-        if merged_attribute is None:
+        if merged is None:
             if isinstance(self.typ, str) and self.has_any_base():
                 unknown_value = AnyValue(AnySource.from_another)
                 return TypeObjectAttribute(
+                    name=name,
                     value=unknown_value,
                     declared_value=unknown_value,
                     raw_value=unknown_value,
@@ -1447,45 +1501,22 @@ class TypeObject:
                     is_metaclass_owner=False,
                 )
             return None
-        if merged_attribute.is_initvar and not policy.on_class:
-            return None
-        # Phase 3: apply descriptor semantics to the merged attribute that
-        # survived lookup precedence.
-        return _resolve_merged_attribute_access(
-            self, merged_attribute, ctx, policy=policy
-        )
 
-    def _choose_merged_attribute(
-        self,
-        declared_attribute: MergedAttribute | None,
-        metaclass_attribute: MergedAttribute | None,
-        ctx: CanAssignContext,
-        *,
-        policy: AttributePolicy,
-    ) -> MergedAttribute | None:
-        """Apply Python lookup precedence after generic specialization."""
-        if (
-            policy.on_class
-            and metaclass_attribute is not None
-            and (
-                policy.is_special_lookup
-                or _is_data_descriptor(metaclass_attribute, ctx)
-            )
-        ):
-            return metaclass_attribute
-        if declared_attribute is not None:
-            return declared_attribute
-        return metaclass_attribute if policy.on_class else None
+        # TODO: is this correct for metaclasses?
+        if merged.is_initvar and not policy.on_class:
+            return None
+
+        return _apply_descriptor_protocol(merged, self._checker, policy)
 
     def _select_declared_attribute(
-        self, name: str
+        self, name: str, *, anchor: type | str | None = None
     ) -> tuple[SelectedAttribute | None, SelectedAttribute | None]:
         """Select runtime/typeshed class-MRO symbols before specialization."""
         runtime_attr = self.get_selected_attribute(
-            name, is_metaclass_owner=False, use_typeshed=False
+            name, is_metaclass_owner=False, use_typeshed=False, anchor=anchor
         )
         typeshed_attr = self.get_selected_attribute(
-            name, is_metaclass_owner=False, use_typeshed=True
+            name, is_metaclass_owner=False, use_typeshed=True, anchor=anchor
         )
         return runtime_attr, typeshed_attr
 
@@ -1511,10 +1542,12 @@ class TypeObject:
 
     def _specialize_selected_attribute_pair(
         self,
+        name: str,
         ctx: CanAssignContext,
         *,
         policy: AttributePolicy,
         selected: tuple[SelectedAttribute | None, SelectedAttribute | None] | None,
+        is_metaclass: bool = False,
     ) -> MergedAttribute | None:
         """Convert selected runtime/typeshed symbols into one merged view."""
         if selected is None:
@@ -1522,16 +1555,20 @@ class TypeObject:
         runtime_selected, typeshed_selected = selected
 
         runtime_attribute = (
-            _specialize_selected_attribute(self, runtime_selected, ctx, policy=policy)
+            _specialize_selected_attribute(
+                self, runtime_selected, ctx, policy=policy, is_metaclass=is_metaclass
+            )
             if runtime_selected is not None
             else None
         )
         typeshed_attribute = (
-            _specialize_selected_attribute(self, typeshed_selected, ctx, policy=policy)
+            _specialize_selected_attribute(
+                self, typeshed_selected, ctx, policy=policy, is_metaclass=is_metaclass
+            )
             if typeshed_selected is not None
             else None
         )
-        return _make_merged_attribute(runtime_attribute, typeshed_attribute)
+        return _make_merged_attribute(name, runtime_attribute, typeshed_attribute)
 
     def get_declared_symbol_from_mro(
         self, name: str, ctx: CanAssignContext
@@ -1562,10 +1599,20 @@ class TypeObject:
             ), "At least one of runtime_selected or typeshed_selected must be non-None"
 
     def get_selected_attribute(
-        self, name: str, *, is_metaclass_owner: bool, use_typeshed: bool
+        self,
+        name: str,
+        *,
+        is_metaclass_owner: bool,
+        use_typeshed: bool,
+        anchor: type | str | None = None,
     ) -> SelectedAttribute | None:
+        seen_anchor = anchor is None
         for i, entry in enumerate(self.get_mro()):
             if entry.tobj is None:
+                continue
+            if not seen_anchor:
+                if entry.tobj.typ == anchor:
+                    seen_anchor = True
                 continue
             if use_typeshed:
                 symbol = self._checker.ts_finder.get_direct_symbol(entry.tobj.typ, name)
@@ -1798,7 +1845,19 @@ class TypeObject:
                 actual = AnyValue(AnySource.inference)
             else:
                 expected_attr = self.get_attribute(
-                    member, AttributePolicy(receiver=self_val, self_value=other_val)
+                    member,
+                    AttributePolicy(
+                        receiver=self_val,
+                        self_value=other_val,
+                        prefer_symbolic=True,
+                        visitor=(
+                            ctx
+                            if isinstance(
+                                ctx, pycroscope.name_check_visitor.NameCheckVisitor
+                            )
+                            else None
+                        ),
+                    ),
                 )
                 if expected_attr is None:
                     # In static fallback mode, synthetic protocol members may not have
@@ -1810,13 +1869,22 @@ class TypeObject:
                 if protocol_self_typevar_map:
                     expected = expected.substitute_typevars(protocol_self_typevar_map)
                 if _protocol_member_is_method(self, member, ctx):
-                    expected = _bind_protocol_call_expected(
-                        expected,
-                        other_val,
-                        ctx,
-                        member=member,
-                        protocol_self_value=self_val,
-                    )
+                    if expected_attr is None or expected_attr.symbol.is_classmethod:
+                        expected_bind_receiver = (
+                            _protocol_member_bind_receiver(
+                                expected_attr.symbol, other_val, ctx
+                            )
+                            if expected_attr is not None
+                            else other_val
+                        )
+                        if expected_bind_receiver is not None:
+                            expected = _bind_protocol_call_expected(
+                                expected,
+                                expected_bind_receiver,
+                                ctx,
+                                member=member,
+                                protocol_self_value=expected_bind_receiver,
+                            )
                 expected = _substitute_receiver_self_typevar(
                     expected, other_val, other_type_obj.typ
                 )
@@ -2300,10 +2368,21 @@ def _resolve_member_access(
     receiver_value: Value,
 ) -> TypeObjectAttribute:
     access = tobj.get_attribute(
-        member, AttributePolicy(receiver=receiver_value, on_class=class_object_access)
+        member,
+        AttributePolicy(
+            receiver=receiver_value,
+            on_class=class_object_access,
+            prefer_symbolic=True,
+            visitor=(
+                ctx
+                if isinstance(ctx, pycroscope.name_check_visitor.NameCheckVisitor)
+                else None
+            ),
+        ),
     )
     if access is None:
         return TypeObjectAttribute(
+            name=member,
             value=resolved_value,
             declared_value=resolved_value,
             raw_value=resolved_value,
@@ -2359,6 +2438,7 @@ def _resolve_member_access(
     ):
         value = TypedValue(property)
     return TypeObjectAttribute(
+        name=member,
         value=value,
         declared_value=access.declared_value,
         raw_value=access.raw_value,
@@ -2649,25 +2729,13 @@ def _typevar_map_from_type_value(
     return TypeVarMap()
 
 
-def _specialize_symbol_for_owner(
-    receiver_tobj: TypeObject,
-    owner_tobj: TypeObject,
-    symbol: ClassSymbol,
-    ctx: CanAssignContext,
-    policy: AttributePolicy,
-) -> ClassSymbol:
-    substitutions = _get_symbol_owner_substitutions_from_type_objects(
-        receiver_tobj, owner_tobj, ctx=ctx, policy=policy
-    )
-    return symbol.substitute_typevars(substitutions)
-
-
 def _specialize_selected_attribute(
     receiver_tobj: TypeObject,
     selected: SelectedAttribute,
     ctx: CanAssignContext,
     *,
     policy: AttributePolicy,
+    is_metaclass: bool = False,
 ) -> SpecializedAttribute:
     symbol = selected.symbol
     # There are three groups of substitutions:
@@ -2675,7 +2743,11 @@ def _specialize_selected_attribute(
     # 1. The value of Self
     symbol = symbol.substitute_typevars(
         TypeVarMap(
-            typevars={get_self_param(selected.owner.typ): policy.get_self_value(ctx)}
+            typevars={
+                get_self_param(selected.owner.typ): policy.get_self_value(
+                    ctx, is_metaclass=is_metaclass
+                )
+            }
         )
     )
 
@@ -2792,86 +2864,6 @@ def _shield_nested_self_in_signature(
     )
 
 
-def _value_contains_self_typevar(value: Value) -> bool:
-    return any(
-        isinstance(subval, TypeVarValue) and subval.typevar_param.is_self
-        for subval in value.walk_values()
-    )
-
-
-def _specialize_self_returning_classmethod(
-    raw_attr: Value,
-    normalized_attr: Value,
-    *,
-    policy: AttributePolicy,
-    ctx: CanAssignContext,
-    owner: type | str,
-) -> Value:
-    if not isinstance(normalized_attr, CallableValue):
-        return normalized_attr
-    substitutions = TypeVarMap()
-    raw_attr = replace_fallback(raw_attr)
-    self_value = policy.get_self_value(ctx)
-    if (
-        isinstance(raw_attr, GenericValue)
-        and raw_attr.typ is classmethod
-        and raw_attr.args
-    ):
-        inferred = get_tv_map(raw_attr.args[0], SubclassValue.make(self_value), ctx)
-        if not isinstance(inferred, CanAssignError):
-            substitutions = inferred
-    substitutions = substitutions.with_typevar(get_self_param(owner), self_value)
-    signature = normalized_attr.signature.substitute_typevars(substitutions)
-    return CallableValue(
-        _rewrite_self_returning_classmethod_signature(signature, self_value)
-    )
-
-
-def _rewrite_self_returning_classmethod_signature(
-    signature: Signature | OverloadedSignature, receiver_for_self: Value
-) -> Signature | OverloadedSignature:
-    receiver_key = _class_key_from_value(receiver_for_self)
-
-    def rewrite_return(return_value: Value) -> Value:
-        root = replace_fallback(return_value)
-        if receiver_key is None:
-            return return_value
-        if (
-            isinstance(root, KnownValueWithTypeVars)
-            and isinstance(root.val, type)
-            and class_keys_match(root.val, receiver_key)
-        ):
-            return receiver_for_self
-        if (
-            isinstance(root, SubclassValue)
-            and isinstance(root.typ, TypeVarValue)
-            and root.typ.typevar_param.is_self
-        ):
-            return SubclassValue.make(receiver_for_self)
-        if (
-            isinstance(root, SubclassValue)
-            and (subclass_key := _class_key_from_value(root.typ)) is not None
-            and class_keys_match(subclass_key, receiver_key)
-        ):
-            return SubclassValue.make(receiver_for_self)
-        return return_value
-
-    if isinstance(signature, Signature):
-        return replace(signature, return_value=rewrite_return(signature.return_value))
-    return OverloadedSignature(
-        tuple(
-            replace(sig, return_value=rewrite_return(sig.return_value))
-            for sig in signature.signatures
-        )
-    )
-
-
-def _classmethod_receiver_value_from_type_value(
-    receiver_value: TypedValue | TypeVarValue | GenericValue,
-) -> SubclassValue:
-    return SubclassValue(receiver_value)
-
-
 def _is_informative_runtime_attribute(attribute: SpecializedAttribute) -> bool:
     if isinstance(attribute.selected.owner.typ, str):
         # for synthetic classes, assume all symbols were explicitly created and are useful
@@ -2893,6 +2885,7 @@ def _is_informative_symbol(symbol: ClassSymbol) -> bool:
 
 
 def _make_merged_attribute(
+    name: str,
     runtime_attribute: SpecializedAttribute | None,
     typeshed_attribute: SpecializedAttribute | None,
 ) -> MergedAttribute | None:
@@ -2954,16 +2947,6 @@ def _make_merged_attribute(
     is_initvar = (
         runtime_symbol.is_initvar if runtime_symbol is not None else False
     ) or (typeshed_symbol.is_initvar if typeshed_symbol is not None else False)
-    returns_self_on_class_access = (
-        runtime_symbol.returns_self_on_class_access
-        if runtime_symbol is not None and runtime_symbol.returns_self_on_class_access
-        else (
-            typeshed_symbol.returns_self_on_class_access
-            if (runtime_symbol is None or runtime_symbol.is_method)
-            and typeshed_symbol is not None
-            else False
-        )
-    )
     annotation = _merge_symbol_type_information(
         # Prefer the typeshed annotation
         typeshed_attribute.annotation if typeshed_attribute is not None else None,
@@ -2975,6 +2958,7 @@ def _make_merged_attribute(
         typeshed_attribute.initializer if typeshed_attribute is not None else None,
     )
     return MergedAttribute(
+        name=name,
         owner=owner,
         runtime_symbol=runtime_symbol,
         typeshed_symbol=typeshed_symbol,
@@ -2986,7 +2970,6 @@ def _make_merged_attribute(
         is_staticmethod=is_staticmethod,
         is_classvar=is_classvar,
         is_initvar=is_initvar,
-        returns_self_on_class_access=returns_self_on_class_access,
         is_metaclass_owner=is_metaclass_owner,
     )
 
@@ -3024,8 +3007,10 @@ def _make_resolved_attribute(
     value: Value,
     is_property: bool,
     property_has_setter: bool,
-) -> ResolvedAttribute:
-    return ResolvedAttribute(
+    error: CanAssignError | None = None,
+) -> TypeObjectAttribute:
+    return TypeObjectAttribute(
+        name=merged_attribute.name,
         value=value,
         declared_value=_merged_attribute_effective_value(merged_attribute),
         raw_value=_merged_attribute_lookup_value(merged_attribute),
@@ -3036,46 +3021,324 @@ def _make_resolved_attribute(
         is_property=is_property,
         property_has_setter=property_has_setter,
         is_metaclass_owner=merged_attribute.is_metaclass_owner,
+        error=error,
     )
 
 
-def _resolve_merged_attribute_access(
-    receiver_tobj: TypeObject,
+def _make_error_attribute(
+    merged_attribute: MergedAttribute, error: CanAssignError
+) -> TypeObjectAttribute:
+    return _make_resolved_attribute(
+        merged_attribute,
+        value=AnyValue(AnySource.error),
+        is_property=False,
+        property_has_setter=False,
+        error=error,
+    )
+
+
+def _apply_descriptor_protocol_to_property(
     merged_attribute: MergedAttribute,
     ctx: CanAssignContext,
-    *,
     policy: AttributePolicy,
-) -> ResolvedAttribute:
-    """Resolve a merged member to the final value seen by this access."""
-    resolved_descriptor = _resolve_descriptor_access(
-        receiver_tobj, merged_attribute, ctx, policy=policy
-    )
-    if resolved_descriptor is None:
-        resolved_descriptor = _make_resolved_attribute(
+    property_info: PropertyInfo,
+    is_instance_access: bool,
+) -> TypeObjectAttribute:
+    if not is_instance_access:
+        return _make_resolved_attribute(
             merged_attribute,
-            value=_get_nondescriptor_value(
-                merged_attribute,
-                on_class=policy.on_class,
-                receiver_value=policy.receiver,
-                ctx=ctx,
+            value=merged_attribute.initializer or TypedValue(property),
+            is_property=False,
+            property_has_setter=property_info.fset is not None,
+        )
+    if property_info.fget is None or property_info.fget.initializer is None:
+        return _make_error_attribute(
+            merged_attribute,
+            CanAssignError(
+                f"Property '{merged_attribute.name}' on {merged_attribute.owner} is not readable"
             ),
+        )
+    receiver_arg = policy.get_self_value(
+        ctx, is_metaclass=merged_attribute.is_metaclass_owner
+    )
+    fget = property_info.fget.initializer
+    value = _make_call(fget, (receiver_arg,), policy=policy, ctx=ctx)
+    return _make_resolved_attribute(
+        merged_attribute,
+        value=value,
+        is_property=True,
+        property_has_setter=property_info.fset is not None,
+    )
+
+
+def _make_call(
+    callee: Value, args: Sequence[Value], policy: AttributePolicy, ctx: CanAssignContext
+) -> Value:
+    if policy.visitor is None:
+        # Note this path means errors don't get shown!
+        return ctx.get_call_result(callee, args)
+    return policy.visitor.get_call_result(callee, args, node=policy.node)
+
+
+def _apply_descriptor_protocol_to_staticmethod(
+    merged_attribute: MergedAttribute,
+) -> TypeObjectAttribute:
+    match merged_attribute.initializer:
+        case CallableValue():
+            value = merged_attribute.initializer
+        case KnownValueWithTypeVars(val=val) if _is_qcore_method_wrapper(val):
+            value = merged_attribute.initializer
+        case KnownValue(val=val) if _is_qcore_method_wrapper(val):
+            value = merged_attribute.initializer
+        case KnownValueWithTypeVars(
+            val=builtins.staticmethod() as val, typevars=typevars
+        ):
+            value = KnownValueWithTypeVars(val=val.__func__, typevars=typevars)
+        case KnownValue(val=builtins.staticmethod() as val):
+            value = KnownValue(val.__func__)
+        case GenericValue(
+            typ=builtins.staticmethod,
+            args=[InputSigValue(input_sig=FullSignature() as sig), return_value],
+        ):
+            value = CallableValue(replace(sig.sig, return_value=return_value))
+        case _:
+            return _make_error_attribute(
+                merged_attribute,
+                CanAssignError(
+                    f"Unrecognized staticmethod object {merged_attribute.initializer}"
+                ),
+            )
+    return _make_resolved_attribute(
+        merged_attribute, value=value, is_property=False, property_has_setter=False
+    )
+
+
+def _apply_descriptor_protocol_to_classmethod(
+    merged_attribute: MergedAttribute, ctx: CanAssignContext, policy: AttributePolicy
+) -> TypeObjectAttribute:
+    match merged_attribute.initializer:
+        case CallableValue():
+            value = merged_attribute.initializer
+        case KnownValue(val=val) if _is_qcore_method_wrapper(val) or safe_isinstance(
+            val, types.ClassMethodDescriptorType
+        ):
+            value = merged_attribute.initializer
+        case KnownValueWithTypeVars(
+            val=builtins.classmethod() as val, typevars=typevars
+        ):
+            value = KnownValueWithTypeVars(val=val.__func__, typevars=typevars)
+        case KnownValueWithTypeVars(val=types.MethodType() as val, typevars=typevars):
+            value = KnownValueWithTypeVars(val=val.__func__, typevars=typevars)
+        case KnownValue(val=builtins.classmethod() as val):
+            value = KnownValue(val.__func__)
+        case GenericValue(
+            typ=builtins.classmethod,
+            args=[_, InputSigValue(input_sig=FullSignature() as sig), return_value],
+        ):
+            value = CallableValue(replace(sig.sig, return_value=return_value))
+            # This is already bound, don't bind again
+            return _make_resolved_attribute(
+                merged_attribute,
+                value=value,
+                is_property=False,
+                property_has_setter=False,
+            )
+        case _:
+            return _make_error_attribute(
+                merged_attribute,
+                CanAssignError(
+                    f"Unrecognized classmethod object {merged_attribute.initializer}"
+                ),
+            )
+
+    instance_receiver = policy.get_receiver_instance(ctx)
+    if merged_attribute.is_metaclass_owner:
+        receiver = instance_receiver
+    else:
+        receiver = policy.get_receiver_class(ctx)
+
+    bound_value = _bind_attribute_signature(
+        value, receiver_value=instance_receiver, self_annotation_value=receiver, ctx=ctx
+    )
+    return _make_resolved_attribute(
+        merged_attribute,
+        value=bound_value,
+        is_property=False,
+        property_has_setter=False,
+    )
+
+
+def _apply_descriptor_protocol_to_method(
+    merged_attribute: MergedAttribute,
+    ctx: CanAssignContext,
+    policy: AttributePolicy,
+    *,
+    is_instance_access: bool,
+) -> TypeObjectAttribute:
+    initializer = merged_attribute.initializer
+    if initializer is None:
+        return _make_error_attribute(
+            merged_attribute,
+            CanAssignError(f"Method '{merged_attribute.name}' has no initializer"),
+        )
+    if not is_instance_access:
+        return _make_resolved_attribute(
+            merged_attribute,
+            value=initializer,
             is_property=False,
             property_has_setter=False,
         )
-    return resolved_descriptor
+
+    # We have to produce an UnboundMethodValue for some downstream reasons
+    # (e.g., use of secondary_attr_name), but UnboundMethodValue doesn't work
+    # if there's no runtime method.
+    receiver_class = policy.get_receiver_class(ctx)
+    if (
+        not policy.prefer_symbolic
+        and _is_method_like(initializer)
+        and receiver_class.get_type() is not None
+    ):
+        bound_value = UnboundMethodValue(
+            attr_name=merged_attribute.name,
+            # TODO: do we need to preserve a Composite from the caller?
+            composite=Composite(receiver_class),
+            typevars=(
+                initializer.typevars
+                if isinstance(initializer, KnownValueWithTypeVars)
+                else None
+            ),
+            owner=(
+                merged_attribute.owner.typ
+                if isinstance(merged_attribute.owner.typ, type)
+                else None
+            ),
+        )
+    else:
+        # We bind the initializer to the receiver
+        receiver = policy.get_receiver_instance(ctx)
+        bound_value = _bind_attribute_signature(
+            initializer, receiver_value=receiver, ctx=ctx
+        )
+    return _make_resolved_attribute(
+        merged_attribute,
+        value=bound_value,
+        is_property=False,
+        property_has_setter=False,
+    )
 
 
-def _resolve_descriptor_access(
-    receiver_tobj: TypeObject,
+def _static_hasattr(value: object, attr: str) -> bool:
+    """Returns whether this value has the given attribute, ignoring __getattr__ overrides."""
+    try:
+        object.__getattribute__(value, attr)
+    except AttributeError:
+        return False
+    else:
+        return True
+
+
+SlotWrapperType = type(type.__init__)
+
+
+def _is_qcore_method_wrapper(value: object) -> bool:
+    return _static_hasattr(value, "binder_cls") and _static_hasattr(value, "fn")
+
+
+def _is_classmethod_like(value: Value) -> bool:
+    value = replace_fallback(value)
+    if not isinstance(value, KnownValue):
+        return False
+    return safe_isinstance(value.val, types.ClassMethodDescriptorType)
+
+
+def _is_method_like(value: Value) -> bool:
+    value = replace_fallback(value)
+    if not isinstance(value, KnownValue):
+        return False
+    if isinstance(
+        value.val,
+        (
+            types.FunctionType,
+            types.MethodType,
+            types.MethodDescriptorType,
+            SlotWrapperType,
+        ),
+    ):
+        return True
+
+    # This is mostly weirdness for dealing with asynq/qcore
+    elif _is_qcore_method_wrapper(value.val):
+        # qcore/asynq-style decorators expose a binder type on the descriptor but
+        # still behave like methods when accessed through instances.
+        return True
+    elif (
+        _static_hasattr(value.val, "decorator")
+        and _static_hasattr(value.val, "instance")
+        and not isinstance(value.val.instance, type)
+    ):
+        # non-static method
+        return True
+    elif _static_hasattr(value.val, "func_code"):
+        # Cython function probably
+        return True
+    return False
+
+
+def _apply_descriptor_protocol_to_descriptor(
     merged_attribute: MergedAttribute,
     ctx: CanAssignContext,
-    *,
     policy: AttributePolicy,
-) -> ResolvedAttribute | None:
-    """Apply descriptor behavior, including any receiver binding, to a member."""
-    receiver_value = policy.receiver
-    effective_value = _merged_attribute_effective_value(merged_attribute)
-    lookup_value = _merged_attribute_lookup_value(merged_attribute)
+    *,
+    is_instance_access: bool,
+) -> TypeObjectAttribute:
+    if merged_attribute.initializer is None:
+        return _make_error_attribute(
+            merged_attribute,
+            CanAssignError(f"Descriptor '{merged_attribute.name}' has no initializer"),
+        )
+    sig = _descriptor_method_signature_any(merged_attribute.initializer, "__get__", ctx)
+    if sig is None:
+        return _make_error_attribute(
+            merged_attribute,
+            CanAssignError(
+                f"Descriptor '{merged_attribute.name}' does not have a valid __get__ method"
+            ),
+        )
+
+    owner = policy.get_receiver_class(ctx)
+
+    if is_instance_access:
+        receiver = policy.get_receiver_instance(ctx)
+        args = [receiver, owner]
+    else:
+        args = [KnownValue(None), owner]
+
+    value = _make_call(CallableValue(sig), args, policy=policy, ctx=ctx)
+
+    if (
+        is_instance_access
+        and merged_attribute.annotation is not None
+        and not _is_descriptor(merged_attribute.annotation, ctx)
+    ):
+        # If there's an annotation, believe it; it may have a more precise
+        # type than the __get__ method.
+        # (We still call __get__ first so we get errors from it.)
+        return _make_resolved_attribute(
+            merged_attribute,
+            value=merged_attribute.annotation,
+            is_property=False,
+            property_has_setter=False,
+        )
+
+    return _make_resolved_attribute(
+        merged_attribute, value=value, is_property=False, property_has_setter=False
+    )
+
+
+def _apply_descriptor_protocol(
+    merged_attribute: MergedAttribute, ctx: CanAssignContext, policy: AttributePolicy
+) -> TypeObjectAttribute:
+    # Class attribute transformer
     transformed_value = _transform_known_class_attribute(
         merged_attribute.initializer, ctx
     )
@@ -3086,353 +3349,97 @@ def _resolve_descriptor_access(
             is_property=False,
             property_has_setter=False,
         )
-    descriptor_like_instance_access = (
-        not policy.on_class or merged_attribute.is_metaclass_owner
-    )
+
+    is_instance_access = not policy.on_class or merged_attribute.is_metaclass_owner
+
     if merged_attribute.property_info is not None:
-        property_has_setter = merged_attribute.property_info.fset is not None
-        if descriptor_like_instance_access:
-            if receiver_value is None:
-                receiver_value = TypedValue(receiver_tobj.typ)
-            receiver_arg = policy.get_self_value(ctx)
-            typed_receiver_value = _receiver_type_value(receiver_value, ctx)
-            if (
-                policy.on_class
-                and merged_attribute.is_metaclass_owner
-                and typed_receiver_value is not None
-            ):
-                receiver_arg = _classmethod_receiver_value_from_type_value(
-                    typed_receiver_value
-                )
-            if merged_attribute.property_info.fget is None:
-                return None
-            fget = merged_attribute.property_info.fget.initializer
-            assert fget is not None
-            # TODO this should be unnecessary if we set Self correctly when
-            # retrieving the signature
-            fget = fget.substitute_typevars(
-                TypeVarMap(typevars={get_self_param(receiver_tobj.typ): receiver_arg})
-            )
-            if policy.visitor is None:
-                # Note this path means errors don't get shown!
-                value = ctx.get_call_result(fget, (receiver_arg,))
-            else:
-                value = policy.visitor.get_call_result(
-                    fget, (receiver_arg,), node=policy.node
-                )
-
-            return _make_resolved_attribute(
-                merged_attribute,
-                value=value,
-                is_property=True,
-                property_has_setter=property_has_setter,
-            )
-        return _make_resolved_attribute(
+        return _apply_descriptor_protocol_to_property(
             merged_attribute,
-            value=TypedValue(property),
-            is_property=False,
-            property_has_setter=property_has_setter,
+            ctx,
+            policy,
+            property_info=merged_attribute.property_info,
+            is_instance_access=is_instance_access,
         )
 
-    lookup_descriptor_value = normalize_synthetic_descriptor_attribute(
-        lookup_value,
-        owner=merged_attribute.owner.typ,
-        is_self_returning_classmethod=merged_attribute.returns_self_on_class_access,
-        unknown_descriptor_means_any=False,
-    )
-    typed_descriptor_value = _get_typed_descriptor_value(
-        merged_attribute, lookup_descriptor_value, ctx
-    )
-    if merged_attribute.is_classmethod:
-        typed_descriptor_value = _specialize_self_returning_classmethod(
-            lookup_value,
-            typed_descriptor_value,
-            policy=policy,
-            ctx=ctx,
-            owner=merged_attribute.owner.typ,
-        )
-        typed_receiver_value = _receiver_type_value(receiver_value, ctx)
-        if typed_receiver_value is not None and not _is_prebound_synthetic_classmethod(
-            lookup_value
-        ):
-            typed_descriptor_value = _bind_attribute_signature(
-                typed_descriptor_value,
-                receiver_value=typed_receiver_value,
-                self_annotation_value=_classmethod_receiver_value_from_type_value(
-                    typed_receiver_value
-                ),
-                ctx=ctx,
-            )
-            if not policy.on_class:
-                typed_descriptor_value = set_self(
-                    typed_descriptor_value, typed_receiver_value
-                )
-            if merged_attribute.returns_self_on_class_access and isinstance(
-                typed_descriptor_value, CallableValue
-            ):
-                typed_descriptor_value = CallableValue(
-                    _rewrite_self_returning_classmethod_signature(
-                        typed_descriptor_value.signature, typed_receiver_value
-                    )
-                )
-        if receiver_value is not None and _value_contains_self_typevar(
-            typed_descriptor_value
-        ):
-            typed_descriptor_value = set_self(typed_descriptor_value, receiver_value)
-        return _make_resolved_attribute(
-            merged_attribute,
-            value=typed_descriptor_value,
-            is_property=False,
-            property_has_setter=False,
-        )
     if merged_attribute.is_staticmethod:
+        return _apply_descriptor_protocol_to_staticmethod(merged_attribute)
+
+    if merged_attribute.is_classmethod or (
+        merged_attribute.initializer is not None
+        and _is_classmethod_like(merged_attribute.initializer)
+        and merged_attribute.annotation is None
+    ):
+        return _apply_descriptor_protocol_to_classmethod(merged_attribute, ctx, policy)
+
+    if merged_attribute.is_method or (
+        merged_attribute.initializer is not None
+        and _is_method_like(merged_attribute.initializer)
+        and merged_attribute.annotation is None
+    ):
+        return _apply_descriptor_protocol_to_method(
+            merged_attribute, ctx, policy, is_instance_access=is_instance_access
+        )
+
+    if merged_attribute.initializer is not None and _is_descriptor(
+        merged_attribute.initializer, ctx
+    ):
+        return _apply_descriptor_protocol_to_descriptor(
+            merged_attribute, ctx, policy, is_instance_access=is_instance_access
+        )
+
+    if merged_attribute.annotation is not None and (
+        is_instance_access
+        or merged_attribute.is_classvar
+        or merged_attribute.initializer is not None
+    ):
         return _make_resolved_attribute(
             merged_attribute,
-            value=typed_descriptor_value,
+            value=merged_attribute.annotation,
             is_property=False,
             property_has_setter=False,
         )
-    if (
-        merged_attribute.is_method
-        and not merged_attribute.is_staticmethod
-        and _is_callable_member_value(typed_descriptor_value, ctx)
-    ):
-        if descriptor_like_instance_access or (
-            isinstance(merged_attribute.initializer, KnownValue)
-            and safe_isinstance(
-                merged_attribute.initializer.val, types.ClassMethodDescriptorType
-            )
-        ):
-            typed_descriptor_value = _bind_attribute_signature(
-                typed_descriptor_value, receiver_value=receiver_value, ctx=ctx
-            )
-            if _value_contains_self_typevar(typed_descriptor_value):
-                typed_descriptor_value = set_self(
-                    typed_descriptor_value, receiver_value
-                )
+
+    if merged_attribute.initializer is not None:
         return _make_resolved_attribute(
             merged_attribute,
-            value=typed_descriptor_value,
+            value=merged_attribute.initializer,
             is_property=False,
             property_has_setter=False,
         )
-    if (
-        merged_attribute.annotation is not None
-        and not merged_attribute.is_method
-        and not merged_attribute.is_classvar
-        and not (
-            _descriptor_has_method(lookup_value, "__get__", ctx)
-            or _descriptor_has_method(lookup_value, "__set__", ctx)
-            or _descriptor_has_method(lookup_value, "__delete__", ctx)
+
+    if merged_attribute.annotation is not None:
+        return _make_error_attribute(
+            merged_attribute,
+            CanAssignError(
+                f"Attribute '{merged_attribute.name}' only exists on instances"
+            ),
         )
-    ):
-        return None
-    raw_has_get = _descriptor_has_method(lookup_value, "__get__", ctx)
-    raw_has_set = _descriptor_has_method(lookup_value, "__set__", ctx)
-    raw_has_delete = _descriptor_has_method(lookup_value, "__delete__", ctx)
-    if (
-        merged_attribute.annotation is not None
-        and not merged_attribute.is_method
-        and not merged_attribute.is_classvar
-        and not raw_has_get
-        and not raw_has_set
-        and not raw_has_delete
-    ):
-        return None
-    descriptor_value = lookup_value
-    if _descriptor_has_method(effective_value, "__get__", ctx):
-        descriptor_value = effective_value
-    descriptor_get_value = _get_descriptor_get_value(
-        descriptor_value,
-        receiver_tobj,
-        ctx,
-        on_class=policy.on_class,
-        receiver_value=receiver_value,
-        is_metaclass_owner=merged_attribute.is_metaclass_owner,
-    )
-    if descriptor_get_value is None:
-        if (
-            descriptor_like_instance_access
-            and merged_attribute.is_metaclass_owner
-            and merged_attribute.annotation is not None
-            and raw_has_get
-        ):
-            return _make_resolved_attribute(
-                merged_attribute,
-                value=effective_value,
-                is_property=True,
-                property_has_setter=raw_has_set,
-            )
-        return None
-    if (
-        descriptor_like_instance_access
-        and isinstance(descriptor_get_value, AnyValue)
-        and merged_attribute.annotation is not None
-    ):
-        descriptor_get_value = effective_value
-    if descriptor_like_instance_access and receiver_value is not None:
-        descriptor_get_value = set_self(descriptor_get_value, receiver_value)
-    return _make_resolved_attribute(
-        merged_attribute,
-        value=descriptor_get_value,
-        is_property=descriptor_like_instance_access,
-        property_has_setter=raw_has_set,
+
+    return _make_error_attribute(
+        merged_attribute, CanAssignError("Neither annotation nor initializer set")
     )
 
 
-def _is_prebound_synthetic_classmethod(value: Value) -> bool:
-    value = replace_fallback(value)
-    return isinstance(value, GenericValue) and value.typ is classmethod
-
-
-def _get_nondescriptor_value(
-    merged_attribute: MergedAttribute,
-    *,
-    on_class: bool,
-    receiver_value: Value | None,
-    ctx: CanAssignContext,
-) -> Value:
-    """Return the final fallback value when no descriptor behavior applies."""
-    effective_value = _merged_attribute_effective_value(merged_attribute)
-    lookup_value = normalize_synthetic_descriptor_attribute(
-        _merged_attribute_lookup_value(merged_attribute),
-        owner=merged_attribute.owner.typ,
-        is_self_returning_classmethod=merged_attribute.returns_self_on_class_access,
-        unknown_descriptor_means_any=False,
-    )
-    if not on_class or merged_attribute.is_metaclass_owner:
-        if merged_attribute.is_classvar and merged_attribute.annotation is not None:
-            value = effective_value
-        elif (
-            not merged_attribute.is_classvar
-            and not merged_attribute.is_method
-            and merged_attribute.initializer is None
-        ):
-            value = effective_value
-        elif (
-            not merged_attribute.is_classvar
-            and not merged_attribute.is_method
-            and merged_attribute.initializer is not None
-            and merged_attribute.annotation is not None
-        ):
-            value = effective_value
-        else:
-            value = lookup_value
-        if receiver_value is not None:
-            value = set_self(value, receiver_value)
-        return value
-    if not merged_attribute.is_method:
-        return effective_value
-    return lookup_value
-
-
-def _get_typed_descriptor_value(
-    merged_attribute: MergedAttribute, lookup_value: Value, ctx: CanAssignContext
-) -> Value:
-    initializer = merged_attribute.initializer
-    if initializer is None:
-        return lookup_value
-    typed_value = normalize_synthetic_descriptor_attribute(
-        initializer,
-        owner=merged_attribute.owner.typ,
-        is_self_returning_classmethod=merged_attribute.returns_self_on_class_access,
-        unknown_descriptor_means_any=False,
-    )
-    if _is_callable_member_value(typed_value, ctx):
-        return typed_value
-    return lookup_value
-
-
-def _get_attribute_value_from_symbol(
-    symbol: ClassSymbol,
-    ctx: CanAssignContext,
-    *,
-    on_class: bool,
-    receiver_value: TypedValue | None,
-) -> Value:
-    """Compatibility wrapper for callers that still resolve from bare symbols."""
-    merged_attribute = MergedAttribute(
-        owner=(
-            receiver_value.get_type_object(ctx)
-            if receiver_value is not None
-            else ctx.make_type_object(object)
-        ),
-        runtime_symbol=symbol,
-        typeshed_symbol=None,
-        annotation=symbol.annotation,
-        initializer=symbol.initializer,
-        property_info=symbol.property_info,
-        is_method=symbol.is_method,
-        is_classmethod=symbol.is_classmethod,
-        is_staticmethod=symbol.is_staticmethod,
-        is_classvar=symbol.is_classvar,
-        is_initvar=symbol.is_initvar,
-        returns_self_on_class_access=symbol.returns_self_on_class_access,
-        is_metaclass_owner=False,
-    )
-    value = _resolve_merged_attribute_access(
-        merged_attribute.owner,
-        merged_attribute,
-        ctx,
-        policy=AttributePolicy(
-            on_class=on_class, receiver=receiver_value or AnyValue(AnySource.inference)
-        ),
-    ).value
-    return value
-
-
-def _is_data_descriptor(
-    merged_attribute: MergedAttribute, ctx: CanAssignContext
+def _is_selected_attribute_data_descriptor(
+    selected: SelectedAttribute, ctx: CanAssignContext
 ) -> bool:
-    """Whether the merged member should win descriptor precedence."""
-    if merged_attribute.property_info is not None:
+    """Whether this object represent a data descriptor."""
+    if selected.symbol.property_info is not None:
         return True
-    if merged_attribute.is_method:
+    if selected.symbol.is_method or selected.symbol.initializer is None:
         return False
     return _descriptor_has_method(
-        _merged_attribute_lookup_value(merged_attribute), "__set__", ctx
-    ) or _descriptor_has_method(
-        _merged_attribute_lookup_value(merged_attribute), "__delete__", ctx
-    )
+        selected.symbol.initializer, "__set__", ctx
+    ) or _descriptor_has_method(selected.symbol.initializer, "__delete__", ctx)
 
 
-def _get_descriptor_get_value(
-    descriptor: Value,
-    receiver_tobj: TypeObject,
-    ctx: CanAssignContext,
-    *,
-    on_class: bool,
-    receiver_value: Value | None,
-    is_metaclass_owner: bool,
-) -> Value | None:
-    """Return the value produced by a descriptor's ``__get__`` call."""
-    cached_property_return = _get_cached_property_return_type(descriptor, ctx)
-    if cached_property_return is not None:
-        return cached_property_return
-    descriptor_receiver: Value
-    if on_class and not is_metaclass_owner:
-        descriptor_receiver = KnownValue(None)
-    elif receiver_value is not None:
-        descriptor_receiver = receiver_value
-    else:
-        descriptor_receiver = TypedValue(receiver_tobj.typ)
-    match = _descriptor_method_match(
-        descriptor, "__get__", [descriptor_receiver, AnyValue(AnySource.inference)], ctx
+def _is_descriptor(value: Value, ctx: CanAssignContext) -> bool:
+    """Whether this value can be treated as a descriptor."""
+    return (
+        _descriptor_has_method(value, "__get__", ctx)
+        or _descriptor_has_method(value, "__set__", ctx)
+        or _descriptor_has_method(value, "__delete__", ctx)
     )
-    if match is None:
-        return None
-    get_signature, _ = match
-    return_value = get_signature.return_value
-    self_type = receiver_to_self_type(descriptor, ctx)
-    if on_class and not is_metaclass_owner:
-        return_without_self = subtract_values(return_value, self_type, ctx)
-        if return_without_self != return_value:
-            narrowed_return = intersect_values(return_value, self_type, ctx)
-            if narrowed_return is not NO_RETURN_VALUE:
-                return_value = narrowed_return
-    else:
-        return_value = subtract_values(return_value, self_type, ctx)
-    return return_value
 
 
 def _runtime_descriptor_owner(descriptor: KnownValue | TypedValue) -> type | None:
@@ -3464,6 +3471,8 @@ def _descriptor_type_object(
     return descriptor_tobj
 
 
+# TODO: this should be rewritten to use standard attribute lookup
+# mechanisms.
 def _descriptor_has_method(
     descriptor: Value, method_name: str, ctx: CanAssignContext
 ) -> bool:
@@ -3478,24 +3487,7 @@ def _descriptor_has_method(
     return _descriptor_method_signature_any(descriptor, method_name, ctx) is not None
 
 
-def _descriptor_method_match(
-    descriptor: Value, method_name: str, args: Sequence[Value], ctx: CanAssignContext
-) -> tuple[Signature, int] | None:
-    """Pick the descriptor overload that accepts the simulated descriptor call."""
-    signature = _descriptor_method_signature_any(descriptor, method_name, ctx)
-    if signature is None:
-        return None
-    selected = _select_matching_descriptor_signature(signature, args, ctx)
-    if selected is not None:
-        return selected, 0
-    selected = _select_matching_descriptor_signature(
-        signature, [descriptor, *args], ctx
-    )
-    if selected is None:
-        return None
-    return selected, 1
-
-
+# TODO: replace this with something based on TypeObject.get_attribute()
 def _descriptor_method_signature_any(
     descriptor: Value, method_name: str, ctx: CanAssignContext
 ) -> Signature | OverloadedSignature | None:
@@ -3521,6 +3513,7 @@ def _descriptor_method_signature_any(
         assert isinstance(descriptor, (KnownValue, TypedValue))
         if isinstance(descriptor, TypedValue):
             merged_attribute = descriptor_tobj._specialize_selected_attribute_pair(
+                method_name,
                 ctx,
                 policy=policy,
                 selected=descriptor_tobj._select_declared_attribute(method_name),
@@ -3553,64 +3546,6 @@ def _descriptor_method_signature_any(
     return signature
 
 
-def _select_matching_descriptor_signature(
-    signature: Signature | OverloadedSignature,
-    args: Sequence[Value],
-    ctx: CanAssignContext,
-) -> Signature | None:
-    """Choose the overload compatible with the simulated descriptor call."""
-    if isinstance(signature, Signature):
-        if _descriptor_signature_accepts_args(signature, args, ctx):
-            return signature
-        return None
-    for overload in signature.signatures:
-        if _descriptor_signature_accepts_args(overload, args, ctx):
-            return overload
-    return None
-
-
-def _descriptor_signature_accepts_args(
-    signature: Signature, args: Sequence[Value], ctx: CanAssignContext
-) -> bool:
-    """Cheap yes/no call check for simulated descriptor invocations.
-
-    Descriptor matching is especially sensitive to symbolic ``Self`` values.
-    Use direct parameter/argument assignability here so overload selection does
-    not trigger the broader call inference machinery.
-    """
-    ellipsis = signature.get_param_of_kind(ParameterKind.ELLIPSIS)
-    if ellipsis is not None:
-        return True
-
-    from .relations import Relation, has_relation
-
-    positional_params = [
-        parameter
-        for parameter in signature.parameters.values()
-        if parameter.kind
-        in (ParameterKind.POSITIONAL_ONLY, ParameterKind.POSITIONAL_OR_KEYWORD)
-    ]
-    variadic_param = signature.get_param_of_kind(ParameterKind.VAR_POSITIONAL)
-    if len(args) > len(positional_params) and variadic_param is None:
-        return False
-    for index, arg in enumerate(args):
-        if index < len(positional_params):
-            parameter = positional_params[index]
-        elif variadic_param is not None:
-            parameter = variadic_param
-        else:
-            return False
-        if isinstance(
-            has_relation(parameter.annotation, arg, Relation.ASSIGNABLE, ctx),
-            CanAssignError,
-        ):
-            return False
-    for parameter in positional_params[len(args) :]:
-        if parameter.default is None:
-            return False
-    return True
-
-
 def _substitute_symbol_value(value: Value, substitutions: TypeVarMap) -> Value:
     if not substitutions:
         return value
@@ -3632,7 +3567,11 @@ def _get_symbol_owner_substitutions_from_type_objects(
     policy: AttributePolicy,
 ) -> TypeVarMap:
     receiver_substitutions = TypeVarMap(
-        typevars={get_self_param(owner_tobj.typ): policy.get_self_value(ctx)}
+        typevars={
+            get_self_param(owner_tobj.typ): policy.get_self_value(
+                ctx, is_metaclass=False
+            )
+        }
     )
     receiver_value = policy.get_receiver_instance(ctx)
     if isinstance(receiver_value, (TypedValue, TypeVarValue)):
@@ -3767,6 +3706,16 @@ def _normalize_protocol_initializer_for_relation(
     return value
 
 
+def _protocol_member_bind_receiver(
+    symbol: ClassSymbol, receiver_value: Value, ctx: CanAssignContext
+) -> Value | None:
+    if symbol.is_staticmethod:
+        return None
+    if symbol.is_classmethod:
+        return _protocol_classmethod_receiver_value(receiver_value, ctx)
+    return receiver_value
+
+
 def _metaclass_key_for_class(
     class_key: type | str, ctx: CanAssignContext
 ) -> type | str | None:
@@ -3892,10 +3841,9 @@ def _bind_protocol_call_expected(
     member: str,
     protocol_self_value: Value,
 ) -> Value:
-    unwrapped = replace_fallback(value)
-    if not isinstance(unwrapped, CallableValue):
+    signature = ctx.signature_from_value(value)
+    if signature is None:
         return value
-    signature = unwrapped.signature
     if member == "__call__":
         if isinstance(signature, BoundMethodSignature):
             return value
@@ -3927,7 +3875,7 @@ def _bind_protocol_call_expected(
         return value
     bound = signature.bind_self(self_value=self_value, ctx=ctx)
     if bound is not None:
-        return CallableValue(bound, unwrapped.typ)
+        return CallableValue(bound)
     return value
 
 

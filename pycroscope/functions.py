@@ -77,7 +77,7 @@ if sys.version_info < (3, 11):
 
 FunctionDefNode = ast.FunctionDef | ast.AsyncFunctionDef
 FunctionNode = FunctionDefNode | ast.Lambda
-IMPLICIT_CLASSMETHODS = ("__init_subclass__", "__new__")
+IMPLICIT_CLASSMETHODS = ("__init_subclass__", "__new__", "__class_getitem__")
 
 YieldT = TypeVar("YieldT")
 SendT = TypeVar("SendT")

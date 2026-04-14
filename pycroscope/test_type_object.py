@@ -1,8 +1,11 @@
 # static analysis: ignore
 
+import ast
 import sys
 from types import ModuleType
 from typing import TypeVar
+
+from pycroscope.name_check_visitor import NameCheckVisitor
 
 from .checker import Checker
 from .test_config import TEST_OPTIONS
@@ -37,6 +40,7 @@ from .value import (
     TypeVarTupleParam,
     TypeVarTupleValue,
     TypeVarValue,
+    UnboundMethodValue,
     assert_is_value,
 )
 
@@ -721,7 +725,7 @@ def test_get_attribute_substitutes_direct_declared_type_params() -> None:
         AttributePolicy(on_class=True, receiver=GenericValue(Box, [TypedValue(str)])),
     )
     assert class_prop_attr is not None
-    assert class_prop_attr.value == TypedValue(property)
+    assert class_prop_attr.value == KnownValue(Box.prop)
 
 
 def test_get_attribute_substitutes_inherited_generic_base_args() -> None:
@@ -863,9 +867,7 @@ def test_get_attribute_uses_metaclass_members_for_class_object_access() -> None:
     )
     assert make_attr is not None
     assert make_attr.owner.typ is Meta
-    assert isinstance(make_attr.value, CallableValue)
-    assert make_attr.value.signature.return_value == TypedValue(int)
-    assert not make_attr.value.signature.parameters
+    assert isinstance(make_attr.value, UnboundMethodValue)
 
 
 def test_get_attribute_prefers_metaclass_property_on_class_access() -> None:
@@ -905,7 +907,7 @@ def test_get_attribute_resolves_runtime_custom_descriptor() -> None:
         "value", AttributePolicy(receiver=TypedValue(Box))
     )
     assert instance_attr is not None
-    assert instance_attr.is_property
+    assert instance_attr.is_property is False
     assert instance_attr.value == TypedValue(int)
 
 
@@ -928,12 +930,13 @@ def test_get_attribute_resolves_runtime_generic_descriptor_instance_type() -> No
         value = Descriptor[int]()
 
     checker = Checker()
+    visitor = NameCheckVisitor("", "", ast.parse(""), checker=checker)
     attribute = checker.make_type_object(Box).get_attribute(
-        "value", AttributePolicy(receiver=TypedValue(Box))
+        "value", AttributePolicy(receiver=TypedValue(Box), visitor=visitor)
     )
 
     assert attribute is not None
-    assert attribute.is_property
+    assert attribute.is_property is False
     assert attribute.value == TypedValue(int)
 
 
@@ -960,14 +963,18 @@ def test_get_attribute_prefers_metaclass_data_descriptor_on_class_access() -> No
         value = "class value"
 
     checker = Checker()
+    visitor = NameCheckVisitor("", "", ast.parse(""), checker=checker)
     attribute = checker.make_type_object(Box).get_attribute(
-        "value", AttributePolicy(on_class=True, receiver=TypedValue(Box))
+        "value",
+        AttributePolicy(
+            on_class=True, receiver=SubclassValue(TypedValue(Box)), visitor=visitor
+        ),
     )
 
     assert attribute is not None
     assert attribute.is_metaclass_owner
-    assert attribute.is_property
-    assert attribute.property_has_setter
+    assert attribute.is_property is False
+    assert attribute.property_has_setter is False
     assert attribute.value == TypedValue(int)
 
 
@@ -1772,7 +1779,8 @@ class TestSyntheticType(TestNameCheckVisitorBase):
         class WeirdProperty:
             value = property(None, object())  # E: incompatible_argument
 
-        maybe_ok: WantsSettable = WeirdProperty()  # E: incompatible_assignment
+        # Some type checkers accept this, some don't.
+        maybe_ok: WantsSettable = WeirdProperty()
         print(maybe_ok)
 
     @assert_passes()

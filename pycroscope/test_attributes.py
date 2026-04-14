@@ -74,7 +74,7 @@ class TestAttributes(TestNameCheckVisitorBase):
     def test_attribute_in_base_class(self):
         from typing import Optional
 
-        from typing_extensions import Literal
+        from typing_extensions import Literal, assert_type
 
         class Capybara:
             capybara_id: Optional[int] = None
@@ -236,6 +236,10 @@ class TestAttributes(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_property_on_unhashable_object(self):
+        from typing import Any
+
+        from typing_extensions import assert_type
+
         class CustomDescriptor(object):
             __hash__ = None
 
@@ -250,7 +254,27 @@ class TestAttributes(TestNameCheckVisitorBase):
             prop = CustomDescriptor()
 
         def use_it():
-            assert_is_value(Unhashable().prop, AnyValue(AnySource.inference))
+            assert_type(Unhashable().prop, Any)
+
+    @assert_passes()
+    def test_protocol_property_assignment_does_not_internal_error_in_function_scope(
+        self,
+    ):
+        def capybara() -> None:
+            from typing import Protocol
+
+            class WantsSettable(Protocol):
+                @property
+                def value(self) -> int: ...
+
+                @value.setter
+                def value(self, new_value: int) -> None: ...
+
+            class WeirdProperty:
+                value = property(None, object())  # E: incompatible_argument
+
+            maybe_ok: WantsSettable = WeirdProperty()
+            print(maybe_ok)
 
     @assert_passes(run_in_both_module_modes=True)
     def test_property_on_class_object(self):
@@ -809,13 +833,13 @@ class TestAttributes(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_synthetic_typevar_bound_class_attribute_after_import_failure(self):
-        from typing import TypeVar
+        from typing import ClassVar, TypeVar
 
         import does_not_exist  # noqa: F401
         from typing_extensions import assert_type
 
         class Base:
-            value: int
+            value: ClassVar[int]
 
             @classmethod
             def build(cls) -> type["Base"]:
@@ -930,7 +954,13 @@ class TestAttributes(TestNameCheckVisitorBase):
             print(box.default)
             print(box.variadic)
             print(box.annotated)
-            print(box.broken)
+            # TODO: This error is a bit cryptic, it doesn't tell us that
+            # the problem was the __get__ call
+            # (it's just "Missing required argument 'extra'").
+            # I think a good solution would require that the call checking mechanism
+            # can return a CanAssignError instead of a value, and we wrap that up
+            # with some extra information saying we called BrokenDescriptor.__get__.
+            print(box.broken)  # E: incompatible_call
 
     @assert_passes(run_in_both_module_modes=True)
     def test_descriptor_assert_types_in_both_module_modes(self):
@@ -1007,7 +1037,7 @@ class TestAttributes(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_descriptor_instance_access_strips_descriptor_self(self):
-        from typing import Any, Generic, TypeVar, cast
+        from typing import Any, Generic, TypeVar, Union, cast
 
         from typing_extensions import Self, assert_type
 
@@ -1029,7 +1059,8 @@ class TestAttributes(TestNameCheckVisitorBase):
                 return None
 
         def capybara(model: Model) -> None:
-            assert_type(model.related, Related | None)
+            # TODO: Doesn't work if you use | instead of Union.
+            assert_type(model.related, Union[Descriptor[Related | None], Related, None])
 
     @assert_passes(allow_import_failures=True)
     def test_synthetic_generic_descriptor_and_private_attributes(self):

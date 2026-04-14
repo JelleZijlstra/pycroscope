@@ -248,7 +248,13 @@ def get_pure_async_equivalent(value: Value) -> str:
         return f"{_stringify_obj(value.val)}.asynq"
     if isinstance(value, UnboundMethodValue):
         return _stringify_async_fn(
-            UnboundMethodValue(value.attr_name, value.composite, "asynq")
+            UnboundMethodValue(
+                value.attr_name,
+                value.composite,
+                "asynq",
+                typevars=value.typevars,
+                owner=value.owner,
+            )
         )
     raise AssertionError(f"cannot get pure async equivalent of {value}")
 
