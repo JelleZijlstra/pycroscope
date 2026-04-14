@@ -1862,13 +1862,14 @@ class TypeObject:
                             if expected_attr is not None
                             else other_val
                         )
-                        expected = _bind_protocol_call_expected(
-                            expected,
-                            expected_bind_receiver,
-                            ctx,
-                            member=member,
-                            protocol_self_value=expected_bind_receiver,
-                        )
+                        if expected_bind_receiver is not None:
+                            expected = _bind_protocol_call_expected(
+                                expected,
+                                expected_bind_receiver,
+                                ctx,
+                                member=member,
+                                protocol_self_value=expected_bind_receiver,
+                            )
                 expected = _substitute_receiver_self_typevar(
                     expected, other_val, other_type_obj.typ
                 )
