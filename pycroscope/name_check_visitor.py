@@ -729,16 +729,6 @@ class _AttrContext(CheckerAttrContext):
         if self.record_reads and self.node is not None:
             self.visitor._record_type_attr_read(obj, self.attr, self.node)
 
-    def get_property_type_from_argspec(self, obj: property) -> Value:
-        self_value = self.get_self_value()
-        if self_value == self.root_composite.value:
-            root_composite = self.root_composite
-        else:
-            root_composite = Composite(
-                self_value, self.root_composite.varname, self.root_composite.node
-            )
-        return self.visitor.resolve_property(obj, root_composite, self.node)
-
     def get_self_value(self) -> Value:
         if self.self_value is not None:
             return self.self_value
