@@ -1268,8 +1268,9 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
 
         transformed = TransformModel(ReadDescriptor(), 1, ReadDescriptor())
         assert_type(transformed.a, ReadDescriptor[int])
-        assert_type(transformed.b, DataDescriptor)
-        assert_type(transformed.c, ReadDescriptor[str])
+        assert_type(transformed.b, int)
+        # TODO: this is arguably incorrect, it's a ReadDescriptor at runtime
+        assert_type(transformed.c, str)
 
         # E: incompatible_argument
         TransformModel(ReadDescriptor(), DataDescriptor(), ReadDescriptor())

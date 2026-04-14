@@ -3390,7 +3390,11 @@ def _apply_descriptor_protocol_to_descriptor(
 
     value = _make_call(CallableValue(sig), args, policy=policy, ctx=ctx)
 
-    if is_instance_access and merged_attribute.annotation is not None:
+    if (
+        is_instance_access
+        and merged_attribute.annotation is not None
+        and not _is_descriptor(merged_attribute.annotation, ctx)
+    ):
         # If there's an annotation, believe it; it may have a more precise
         # type than the __get__ method.
         # (We still call __get__ first so we get errors from it.)
