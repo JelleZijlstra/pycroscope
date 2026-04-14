@@ -243,8 +243,6 @@ class AttributePolicy:
     """True if the attribute is being accessed on the class rather than an instance."""
     is_special_lookup: bool = False
     """True if the attribute lookup should use dunder lookup semantics."""
-    use_apply_descriptor_protocol: bool = True
-    """True to use the new descriptor protocol implementation."""
     prefer_symbolic: bool = False
     """If True, return symbolic values (e.g., CallableValue) instead of
     more precise representations such as UnboundMethodValue.
@@ -1514,9 +1512,7 @@ class TypeObject:
         if merged.is_initvar and not policy.on_class:
             return None
 
-        if policy.use_apply_descriptor_protocol:
-            return _apply_descriptor_protocol(merged, self._checker, policy)
-        return _resolve_merged_attribute_access(merged, self._checker, policy=policy)
+        return _apply_descriptor_protocol(merged, self._checker, policy)
 
     def _select_declared_attribute(
         self, name: str, *, anchor: type | str | None = None

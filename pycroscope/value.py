@@ -826,7 +826,6 @@ def get_attribute(
     *,
     on_class: bool = False,
     is_special_lookup: bool = False,
-    use_apply_descriptor_protocol: bool = False,
     receiver: object = None,
 ) -> object:
     """Get an attribute of an object.

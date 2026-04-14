@@ -286,12 +286,7 @@ class TestGetAttribute(TestNameCheckVisitorBase):
             def value(self) -> T:
                 raise NotImplementedError
 
-        assert_type(
-            get_attribute(
-                Box, "value", receiver=Box[int](), use_apply_descriptor_protocol=True
-            ),
-            int,
-        )
+        assert_type(get_attribute(Box, "value", receiver=Box[int]()), int)
 
     @assert_passes(run_in_both_module_modes=True)
     def test_apply_descriptor_protocol_classmethod(self) -> None:
@@ -305,21 +300,9 @@ class TestGetAttribute(TestNameCheckVisitorBase):
             def make(cls) -> int:
                 return 1
 
+        assert_type(get_attribute(Box, "make", receiver=Box()), Callable[[], int])
         assert_type(
-            get_attribute(
-                Box, "make", receiver=Box(), use_apply_descriptor_protocol=True
-            ),
-            Callable[[], int],
-        )
-        assert_type(
-            get_attribute(
-                Box,
-                "make",
-                on_class=True,
-                receiver=Box,
-                use_apply_descriptor_protocol=True,
-            ),
-            Callable[[], int],
+            get_attribute(Box, "make", on_class=True, receiver=Box), Callable[[], int]
         )
 
     @assert_passes(run_in_both_module_modes=True)
@@ -334,9 +317,4 @@ class TestGetAttribute(TestNameCheckVisitorBase):
             def parse(value: str, /) -> int:
                 return len(value)
 
-        assert_type(
-            get_attribute(
-                Box, "parse", receiver=Box(), use_apply_descriptor_protocol=True
-            ),
-            Callable[[str], int],
-        )
+        assert_type(get_attribute(Box, "parse", receiver=Box()), Callable[[str], int])
