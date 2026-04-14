@@ -1854,13 +1854,21 @@ class TypeObject:
                 if protocol_self_typevar_map:
                     expected = expected.substitute_typevars(protocol_self_typevar_map)
                 if _protocol_member_is_method(self, member, ctx):
-                    expected = _bind_protocol_call_expected(
-                        expected,
-                        other_val,
-                        ctx,
-                        member=member,
-                        protocol_self_value=self_val,
-                    )
+                    if expected_attr is None or expected_attr.symbol.is_classmethod:
+                        expected_bind_receiver = (
+                            _protocol_member_bind_receiver(
+                                expected_attr.symbol, other_val, ctx
+                            )
+                            if expected_attr is not None
+                            else other_val
+                        )
+                        expected = _bind_protocol_call_expected(
+                            expected,
+                            expected_bind_receiver,
+                            ctx,
+                            member=member,
+                            protocol_self_value=expected_bind_receiver,
+                        )
                 expected = _substitute_receiver_self_typevar(
                     expected, other_val, other_type_obj.typ
                 )
@@ -4231,6 +4239,16 @@ def _normalize_protocol_initializer_for_relation(
     return value
 
 
+def _protocol_member_bind_receiver(
+    symbol: ClassSymbol, receiver_value: Value, ctx: CanAssignContext
+) -> Value | None:
+    if symbol.is_staticmethod:
+        return None
+    if symbol.is_classmethod:
+        return _protocol_classmethod_receiver_value(receiver_value, ctx)
+    return receiver_value
+
+
 def _metaclass_key_for_class(
     class_key: type | str, ctx: CanAssignContext
 ) -> type | str | None:
@@ -4356,10 +4374,9 @@ def _bind_protocol_call_expected(
     member: str,
     protocol_self_value: Value,
 ) -> Value:
-    unwrapped = replace_fallback(value)
-    if not isinstance(unwrapped, CallableValue):
+    signature = ctx.signature_from_value(value)
+    if signature is None:
         return value
-    signature = unwrapped.signature
     if member == "__call__":
         if isinstance(signature, BoundMethodSignature):
             return value
@@ -4391,7 +4408,7 @@ def _bind_protocol_call_expected(
         return value
     bound = signature.bind_self(self_value=self_value, ctx=ctx)
     if bound is not None:
-        return CallableValue(bound, unwrapped.typ)
+        return CallableValue(bound)
     return value
 
 
