@@ -52,15 +52,10 @@ from .signature import (
 from .stacked_scopes import Composite
 from .type_object import (
     AttributePolicy,
-    MroValue,
     TypeObject,
     TypeObjectAttribute,
     _class_key_from_value,
-    _get_attribute_value_from_symbol,
     _get_cached_property_return_type,
-    _is_property_marker_value,
-    _specialize_symbol_for_owner,
-    class_keys_match,
     normalize_synthetic_descriptor_attribute,
 )
 from .value import (
@@ -476,70 +471,26 @@ def _super_thisclass_key(value: Value) -> type | str | None:
     return None
 
 
-def _super_mro_values(
-    receiver_value: TypedValue, ctx: CanAssignContext
-) -> Sequence[MroValue]:
-    # TODO: switch to just using the MRO; that currently doesn't work because it gets set too late
-    if isinstance(receiver_value.typ, type):
-        return [TypedValue(base) for base in receiver_value.typ.__mro__]
-    return [
-        entry.get_mro_value() for entry in receiver_value.get_type_object(ctx).get_mro()
-    ]
-
-
-# TODO: in principle this should be doable with TypeObject.get_attribute if we add a flag
-# that says to skip MRO elements up to a certain point.
 def _get_attribute_from_super_value(super_value: SuperValue, ctx: AttrContext) -> Value:
     if super_value.selfobj is None:
         return AnyValue(AnySource.inference)
     receiver_value, is_class_access = _super_receiver_type_value(super_value.selfobj)
-    policy = AttributePolicy(
-        receiver=receiver_value or AnyValue(AnySource.inference),
-        on_class=is_class_access,
-    )
     thisclass_key = _super_thisclass_key(super_value.thisclass)
-    can_assign_ctx = ctx.get_can_assign_context()
     if receiver_value is None or thisclass_key is None:
         return AnyValue(AnySource.inference)
 
-    receiver_tobj = receiver_value.get_type_object(can_assign_ctx)
-    saw_thisclass = False
-    for mro_value in _super_mro_values(receiver_value, can_assign_ctx):
-        if isinstance(mro_value, AnyValue):
-            continue
-        owner_key = _class_key_from_value(mro_value)
-        if owner_key is None:
-            continue
-        if not saw_thisclass:
-            if class_keys_match(owner_key, thisclass_key):
-                saw_thisclass = True
-            continue
-        owner_tobj = mro_value.get_type_object(can_assign_ctx)
-        symbol = owner_tobj.get_declared_symbol(ctx.attr)
-        if symbol is not None:
-            symbol = _specialize_symbol_for_owner(
-                receiver_tobj, owner_tobj, symbol, can_assign_ctx, policy
-            )
-            result = _get_attribute_value_from_symbol(
-                ctx.attr,
-                symbol,
-                can_assign_ctx,
-                on_class=is_class_access and not symbol.is_method,
-                receiver_value=receiver_value,
-            )
-            if (
-                is_class_access
-                and symbol.property_info is not None
-                and (
-                    result is UNINITIALIZED_VALUE
-                    or not _is_property_marker_value(result)
-                )
-            ):
-                result = TypedValue(property)
-            result = set_self(result, receiver_value, owner_tobj.typ)
-            ctx.record_usage(super, result)
-            return result
-    return UNINITIALIZED_VALUE
+    receiver_tobj = receiver_value.get_type_object(ctx.get_can_assign_context())
+    policy = AttributePolicy(
+        receiver=receiver_value,
+        on_class=is_class_access,
+        anchor=thisclass_key,
+        # TODO: Maybe shouldn't be necessary, but without this some methods get inferred wrong.
+        prefer_symbolic=True,
+    )
+    attr = receiver_tobj.get_attribute(ctx.attr, policy)
+    if attr is None:
+        return UNINITIALIZED_VALUE
+    return attr.value
 
 
 def _get_attribute_from_type_alias(value: TypeAliasValue, ctx: AttrContext) -> Value:

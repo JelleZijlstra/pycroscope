@@ -254,6 +254,9 @@ class AttributePolicy:
     self_value: Value | None = None
     """Value used to interpret typing.Self. Usually the same as receiver, but the
     difference matters for protocols."""
+    anchor: type | str | None = None
+    """Only attributes that appear in the MRO after the anchor are considered.
+    This is used for super()."""
     visitor: "pycroscope.name_check_visitor.NameCheckVisitor | None" = None
     node: ast.AST | None = None
 
@@ -1451,7 +1454,7 @@ class TypeObject:
         if attr is not None:
             return attr
 
-        declared_selected = self._select_declared_attribute(name)
+        declared_selected = self._select_declared_attribute(name, anchor=policy.anchor)
         if policy.on_class:
             # Look for metaclass attributes
             metaclass_selected = self._select_metaclass_attribute(name)
@@ -1513,14 +1516,14 @@ class TypeObject:
         return _resolve_merged_attribute_access(merged, self._checker, policy=policy)
 
     def _select_declared_attribute(
-        self, name: str
+        self, name: str, *, anchor: type | str | None = None
     ) -> tuple[SelectedAttribute | None, SelectedAttribute | None]:
         """Select runtime/typeshed class-MRO symbols before specialization."""
         runtime_attr = self.get_selected_attribute(
-            name, is_metaclass_owner=False, use_typeshed=False
+            name, is_metaclass_owner=False, use_typeshed=False, anchor=anchor
         )
         typeshed_attr = self.get_selected_attribute(
-            name, is_metaclass_owner=False, use_typeshed=True
+            name, is_metaclass_owner=False, use_typeshed=True, anchor=anchor
         )
         return runtime_attr, typeshed_attr
 
@@ -1603,10 +1606,20 @@ class TypeObject:
             ), "At least one of runtime_selected or typeshed_selected must be non-None"
 
     def get_selected_attribute(
-        self, name: str, *, is_metaclass_owner: bool, use_typeshed: bool
+        self,
+        name: str,
+        *,
+        is_metaclass_owner: bool,
+        use_typeshed: bool,
+        anchor: type | str | None = None,
     ) -> SelectedAttribute | None:
+        seen_anchor = anchor is None
         for i, entry in enumerate(self.get_mro()):
             if entry.tobj is None:
+                continue
+            if not seen_anchor:
+                if entry.tobj.typ == anchor:
+                    seen_anchor = True
                 continue
             if use_typeshed:
                 symbol = self._checker.ts_finder.get_direct_symbol(entry.tobj.typ, name)
