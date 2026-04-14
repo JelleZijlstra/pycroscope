@@ -2798,7 +2798,6 @@ def _bind_attribute_signature(
     if self_annotation_value is None:
         self_annotation_value = receiver_value
     signature = ctx.signature_from_value(value)
-    print("SIG SDFISG", signature, value)
     if isinstance(signature, BoundMethodSignature):
         shielded_signature, restore_typevars = _shield_nested_self_in_signature(
             signature.signature
@@ -3256,12 +3255,10 @@ def _apply_descriptor_protocol_to_classmethod(
         receiver = instance_receiver
     else:
         receiver = policy.get_receiver_class(ctx)
-        print("RECEIVER", receiver)
 
     bound_value = _bind_attribute_signature(
         value, receiver_value=instance_receiver, self_annotation_value=receiver, ctx=ctx
     )
-    print("BOUND VALE", bound_value)
     return _make_resolved_attribute(
         merged_attribute,
         value=bound_value,
@@ -3295,7 +3292,6 @@ def _apply_descriptor_protocol_to_method(
     # (e.g., use of secondary_attr_name), but UnboundMethodValue doesn't work
     # if there's no runtime method.
     receiver_class = policy.get_receiver_class(ctx)
-    print("REC CLASS", receiver_class, policy, repr(receiver_class.get_type()))
     if (
         not policy.prefer_symbolic
         and _is_method_like(initializer)
@@ -4019,20 +4015,13 @@ def _descriptor_method_signature_any(
         attribute = descriptor_tobj.get_attribute(method_name, policy)
         if attribute is not None:
             method_value = attribute.value
-    print("METHOD VAL", method_value, repr(method_value))
     if direct_signature is not None:
         if restore_typevars:
             direct_signature = direct_signature.substitute_typevars(restore_typevars)
         return direct_signature
     if method_value is UNINITIALIZED_VALUE:
         return None
-    print(
-        "RAW SIG",
-        ctx.signature_from_value(method_value),
-        repr(ctx.signature_from_value(method_value)),
-    )
     signature = as_concrete_signature(ctx.signature_from_value(method_value), ctx)
-    print("METHOD SIG", signature)
     if signature is None:
         return None
     if restore_typevars:
