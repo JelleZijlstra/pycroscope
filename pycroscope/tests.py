@@ -6,10 +6,11 @@ Functions to be used in test_scope unit tests.
 """
 
 from collections.abc import Sequence
-from typing import ClassVar, Generic, NoReturn, TypeVar, overload
+from typing import ClassVar, Generic, NoReturn, TypeVar
 
 from typing_extensions import Self, final
 
+from .extensions import overload
 from .value import SequenceValue, Value, VariableNameValue
 
 ASYNQ_METHOD_NAME = "asynq"
