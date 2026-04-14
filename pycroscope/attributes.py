@@ -206,25 +206,18 @@ def get_attribute(ctx: AttrContext) -> Value:
         if class_key is not None:
             can_assign_ctx = ctx.get_can_assign_context()
             type_object = can_assign_ctx.make_type_object(class_key)
-            symbol = type_object.get_declared_symbol_from_mro(ctx.attr, can_assign_ctx)
-            if symbol is not None:
-                uses_self = (
-                    symbol.annotation is not None
-                    and _contains_self_typevar(symbol.annotation)
-                ) or (
-                    symbol.initializer is not None
-                    and _contains_self_typevar(symbol.initializer)
-                )
-                if uses_self or symbol.is_classmethod:
-                    attribute = _get_type_object_attribute(
-                        type_object,
-                        ctx.attr,
-                        ctx,
-                        on_class=False,
-                        receiver_value=lookup_root_value,
-                    )
-                    if attribute is not None:
-                        return attribute.value
+            attribute = _get_type_object_attribute(
+                type_object,
+                ctx.attr,
+                ctx,
+                on_class=False,
+                receiver_value=lookup_root_value,
+            )
+            if attribute is not None and (
+                attribute.symbol.is_classmethod
+                or _contains_self_typevar(attribute.value)
+            ):
+                return attribute.value
     if (
         isinstance(ctx.root_value, SubclassValue)
         and isinstance(ctx.root_value.typ, TypeVarValue)
@@ -421,6 +414,8 @@ def _get_namedtuple_member_from_sequence_value(
         is_many, member = root_value.members[i]
         if is_many:
             return None
+        # TypeObject returns the declared field type; this path preserves the
+        # exact value stored in a synthetic namedtuple SequenceValue.
         return member
     return None
 
@@ -689,6 +684,8 @@ def _get_direct_attribute_from_synthetic_class(
         )
         if attribute is not None:
             return attribute.value
+        # Synthetic namedtuple fields after import failure can still reach this
+        # fallback when TypeObject cannot produce the specialized property value.
         raw_value = symbol.initializer
     elif symbol.annotation is not None and not symbol.is_method:
         raw_value = symbol.annotation
@@ -862,32 +859,6 @@ def _get_attribute_from_typed(
         )
         if resolved_instance is not None:
             return resolved_instance
-    if ctx.attr == "__hash__":
-        synthetic_class = ctx.get_synthetic_class(typ)
-        if synthetic_class is not None:
-            synthetic_hash = _get_direct_attribute_from_synthetic_class(
-                synthetic_class, "__hash__", ctx
-            )
-            if synthetic_hash is not UNINITIALIZED_VALUE:
-                return synthetic_hash
-        # Preserve explicit __hash__ = None from runtime classes. The generic
-        # class-attribute unwrapping path widens None to Any, which hides
-        # unhashable types in assignability checks.
-        try:
-            mro = list(type.mro(typ))
-        except Exception:
-            mro = []
-        for base_cls in mro:
-            try:
-                base_dict = base_cls.__dict__
-            except Exception:
-                continue
-            if "__hash__" not in base_dict:
-                continue
-            if base_dict["__hash__"] is None:
-                return KnownValue(None)
-            break
-
     result, provider, should_unwrap = _get_attribute_from_mro(typ, ctx, on_class=False)
     result = _substitute_typevars(typ, generic_args, result, provider, ctx)
     if should_unwrap:
@@ -908,11 +879,8 @@ def _get_attribute_from_typed(
 def _get_runtime_class_attribute_from_synthetic_class(
     typ: type, ctx: AttrContext
 ) -> Value:
-    if ctx.attr == "__slots__":
-        try:
-            return KnownValue(getattr(typ, ctx.attr))
-        except Exception:
-            pass
+    # Runtime Enum lookup preserves literal enum members for enum.member()
+    # helpers and aliases that TypeObject currently widens to Any.
     if safe_issubclass(typ, Enum):
         try:
             runtime_enum_member = getattr(typ, ctx.attr)
@@ -998,6 +966,9 @@ def _unwrap_value_from_typed(result: Value, typ: type, ctx: AttrContext) -> Valu
             ),
         )
         if attr is not None:
+            # The initial TypeObject result may be bypassed for enum and
+            # namedtuple precision; runtime property unwrapping still needs
+            # this resolved descriptor value.
             return attr.value
     elif is_bound_classmethod(cls_val):
         return result
@@ -1138,8 +1109,10 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
             attribute.symbol.returns_self_on_class_access
             or _contains_self_typevar(attribute.value)
             or (
-                attribute.symbol.annotation is not None
-                and _contains_self_typevar(attribute.symbol.annotation)
+                ctx.attr not in {"__doc__", "__name__", "__qualname__", "__module__"}
+                and not safe_issubclass(obj, Enum)
+                and attribute.symbol.annotation is not None
+                and not attribute.symbol.is_method
             )
         ):
             result = attribute.value
@@ -1261,6 +1234,9 @@ def _get_attribute_from_mro(
             # broken mro method
             pass
         else:
+            use_runtime_annotations = (
+                ctx.get_can_assign_context().make_type_object(typ).is_namedtuple_like()
+            )
             for base_cls in mro:
                 typeshed_type = ctx.get_attribute_from_typeshed(
                     base_cls, on_class=on_class
@@ -1279,22 +1255,24 @@ def _get_attribute_from_mro(
                 except Exception:
                     continue
 
-                try:
-                    # Make sure to use only __annotations__ that are actually on this
-                    # class, not ones inherited from a base class.
-                    # Starting in 3.10, __annotations__ is not inherited.
-                    if sys.version_info >= (3, 14):
-                        annotations = get_annotations(
-                            base_cls, format=Format.FORWARDREF
-                        )
+                if use_runtime_annotations:
+                    try:
+                        # Make sure to use only __annotations__ that are actually on
+                        # this class, not ones inherited from a base class.
+                        if sys.version_info >= (3, 14):
+                            annotations = get_annotations(
+                                base_cls, format=Format.FORWARDREF
+                            )
+                        else:
+                            annotations = get_annotations(base_cls)  # pragma: no cover
+                    except Exception:
+                        pass
                     else:
-                        annotations = get_annotations(base_cls)  # pragma: no cover
-                except Exception:
-                    pass
-                else:
-                    triple = _get_triple_from_annotations(annotations, base_cls, ctx)
-                    if triple is not None:
-                        return triple
+                        triple = _get_triple_from_annotations(
+                            annotations, base_cls, ctx
+                        )
+                        if triple is not None:
+                            return triple
 
                 try:
                     # Make sure we use only the object from this class, but do invoke
