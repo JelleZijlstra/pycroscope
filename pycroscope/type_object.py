@@ -8,7 +8,6 @@ import ast
 import builtins
 import collections.abc
 import enum
-import functools
 import inspect
 import sys
 import types
@@ -2608,28 +2607,6 @@ def normalize_synthetic_descriptor_attribute(
     if isinstance(value, KnownValue) and isinstance(value.val, classmethod):
         return KnownValue(value.val.__func__)
     return value
-
-
-def _get_cached_property_return_type(
-    descriptor: Value, ctx: CanAssignContext
-) -> Value | None:
-    descriptor = replace_fallback(descriptor)
-    if isinstance(descriptor, AnnotatedValue):
-        descriptor = replace_fallback(descriptor.value)
-    if not (
-        isinstance(descriptor, KnownValue)
-        and isinstance(descriptor.val, functools.cached_property)
-    ):
-        return None
-    func = safe_getattr(descriptor.val, "func", None)
-    if func is None:
-        return None
-    signature = ctx.get_signature(func)
-    if isinstance(signature, Signature):
-        return signature.return_value
-    if isinstance(signature, OverloadedSignature):
-        return unite_values(*(sig.return_value for sig in signature.signatures))
-    return None
 
 
 def _class_key_and_generic_args_from_type_value(

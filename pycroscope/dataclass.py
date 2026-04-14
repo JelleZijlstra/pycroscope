@@ -1,6 +1,5 @@
 """Dataclass-specific helpers."""
 
-import types
 from collections.abc import Callable
 
 import pycroscope
@@ -13,7 +12,6 @@ from .signature import (
     SigParameter,
 )
 from .value import (
-    AnnotatedValue,
     AnySource,
     AnyValue,
     CallableValue,
@@ -22,12 +20,9 @@ from .value import (
     GenericValue,
     KnownValue,
     Qualifier,
-    SyntheticClassObjectValue,
     TypedValue,
     Value,
-    annotate_value,
     get_self_param,
-    replace_fallback,
 )
 
 
@@ -201,66 +196,3 @@ def apply_synthetic_attributes(
         )
 
     # TODO: should also synthesize order comparison methods if order=True
-
-
-def maybe_resolve_synthetic_descriptor_attribute(
-    synthetic_class: SyntheticClassObjectValue,
-    attr_name: str,
-    value: Value,
-    ctx: "pycroscope.attributes.AttrContext",
-    *,
-    on_class: bool,
-    descriptor_value: Value | None = None,
-    descriptor_get_type: Callable[..., Value | None],
-) -> Value:
-    type_object = ctx.get_can_assign_context().make_type_object(
-        synthetic_class.class_type.typ
-    )
-    if (
-        type_object.get_direct_dataclass_info() is None
-        or (
-            (symbol := type_object.get_declared_symbol(attr_name)) is not None
-            and symbol.is_method
-        )
-        or (attr_name.startswith("__") and attr_name.endswith("__"))
-    ):
-        return value
-    descriptor_candidate = descriptor_value if descriptor_value is not None else value
-    normalized_candidate = replace_fallback(descriptor_candidate)
-    if isinstance(normalized_candidate, AnnotatedValue):
-        normalized_candidate = replace_fallback(normalized_candidate.value)
-    # TODO: this whole function is weird, we shouldn't need this if we have proper
-    # descriptor resolution in type_object.py.
-    if (
-        descriptor_value is not None
-        and isinstance(normalized_candidate, KnownValue)
-        and isinstance(
-            normalized_candidate.val, (types.FunctionType, types.BuiltinFunctionType)
-        )
-    ):
-        return value
-    if not isinstance(normalized_candidate, (KnownValue, SyntheticClassObjectValue)):
-        if not isinstance(normalized_candidate, TypedValue):
-            return value
-        descriptor_type = ctx.get_can_assign_context().make_type_object(
-            normalized_candidate.typ
-        )
-        if descriptor_type.get_declared_symbol("__get__") is None:
-            return value
-    resolved = descriptor_get_type(
-        descriptor_candidate,
-        on_class=on_class,
-        instance_value=ctx.get_self_value(),
-        ctx=ctx,
-    )
-    if resolved is not None:
-        return resolved
-    if descriptor_value is not None:
-        return value
-    if not on_class and isinstance(value, AnnotatedValue):
-        inner_value = replace_fallback(value.value)
-        if isinstance(inner_value, KnownValue):
-            return annotate_value(TypedValue(type(inner_value.val)), value.metadata)
-    if not on_class and isinstance(value, KnownValue):
-        return TypedValue(type(value.val))
-    return value
