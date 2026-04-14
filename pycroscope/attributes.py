@@ -1146,15 +1146,10 @@ def _get_attribute_from_typed(
                 )
             )
         if synthetic_result is not UNINITIALIZED_VALUE:
-            is_bound_method = _is_synthetic_instance_method_attribute(
-                typ, ctx.attr, ctx
-            )
             synthetic_result = _substitute_typevars(
                 typ, generic_args, synthetic_result, typ, ctx
             )
-            if is_bound_method:
-                return synthetic_result
-            return set_self(synthetic_result, ctx.get_self_value())
+            return synthetic_result
     synthetic_attr = _get_runtime_attribute_from_synthetic_class(
         typ, generic_args, ctx, on_class=False
     )
