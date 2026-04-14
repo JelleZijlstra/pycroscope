@@ -1093,12 +1093,7 @@ def _get_attribute_from_typed(
         return TypedValue(dict)
     elif ctx.attr == "__doc__" and typ is type and generic_args:
         return unite_values(TypedValue(str), KnownValue(None))
-    pair = _get_classvar_attribute_type_from_runtime_annotations(typ, ctx)
-    if pair is not None:
-        classvar_type, owner = pair
-        ctx.record_usage(typ, classvar_type)
-        return set_self(classvar_type, ctx.get_self_value(), owner)
-    elif ctx.attr in {"__name__", "__qualname__", "__module__"} and (
+    if ctx.attr in {"__name__", "__qualname__", "__module__"} and (
         typ in {types.FunctionType, types.BuiltinFunctionType}
     ):
         # These are writable instance attributes on function objects. Returning
