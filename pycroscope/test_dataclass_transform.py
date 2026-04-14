@@ -1,5 +1,6 @@
 # static analysis: ignore
 
+
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
 
@@ -1218,6 +1219,9 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
 
         from typing_extensions import dataclass_transform
 
+        from pycroscope import assert_is_value
+        from pycroscope.value import AnySource, AnyValue
+
         T = TypeVar("T")
 
         class DataDescriptor:
@@ -1251,18 +1255,21 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
 
         @model
         class TransformModel:
-            b: ReadDescriptor[int]
-            a: DataDescriptor = DataDescriptor()
-            c: ReadDescriptor[str] = ReadDescriptor()
+            a: ReadDescriptor[int]
+            b: DataDescriptor = DataDescriptor()
+            c: ReadDescriptor[str] = ReadDescriptor[str]()
 
-        assert_type(TransformModel.a, DataDescriptor)
-        assert_type(TransformModel.b, list[int])
+        # TODO: We detect that this attribute does not exist but don't currently
+        # emit the error.
+        assert_is_value(TransformModel.a, AnyValue(AnySource.error))
+
+        assert_type(TransformModel.b, DataDescriptor)
         assert_type(TransformModel.c, list[str])
 
         transformed = TransformModel(ReadDescriptor(), 1, ReadDescriptor())
-        assert_type(transformed.a, int)
-        assert_type(transformed.b, int)
-        assert_type(transformed.c, str)
+        assert_type(transformed.a, ReadDescriptor[int])
+        assert_type(transformed.b, DataDescriptor)
+        assert_type(transformed.c, ReadDescriptor[str])
 
         # E: incompatible_argument
         TransformModel(ReadDescriptor(), DataDescriptor(), ReadDescriptor())

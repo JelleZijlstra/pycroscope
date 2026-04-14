@@ -74,7 +74,7 @@ class TestAttributes(TestNameCheckVisitorBase):
     def test_attribute_in_base_class(self):
         from typing import Optional
 
-        from typing_extensions import Literal
+        from typing_extensions import Literal, assert_type
 
         class Capybara:
             capybara_id: Optional[int] = None
@@ -813,13 +813,13 @@ class TestAttributes(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_synthetic_typevar_bound_class_attribute_after_import_failure(self):
-        from typing import TypeVar
+        from typing import ClassVar, TypeVar
 
         import does_not_exist  # noqa: F401
         from typing_extensions import assert_type
 
         class Base:
-            value: int
+            value: ClassVar[int]
 
             @classmethod
             def build(cls) -> type["Base"]:

@@ -29,8 +29,6 @@ from typing_extensions import assert_never
 
 import pycroscope
 
-from .stacked_scopes import Composite
-
 if TYPE_CHECKING:
     from .relations import Relation
 
@@ -64,6 +62,7 @@ from .signature import (
     as_concrete_signature,
     mark_ellipsis_style_any_tail_parameters,
 )
+from .stacked_scopes import Composite
 from .value import (
     NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
@@ -3391,7 +3390,7 @@ def _apply_descriptor_protocol_to_descriptor(
 
     value = _make_call(CallableValue(sig), args, policy=policy, ctx=ctx)
 
-    if merged_attribute.annotation is not None:
+    if is_instance_access and merged_attribute.annotation is not None:
         # If there's an annotation, believe it; it may have a more precise
         # type than the __get__ method.
         # (We still call __get__ first so we get errors from it.)
@@ -3459,7 +3458,11 @@ def _apply_descriptor_protocol(
             merged_attribute, ctx, policy, is_instance_access=is_instance_access
         )
 
-    if merged_attribute.annotation is not None:
+    if merged_attribute.annotation is not None and (
+        is_instance_access
+        or merged_attribute.is_classvar
+        or merged_attribute.initializer is not None
+    ):
         return _make_resolved_attribute(
             merged_attribute,
             value=merged_attribute.annotation,
@@ -3473,6 +3476,14 @@ def _apply_descriptor_protocol(
             value=merged_attribute.initializer,
             is_property=False,
             property_has_setter=False,
+        )
+
+    if merged_attribute.annotation is not None:
+        return _make_error_attribute(
+            merged_attribute,
+            CanAssignError(
+                f"Attribute '{merged_attribute.name}' only exists on instances"
+            ),
         )
 
     return _make_error_attribute(
