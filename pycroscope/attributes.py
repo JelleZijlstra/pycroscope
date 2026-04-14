@@ -147,9 +147,6 @@ class AttrContext:
     def record_attr_read(self, obj: Any) -> None:
         pass
 
-    def get_property_type_from_argspec(self, obj: property) -> Value:
-        raise NotImplementedError
-
     def resolve_name_from_typeshed(self, module: str, name: str) -> Value:
         raise NotImplementedError
 
@@ -971,19 +968,6 @@ def _signature_accepts_args(
     return True
 
 
-def _maybe_resolve_synthetic_property_attribute(
-    value: Value, ctx: AttrContext
-) -> Value:
-    if value is UNINITIALIZED_VALUE:
-        return value
-    candidate = replace_fallback(value)
-    if isinstance(candidate, AnnotatedValue):
-        candidate = replace_fallback(candidate.value)
-    if isinstance(candidate, KnownValue) and isinstance(candidate.val, property):
-        return ctx.get_property_type_from_argspec(candidate.val)
-    return value
-
-
 def _is_synthetic_initvar_attribute(
     self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
 ) -> bool:
@@ -1173,10 +1157,6 @@ def _get_attribute_from_typed(
                 )
             )
         if synthetic_result is not UNINITIALIZED_VALUE:
-            synthetic_result = _maybe_resolve_synthetic_property_attribute(
-                synthetic_result, ctx
-            )
-        if synthetic_result is not UNINITIALIZED_VALUE:
             is_bound_method = _is_synthetic_instance_method_attribute(
                 typ, ctx.attr, ctx
             )
@@ -1358,7 +1338,6 @@ def _unwrap_value_from_typed(result: Value, typ: type, ctx: AttrContext) -> Valu
         )
         if attr is not None:
             return attr.value
-        return ctx.get_property_type_from_argspec(cls_val)
     elif is_bound_classmethod(cls_val):
         return result
     elif inspect.isfunction(cls_val):

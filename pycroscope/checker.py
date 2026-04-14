@@ -108,7 +108,6 @@ from .value import (
     is_union,
     iter_type_params_in_value,
     replace_fallback,
-    set_self,
     type_param_to_value,
     typevartuple_value_to_members,
     unite_values,
@@ -2830,19 +2829,6 @@ class Checker:
 @dataclass
 class CheckerAttrContext(AttrContext):
     checker: Checker = field(repr=False)
-
-    def get_property_type_from_argspec(self, obj: property) -> Value:
-        if obj.fget is None:
-            return AnyValue(AnySource.inference)
-        getter = set_self(KnownValue(obj.fget), self.get_self_value())
-        getter_sig = self.checker.signature_from_value(getter)
-        bound = make_bound_method(getter_sig, self.root_composite, ctx=self.checker)
-        if bound is None:
-            return AnyValue(AnySource.inference)
-        concrete = bound.get_signature(ctx=self.checker)
-        if concrete is None or not concrete.has_return_value():
-            return AnyValue(AnySource.inference)
-        return concrete.return_value
 
     def resolve_name_from_typeshed(self, module: str, name: str) -> Value:
         return self.checker.ts_finder.resolve_name(module, name)
