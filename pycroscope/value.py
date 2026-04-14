@@ -1797,6 +1797,8 @@ class UnboundMethodValue(Value):
     """
     typevars: TypeVarMap | None = field(default=None, compare=False)
     """Extra TypeVars applied to this method."""
+    owner: object | None = field(default=None, compare=False)
+    """Owner that originally supplied the method, when known."""
 
     def __post_init__(self) -> None:
         if self.typevars is not None and not isinstance(self.typevars, TypeVarMap):
@@ -1807,14 +1809,20 @@ class UnboundMethodValue(Value):
     def get_method(self) -> Any | None:
         """Return the runtime callable for this ``UnboundMethodValue``, or
         None if it cannot be found."""
-        root = replace_fallback(self.composite.value)
         target: object
-        if isinstance(root, KnownValue):
-            target = root.val
+        if self.owner is not None and not isinstance(self.owner, str):
+            target = self.owner
         else:
-            target = root.get_type()
+            root = replace_fallback(self.composite.value)
+            if isinstance(root, KnownValue):
+                target = root.val
+            else:
+                target = root.get_type()
         try:
-            method = getattr(target, self.attr_name)
+            if self.owner is not None and not isinstance(self.owner, str):
+                method = inspect.getattr_static(target, self.attr_name)
+            else:
+                method = getattr(target, self.attr_name)
             if self.secondary_attr_name is not None:
                 try:
                     method = getattr(method, self.secondary_attr_name)
@@ -1855,7 +1863,18 @@ class UnboundMethodValue(Value):
         if signature is None:
             return None
         if isinstance(signature, pycroscope.signature.BoundMethodSignature):
-            signature = signature.get_signature(ctx=ctx)
+            self_annotation_value = None
+            receiver_value = self.composite.value
+            if (
+                isinstance(self.owner, type)
+                and isinstance(receiver_value, KnownValue)
+                and isinstance(receiver_value.val, type)
+                and isinstance(receiver_value.val, self.owner)
+            ):
+                self_annotation_value = receiver_value
+            signature = signature.get_signature(
+                ctx=ctx, self_annotation_value=self_annotation_value
+            )
         return signature
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "UnboundMethodValue":
@@ -1867,6 +1886,7 @@ class UnboundMethodValue(Value):
             self.composite.substitute_typevars(typevars),
             self.secondary_attr_name,
             typevars=merged_typevars,
+            owner=self.owner,
         )
 
     def __str__(self) -> str:

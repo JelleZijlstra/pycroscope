@@ -218,6 +218,24 @@ def test_unbound_method_value() -> None:
     assert_can_assign(val, CallableValue(Signature.make([])))
 
 
+def test_unbound_method_value_preserves_owner_for_metaclass_method() -> None:
+    class Meta(type):
+        def __getitem__(self, item: object) -> int:
+            return 1
+
+    class Box(metaclass=Meta):
+        def __getitem__(self, item: object) -> str:
+            return ""
+
+    val = value.UnboundMethodValue(
+        "__getitem__", Composite(KnownValue(Box)), owner=Meta
+    )
+    assert val.get_method() is Meta.__getitem__
+    signature = val.get_signature(CTX)
+    assert signature is not None
+    assert signature.return_value == TypedValue(int)
+
+
 def test_typed_value() -> None:
     val = TypedValue(str)
     assert val.typ is str

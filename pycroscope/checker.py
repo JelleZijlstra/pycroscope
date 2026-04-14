@@ -936,6 +936,8 @@ class Checker:
         return OverloadedSignature(signatures)
 
     def _get_unbound_method_owner(self, value: UnboundMethodValue) -> type | None:
+        if isinstance(value.owner, type):
+            return value.owner
         root = replace_fallback(value.composite.value)
         if isinstance(root, TypedValue) and isinstance(root.typ, type):
             return root.typ

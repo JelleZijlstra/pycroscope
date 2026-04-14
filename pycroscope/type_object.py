@@ -3310,6 +3310,11 @@ def _apply_descriptor_protocol_to_method(
                 if isinstance(initializer, KnownValueWithTypeVars)
                 else None
             ),
+            owner=(
+                merged_attribute.owner.typ
+                if isinstance(merged_attribute.owner.typ, type)
+                else None
+            ),
         )
     else:
         # We bind the initializer to the receiver

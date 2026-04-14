@@ -1370,31 +1370,43 @@ def _unwrap_value_from_typed(result: Value, typ: type, ctx: AttrContext) -> Valu
             if ctx.attr == "__new__":
                 # __new__ is implicitly a staticmethod
                 return result
-            return UnboundMethodValue(ctx.attr, ctx.root_composite, typevars=typevars)
+            return UnboundMethodValue(
+                ctx.attr, ctx.root_composite, typevars=typevars, owner=typ
+            )
         if isinstance(descriptor, staticmethod) or ctx.attr == "__new__":
             return result
         else:
-            return UnboundMethodValue(ctx.attr, ctx.root_composite, typevars=typevars)
+            return UnboundMethodValue(
+                ctx.attr, ctx.root_composite, typevars=typevars, owner=typ
+            )
     elif isinstance(cls_val, (types.MethodType, MethodDescriptorType, SlotWrapperType)):
         # built-in method; e.g. scope_lib.tests.SimpleDatabox.get
-        return UnboundMethodValue(ctx.attr, ctx.root_composite, typevars=typevars)
+        return UnboundMethodValue(
+            ctx.attr, ctx.root_composite, typevars=typevars, owner=typ
+        )
     elif _static_hasattr(cls_val, "binder_cls") and _static_hasattr(cls_val, "fn"):
         # qcore/asynq-style decorators expose a binder type on the descriptor but
         # still behave like methods when accessed through instances.
-        return UnboundMethodValue(ctx.attr, ctx.root_composite, typevars=typevars)
+        return UnboundMethodValue(
+            ctx.attr, ctx.root_composite, typevars=typevars, owner=typ
+        )
     elif (
         _static_hasattr(cls_val, "decorator")
         and _static_hasattr(cls_val, "instance")
         and not isinstance(cls_val.instance, type)
     ):
         # non-static method
-        return UnboundMethodValue(ctx.attr, ctx.root_composite, typevars=typevars)
+        return UnboundMethodValue(
+            ctx.attr, ctx.root_composite, typevars=typevars, owner=typ
+        )
     elif is_async_fn(cls_val):
         # static or class method
         return result
     elif _static_hasattr(cls_val, "func_code"):
         # Cython function probably
-        return UnboundMethodValue(ctx.attr, ctx.root_composite, typevars=typevars)
+        return UnboundMethodValue(
+            ctx.attr, ctx.root_composite, typevars=typevars, owner=typ
+        )
     transformed = ClassAttributeTransformer.transform_attribute(cls_val, ctx.options)
     if transformed is not None:
         return transformed
@@ -1547,7 +1559,10 @@ def _get_attribute_from_unbound(
     except AttributeError:
         return UNINITIALIZED_VALUE
     result = UnboundMethodValue(
-        root_value.attr_name, root_value.composite, secondary_attr_name=ctx.attr
+        root_value.attr_name,
+        root_value.composite,
+        secondary_attr_name=ctx.attr,
+        owner=root_value.owner,
     )
     ctx.record_usage(type(method), result)
     return result
