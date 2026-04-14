@@ -712,7 +712,6 @@ def _maybe_use_resolved_typed_instance_attribute(
     ctx: AttrContext,
 ) -> Value | None:
     symbol = attribute.symbol
-    raw_runtime_value = replace_fallback(attribute.raw_value)
     if symbol.is_method and not symbol.is_classmethod:
         # TypeObject may return a symbolic callable here, but callers of
         # attributes.py still rely on UnboundMethodValue for receiver binding.
@@ -720,11 +719,9 @@ def _maybe_use_resolved_typed_instance_attribute(
         if isinstance(legacy_method_value, UnboundMethodValue):
             return legacy_method_value
     if attribute.is_property:
-        if isinstance(raw_runtime_value, KnownValue) and isinstance(
-            raw_runtime_value.val, property
-        ):
-            return resolved_value
-        return None
+        if ctx.attr in {"name", "value", "_value_"} and safe_issubclass(typ, Enum):
+            return None
+        return resolved_value
     if symbol.is_classmethod:
         return resolved_value
     if (
@@ -732,26 +729,13 @@ def _maybe_use_resolved_typed_instance_attribute(
         and not symbol.is_classvar
         and not symbol.is_initvar
         and not symbol.is_method
+        and _contains_typevar(attribute.value)
+        and ctx.get_can_assign_context().make_type_object(typ).is_namedtuple_like()
     ):
-        # Need this because of:
-        # pycroscope/test_namedtuple.py::TestNamedTuple
-        # ::test_specialized_namedtuple_base_after_import_failure
-        # TODO: something wrong here with generic namedtuples?
-        if _contains_typevar(attribute.value):
-            return None
-    if (
-        not symbol.is_classvar
-        and not symbol.is_initvar
-        and attribute.value != attribute.declared_value
-        and not symbol.is_method
-    ):
-        normalized_resolved_value = replace_fallback(resolved_value)
-        if (
-            isinstance(normalized_resolved_value, TypedValue)
-            and isinstance(raw_runtime_value, KnownValue)
-            and _static_hasattr(raw_runtime_value.val, "fn")
-        ):
-            return None
+        # TypeObject currently leaves inherited synthetic namedtuple fields
+        # under-specialized after import failure; the runtime fallback below
+        # substitutes the base arguments correctly.
+        return None
     return resolved_value
 
 
@@ -859,11 +843,6 @@ def _get_attribute_from_typed(
     # First check values that are special in Python
     if ctx.attr == "__class__":
         return KnownValue(typ)
-    if ctx.attr == "__annotations__" and typ in {
-        types.FunctionType,
-        types.BuiltinFunctionType,
-    }:
-        return GenericValue(dict, [TypedValue(str), AnyValue(AnySource.explicit)])
     can_assign_ctx = ctx.get_can_assign_context()
     attribute = _get_type_object_attribute(
         can_assign_ctx.make_type_object(typ),
@@ -1135,11 +1114,6 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
         return hooked_value
 
     if not safe_isinstance(obj, type):
-        pair = _get_classvar_attribute_type_from_runtime_annotations(type(obj), ctx)
-        if pair is not None:
-            classvar_type, _ = pair
-            ctx.record_usage(type(obj), classvar_type)
-            return classvar_type
         can_assign_ctx = ctx.get_can_assign_context()
         attribute = _get_type_object_attribute(
             can_assign_ctx.make_type_object(type(obj)),
@@ -1251,45 +1225,6 @@ def _get_triple_from_annotations(
             return None
         if attr_type is not None:
             return (attr_type, owner, False)
-    return None
-
-
-def _get_classvar_attribute_type_from_runtime_annotations(
-    typ: type[object], ctx: AttrContext
-) -> tuple[Value, type] | None:
-    """Returns the declared type of a runtime ClassVar attribute, if available."""
-    try:
-        mro = list(type.mro(typ))
-    except Exception:
-        return None
-
-    for base_cls in mro:
-        try:
-            if sys.version_info >= (3, 14):
-                annotations = get_annotations(base_cls, format=Format.FORWARDREF)
-            else:
-                annotations = get_annotations(base_cls)  # pragma: no cover
-        except Exception:
-            continue
-
-        attr_expr = annotation_expr_from_annotations(
-            annotations,
-            ctx.attr,
-            ctx=RuntimeAnnotationsContext(owner=base_cls, self_key=base_cls),
-        )
-        if attr_expr is None:
-            continue
-
-        attr_type, qualifiers = attr_expr.maybe_unqualify(
-            {Qualifier.ClassVar, Qualifier.Final, Qualifier.InitVar}
-        )
-        if (
-            Qualifier.ClassVar in qualifiers
-            and Qualifier.InitVar not in qualifiers
-            and attr_type is not None
-        ):
-            return attr_type, base_cls
-
     return None
 
 
