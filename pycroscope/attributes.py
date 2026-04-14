@@ -688,12 +688,6 @@ def _get_typed_instance_lookup_receiver(ctx: AttrContext) -> Value | None:
 def _get_attribute_from_synthetic_class(
     class_key: type | str, self_value: Value, ctx: AttrContext
 ) -> Value:
-    # TODO: shouldn't be needed, should be handled by TypeObject.get_attribute
-    # First check values that are special in Python.
-    if ctx.attr == "__class__":
-        return KnownValue(type)
-    elif ctx.attr == "__dict__":
-        return TypedValue(dict)
     assert isinstance(self_value, SyntheticClassObjectValue)
     can_assign_ctx = ctx.get_can_assign_context()
     attribute = _get_type_object_attribute(
