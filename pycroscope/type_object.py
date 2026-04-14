@@ -231,7 +231,10 @@ class TypeObjectAttribute:
         return self.raw_value
 
     def __str__(self) -> str:
-        return f"<attribute {self.name} of {self.owner.typ} with value {self.value}>"
+        text = f"attribute {self.name} of {self.owner.typ} with value {self.value}"
+        if self.error is None:
+            return f"<{text}"
+        return f"<{text} and error {self.error}>"
 
 
 @dataclass(frozen=True, kw_only=True)
