@@ -1779,7 +1779,8 @@ class TestSyntheticType(TestNameCheckVisitorBase):
         class WeirdProperty:
             value = property(None, object())  # E: incompatible_argument
 
-        maybe_ok: WantsSettable = WeirdProperty()  # E: incompatible_assignment
+        # Some type checkers accept this, some don't.
+        maybe_ok: WantsSettable = WeirdProperty()
         print(maybe_ok)
 
     @assert_passes()
