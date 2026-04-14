@@ -2167,6 +2167,7 @@ class Signature:
                 self_annotation, self_annotation_value, Relation.ASSIGNABLE, ctx
             )
             if isinstance(tv_map, CanAssignError):
+                print("CNNAT ACES", tv_map, self_annotation, self_annotation_value)
                 return None
         else:
             tv_map = TypeVarMap()
