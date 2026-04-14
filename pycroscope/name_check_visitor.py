@@ -326,7 +326,6 @@ from .value import (
     make_coro_type,
     replace_fallback,
     replace_known_sequence_value,
-    set_self,
     stringify_object,
     tuple_members_from_value,
     type_param_to_value,
@@ -3412,14 +3411,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             class_key, attr_name
         )
         if match is not None and self._is_instance_only_symbol(match[1].symbol):
-            symbol = match[1].symbol
-            if symbol.annotation is not None and any(
-                isinstance(subval, TypeVarValue) and subval.typevar_param.is_self
-                for subval in symbol.annotation.walk_values()
-            ):
-                return set_self(
-                    symbol.annotation, bound_self_type_from_class_key(class_key)
-                )
             return match[1].value
         return UNINITIALIZED_VALUE
 
@@ -3620,7 +3611,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if obj.fget is None:
             return UNINITIALIZED_VALUE
 
-        getter = set_self(KnownValue(obj.fget), root_composite.value)
+        getter = KnownValue(obj.fget)
         return self.check_call(node, getter, [root_composite])
 
     def _can_assign_to_base(
