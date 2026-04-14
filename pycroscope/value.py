@@ -4676,9 +4676,10 @@ def stringify_object(obj: Any) -> str:
     if isinstance(obj, str):
         return obj
     try:
-        objclass = getattr(obj, "__objclass__", None)
-        if objclass is not None:
-            return f"{stringify_object(objclass)}.{obj.__name__}"
+        if not safe_isinstance(obj, type):
+            objclass = getattr(obj, "__objclass__", None)
+            if objclass is not None:
+                return f"{stringify_object(objclass)}.{obj.__name__}"
         module_name = getattr(obj, "__module__", None)
         qualname = getattr(obj, "__qualname__", None)
         name = getattr(obj, "__name__", None)

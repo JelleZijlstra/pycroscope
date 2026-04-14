@@ -2776,6 +2776,7 @@ def _bind_attribute_signature(
     if self_annotation_value is None:
         self_annotation_value = receiver_value
     signature = ctx.signature_from_value(value)
+    print("SIG SDFISG", signature, value)
     if isinstance(signature, BoundMethodSignature):
         shielded_signature, restore_typevars = _shield_nested_self_in_signature(
             signature.signature
@@ -3196,9 +3197,9 @@ def _apply_descriptor_protocol_to_classmethod(
     match merged_attribute.initializer:
         case CallableValue():
             value = merged_attribute.initializer
-        case KnownValueWithTypeVars(val=val) if _is_qcore_method_wrapper(val):
-            value = merged_attribute.initializer
-        case KnownValue(val=val) if _is_qcore_method_wrapper(val):
+        case KnownValue(val=val) if _is_qcore_method_wrapper(val) or safe_isinstance(
+            val, types.ClassMethodDescriptorType
+        ):
             value = merged_attribute.initializer
         case KnownValueWithTypeVars(
             val=builtins.classmethod() as val, typevars=typevars
@@ -3272,7 +3273,7 @@ def _apply_descriptor_protocol_to_method(
     # (e.g., use of secondary_attr_name), but UnboundMethodValue doesn't work
     # if there's no runtime method.
     receiver_class = policy.get_receiver_class(ctx)
-    print("REC CLASS", receiver_class, repr(receiver_class.get_type()))
+    print("REC CLASS", receiver_class, policy, repr(receiver_class.get_type()))
     if (
         not policy.prefer_symbolic
         and _is_method_like(initializer)
