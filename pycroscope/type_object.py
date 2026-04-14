@@ -3205,6 +3205,8 @@ def _apply_descriptor_protocol_to_classmethod(
             val=builtins.classmethod() as val, typevars=typevars
         ):
             value = KnownValueWithTypeVars(val=val.__func__, typevars=typevars)
+        case KnownValueWithTypeVars(val=types.MethodType() as val, typevars=typevars):
+            value = KnownValueWithTypeVars(val=val.__func__, typevars=typevars)
         case KnownValue(val=builtins.classmethod() as val):
             value = KnownValue(val.__func__)
         case GenericValue(
