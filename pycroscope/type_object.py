@@ -1847,7 +1847,16 @@ class TypeObject:
                 expected_attr = self.get_attribute(
                     member,
                     AttributePolicy(
-                        receiver=self_val, self_value=other_val, prefer_symbolic=True
+                        receiver=self_val,
+                        self_value=other_val,
+                        prefer_symbolic=True,
+                        visitor=(
+                            ctx
+                            if isinstance(
+                                ctx, pycroscope.name_check_visitor.NameCheckVisitor
+                            )
+                            else None
+                        ),
                     ),
                 )
                 if expected_attr is None:
@@ -2361,7 +2370,14 @@ def _resolve_member_access(
     access = tobj.get_attribute(
         member,
         AttributePolicy(
-            receiver=receiver_value, on_class=class_object_access, prefer_symbolic=True
+            receiver=receiver_value,
+            on_class=class_object_access,
+            prefer_symbolic=True,
+            visitor=(
+                ctx
+                if isinstance(ctx, pycroscope.name_check_visitor.NameCheckVisitor)
+                else None
+            ),
         ),
     )
     if access is None:

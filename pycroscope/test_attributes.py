@@ -256,6 +256,26 @@ class TestAttributes(TestNameCheckVisitorBase):
         def use_it():
             assert_type(Unhashable().prop, Any)
 
+    @assert_passes()
+    def test_protocol_property_assignment_does_not_internal_error_in_function_scope(
+        self,
+    ):
+        def capybara() -> None:
+            from typing import Protocol
+
+            class WantsSettable(Protocol):
+                @property
+                def value(self) -> int: ...
+
+                @value.setter
+                def value(self, new_value: int) -> None: ...
+
+            class WeirdProperty:
+                value = property(None, object())  # E: incompatible_argument
+
+            maybe_ok: WantsSettable = WeirdProperty()
+            print(maybe_ok)
+
     @assert_passes(run_in_both_module_modes=True)
     def test_property_on_class_object(self):
         from typing_extensions import assert_type
