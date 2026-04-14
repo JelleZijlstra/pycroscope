@@ -47,7 +47,6 @@ from .type_object import (
     TypeObject,
     TypeObjectAttribute,
     _class_key_from_value,
-    normalize_synthetic_descriptor_attribute,
 )
 from .value import (
     UNINITIALIZED_VALUE,
@@ -707,12 +706,7 @@ def _get_direct_attribute_from_synthetic_class(
         if symbol.is_classvar and not symbol.is_method:
             return AnyValue(AnySource.inference)
         return UNINITIALIZED_VALUE
-    result = _normalize_synthetic_class_attribute(
-        raw_value,
-        is_self_returning_classmethod=_is_synthetic_self_classmethod_attribute(
-            self_value, attr_name, ctx
-        ),
-    )
+    result = raw_value
     if _should_deliteralize_synthetic_enum_attr(self_value, attr_name, ctx):
         return _deliteralize_value(result)
     return result
@@ -789,37 +783,10 @@ def _is_synthetic_initvar_attribute(
     return symbol is not None and symbol.is_initvar
 
 
-def _is_synthetic_self_classmethod_attribute(
-    self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
-) -> bool:
-    class_type = self_value.class_type
-    can_assign_ctx = ctx.get_can_assign_context()
-    attribute = _get_type_object_attribute(
-        can_assign_ctx.make_type_object(class_type.typ),
-        attr_name,
-        ctx,
-        on_class=True,
-        receiver_value=class_type,
-    )
-    if attribute is None:
-        return False
-    return attribute.symbol.returns_self_on_class_access
-
-
 def _maybe_mangle_private_name(attr_name: str, class_name: str) -> str | None:
     if not attr_name.startswith("__") or attr_name.endswith("__"):
         return None
     return f"_{class_name}{attr_name}"
-
-
-def _normalize_synthetic_class_attribute(
-    value: Value, *, is_self_returning_classmethod: bool = False
-) -> Value:
-    return normalize_synthetic_descriptor_attribute(
-        value,
-        is_self_returning_classmethod=is_self_returning_classmethod,
-        unknown_descriptor_means_any=False,
-    )
 
 
 def _should_deliteralize_synthetic_enum_attr(
@@ -945,7 +912,7 @@ def _get_attribute_from_typed(
                 synthetic_class, "__hash__", ctx
             )
             if synthetic_hash is not UNINITIALIZED_VALUE:
-                return set_self(synthetic_hash, ctx.get_self_value())
+                return synthetic_hash
         # Preserve explicit __hash__ = None from runtime classes. The generic
         # class-attribute unwrapping path widens None to Any, which hides
         # unhashable types in assignability checks.
@@ -961,7 +928,7 @@ def _get_attribute_from_typed(
             if "__hash__" not in base_dict:
                 continue
             if base_dict["__hash__"] is None:
-                return set_self(KnownValue(None), ctx.get_self_value(), base_cls)
+                return KnownValue(None)
             break
 
     result, provider, should_unwrap = _get_attribute_from_mro(typ, ctx, on_class=False)
@@ -970,7 +937,6 @@ def _get_attribute_from_typed(
         result = _unwrap_value_from_typed(result, typ, ctx)
     ctx.record_usage(typ, result)
     assert safe_isinstance(provider, type), repr(provider)
-    result = set_self(result, ctx.get_self_value(), provider)
     if ctx.attr in {"value", "_value_"} and safe_issubclass(typ, Enum):
         enum_value_type = (
             ctx.get_can_assign_context().make_type_object(typ).get_enum_value_type()
@@ -1015,7 +981,7 @@ def _get_runtime_class_attribute_from_synthetic_class(
         if direct is not UNINITIALIZED_VALUE:
             direct = _substitute_typevars(typ, (), direct, typ, ctx)
             direct = _unwrap_value_from_subclass(direct, ctx)
-            return set_self(direct, ctx.get_self_value(), typ)
+            return direct
     return UNINITIALIZED_VALUE
 
 
@@ -1248,13 +1214,17 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
             result = AnyValue(AnySource.from_another)
     if not safe_isinstance(provider, type):
         provider = type(provider)
-    if isinstance(result, KnownValue) and (
-        safe_isinstance(result.val, types.MethodType)
-        or safe_isinstance(result.val, types.BuiltinFunctionType)
-        and result.val.__self__ is obj
+    if safe_isinstance(obj, type) or (
+        isinstance(result, KnownValue)
+        and (
+            safe_isinstance(result.val, types.MethodType)
+            or safe_isinstance(result.val, types.BuiltinFunctionType)
+            and result.val.__self__ is obj
+        )
     ):
-        result = set_self(result, ctx.get_self_value(), provider)
-    elif safe_isinstance(obj, type):
+        # Runtime class-object lookup still produces values with unspecialized
+        # Self for importable classes. TypeObject.get_attribute() handles many
+        # Self-sensitive cases above, but not all runtime MRO fallbacks.
         result = set_self(result, ctx.get_self_value(), provider)
     if isinstance(obj, (types.ModuleType, type)):
         ctx.record_usage(obj, result)
