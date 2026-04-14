@@ -519,20 +519,12 @@ def _get_attribute_from_subclass(
 ) -> Value:
     ctx.record_attr_read(typ)
 
-    # First check values that are special in Python
-    # TODO: remove these eventually, they should be handled by TypeObject.get_attribute
+    # TypeObject.get_attribute() is still less precise for these type[T]
+    # metadata attributes.
     if ctx.attr == "__class__":
         return KnownValue(type(typ))
-    elif ctx.attr == "__dict__":
-        return TypedValue(dict)
-    elif ctx.attr == "__bases__":
+    if ctx.attr == "__bases__":
         return GenericValue(tuple, [SubclassValue(TypedValue(object))])
-    elif ctx.attr in {"__name__", "__qualname__", "__module__"}:
-        # type[T] represents an arbitrary subclass of T, so class identity
-        # attributes should be widened from base-class literals.
-        return TypedValue(str)
-    elif ctx.attr == "__doc__":
-        return unite_values(TypedValue(str), KnownValue(None))
     can_assign_ctx = ctx.get_can_assign_context()
     attribute = _get_type_object_attribute(
         can_assign_ctx.make_type_object(typ),
@@ -722,6 +714,8 @@ def _maybe_use_resolved_typed_instance_attribute(
     symbol = attribute.symbol
     raw_runtime_value = replace_fallback(attribute.raw_value)
     if symbol.is_method and not symbol.is_classmethod:
+        # TypeObject may return a symbolic callable here, but callers of
+        # attributes.py still rely on UnboundMethodValue for receiver binding.
         legacy_method_value = _unwrap_value_from_typed(attribute.raw_value, typ, ctx)
         if isinstance(legacy_method_value, UnboundMethodValue):
             return legacy_method_value
@@ -865,23 +859,7 @@ def _get_attribute_from_typed(
     # First check values that are special in Python
     if ctx.attr == "__class__":
         return KnownValue(typ)
-    elif ctx.attr == "__dict__":
-        return TypedValue(dict)
-    elif ctx.attr == "__doc__" and typ is type and generic_args:
-        return unite_values(TypedValue(str), KnownValue(None))
-    if ctx.attr in {"__name__", "__qualname__", "__module__"} and (
-        typ in {types.FunctionType, types.BuiltinFunctionType}
-    ):
-        # These are writable instance attributes on function objects. Returning
-        # class-level literals like Literal["function"] is too strict.
-        return TypedValue(str)
-    elif ctx.attr in {"__name__", "__qualname__", "__module__"} and getattr(
-        typ, "_is_protocol", False
-    ):
-        # Protocol base classes expose class identity literals at runtime
-        # (e.g. Literal["typing"]), but protocol members should use str.
-        return TypedValue(str)
-    elif ctx.attr == "__annotations__" and typ in {
+    if ctx.attr == "__annotations__" and typ in {
         types.FunctionType,
         types.BuiltinFunctionType,
     }:
