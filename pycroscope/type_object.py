@@ -37,8 +37,6 @@ from .input_sig import AnySig, FullSignature, InputSigValue
 from .options import PyObjectSequenceOption
 from .relations import (
     infer_positional_generic_typevar_map,
-    intersect_values,
-    subtract_values,
     translate_generic_typevar_map,
 )
 from .safe import (
@@ -64,7 +62,6 @@ from .signature import (
 )
 from .stacked_scopes import Composite
 from .value import (
-    NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
     AnnotatedValue,
     AnySource,
@@ -110,7 +107,6 @@ from .value import (
     get_single_typevartuple_param,
     get_tv_map,
     match_typevar_arguments,
-    receiver_to_self_type,
     replace_fallback,
     replace_known_sequence_value,
     shield_nested_self_typevars,
@@ -347,7 +343,6 @@ class MergedAttribute:
     is_staticmethod: bool
     is_classvar: bool
     is_initvar: bool
-    returns_self_on_class_access: bool
     is_metaclass_owner: bool
 
 
@@ -2853,90 +2848,6 @@ def _shield_nested_self_in_signature(
     )
 
 
-def _value_contains_self_typevar(value: Value) -> bool:
-    return any(
-        isinstance(subval, TypeVarValue) and subval.typevar_param.is_self
-        for subval in value.walk_values()
-    )
-
-
-def _specialize_self_returning_classmethod(
-    raw_attr: Value,
-    normalized_attr: Value,
-    *,
-    policy: AttributePolicy,
-    ctx: CanAssignContext,
-    merged_attribute: MergedAttribute,
-) -> Value:
-    if not isinstance(normalized_attr, CallableValue):
-        return normalized_attr
-    substitutions = TypeVarMap()
-    raw_attr = replace_fallback(raw_attr)
-    self_value = policy.get_self_value(
-        ctx, is_metaclass=merged_attribute.is_metaclass_owner
-    )
-    if (
-        isinstance(raw_attr, GenericValue)
-        and raw_attr.typ is classmethod
-        and raw_attr.args
-    ):
-        inferred = get_tv_map(raw_attr.args[0], SubclassValue.make(self_value), ctx)
-        if not isinstance(inferred, CanAssignError):
-            substitutions = inferred
-    substitutions = substitutions.with_typevar(
-        get_self_param(merged_attribute.owner.typ), self_value
-    )
-    signature = normalized_attr.signature.substitute_typevars(substitutions)
-    return CallableValue(
-        _rewrite_self_returning_classmethod_signature(signature, self_value)
-    )
-
-
-def _rewrite_self_returning_classmethod_signature(
-    signature: Signature | OverloadedSignature, receiver_for_self: Value
-) -> Signature | OverloadedSignature:
-    receiver_key = _class_key_from_value(receiver_for_self)
-
-    def rewrite_return(return_value: Value) -> Value:
-        root = replace_fallback(return_value)
-        if receiver_key is None:
-            return return_value
-        if (
-            isinstance(root, KnownValueWithTypeVars)
-            and isinstance(root.val, type)
-            and class_keys_match(root.val, receiver_key)
-        ):
-            return receiver_for_self
-        if (
-            isinstance(root, SubclassValue)
-            and isinstance(root.typ, TypeVarValue)
-            and root.typ.typevar_param.is_self
-        ):
-            return SubclassValue.make(receiver_for_self)
-        if (
-            isinstance(root, SubclassValue)
-            and (subclass_key := _class_key_from_value(root.typ)) is not None
-            and class_keys_match(subclass_key, receiver_key)
-        ):
-            return SubclassValue.make(receiver_for_self)
-        return return_value
-
-    if isinstance(signature, Signature):
-        return replace(signature, return_value=rewrite_return(signature.return_value))
-    return OverloadedSignature(
-        tuple(
-            replace(sig, return_value=rewrite_return(sig.return_value))
-            for sig in signature.signatures
-        )
-    )
-
-
-def _classmethod_receiver_value_from_type_value(
-    receiver_value: TypedValue | TypeVarValue | GenericValue,
-) -> SubclassValue:
-    return SubclassValue(receiver_value)
-
-
 def _is_informative_runtime_attribute(attribute: SpecializedAttribute) -> bool:
     if isinstance(attribute.selected.owner.typ, str):
         # for synthetic classes, assume all symbols were explicitly created and are useful
@@ -3020,16 +2931,6 @@ def _make_merged_attribute(
     is_initvar = (
         runtime_symbol.is_initvar if runtime_symbol is not None else False
     ) or (typeshed_symbol.is_initvar if typeshed_symbol is not None else False)
-    returns_self_on_class_access = (
-        runtime_symbol.returns_self_on_class_access
-        if runtime_symbol is not None and runtime_symbol.returns_self_on_class_access
-        else (
-            typeshed_symbol.returns_self_on_class_access
-            if (runtime_symbol is None or runtime_symbol.is_method)
-            and typeshed_symbol is not None
-            else False
-        )
-    )
     annotation = _merge_symbol_type_information(
         # Prefer the typeshed annotation
         typeshed_attribute.annotation if typeshed_attribute is not None else None,
@@ -3053,7 +2954,6 @@ def _make_merged_attribute(
         is_staticmethod=is_staticmethod,
         is_classvar=is_classvar,
         is_initvar=is_initvar,
-        returns_self_on_class_access=returns_self_on_class_access,
         is_metaclass_owner=is_metaclass_owner,
     )
 
@@ -3504,28 +3404,6 @@ def _apply_descriptor_protocol(
     )
 
 
-def _is_prebound_synthetic_classmethod(value: Value) -> bool:
-    value = replace_fallback(value)
-    return isinstance(value, GenericValue) and value.typ is classmethod
-
-
-def _get_typed_descriptor_value(
-    merged_attribute: MergedAttribute, lookup_value: Value, ctx: CanAssignContext
-) -> Value:
-    initializer = merged_attribute.initializer
-    if initializer is None:
-        return lookup_value
-    typed_value = normalize_synthetic_descriptor_attribute(
-        initializer,
-        owner=merged_attribute.owner.typ,
-        is_self_returning_classmethod=merged_attribute.returns_self_on_class_access,
-        unknown_descriptor_means_any=False,
-    )
-    if _is_callable_member_value(typed_value, ctx):
-        return typed_value
-    return lookup_value
-
-
 def _is_selected_attribute_data_descriptor(
     selected: SelectedAttribute, ctx: CanAssignContext
 ) -> bool:
@@ -3546,42 +3424,6 @@ def _is_descriptor(value: Value, ctx: CanAssignContext) -> bool:
         or _descriptor_has_method(value, "__set__", ctx)
         or _descriptor_has_method(value, "__delete__", ctx)
     )
-
-
-def _get_descriptor_get_value(
-    descriptor: Value,
-    ctx: CanAssignContext,
-    *,
-    on_class: bool,
-    receiver_value: Value,
-    is_metaclass_owner: bool,
-) -> Value | None:
-    """Return the value produced by a descriptor's ``__get__`` call."""
-    cached_property_return = _get_cached_property_return_type(descriptor, ctx)
-    if cached_property_return is not None:
-        return cached_property_return
-    descriptor_receiver: Value
-    if on_class and not is_metaclass_owner:
-        descriptor_receiver = KnownValue(None)
-    else:
-        descriptor_receiver = receiver_value
-    match = _descriptor_method_match(
-        descriptor, "__get__", [descriptor_receiver, AnyValue(AnySource.inference)], ctx
-    )
-    if match is None:
-        return None
-    get_signature, _ = match
-    return_value = get_signature.return_value
-    self_type = receiver_to_self_type(descriptor, ctx)
-    if on_class and not is_metaclass_owner:
-        return_without_self = subtract_values(return_value, self_type, ctx)
-        if return_without_self != return_value:
-            narrowed_return = intersect_values(return_value, self_type, ctx)
-            if narrowed_return is not NO_RETURN_VALUE:
-                return_value = narrowed_return
-    else:
-        return_value = subtract_values(return_value, self_type, ctx)
-    return return_value
 
 
 def _runtime_descriptor_owner(descriptor: KnownValue | TypedValue) -> type | None:
@@ -3627,24 +3469,6 @@ def _descriptor_has_method(
     if _descriptor_type_object(descriptor, method_name, ctx) is None:
         return False
     return _descriptor_method_signature_any(descriptor, method_name, ctx) is not None
-
-
-def _descriptor_method_match(
-    descriptor: Value, method_name: str, args: Sequence[Value], ctx: CanAssignContext
-) -> tuple[Signature, int] | None:
-    """Pick the descriptor overload that accepts the simulated descriptor call."""
-    signature = _descriptor_method_signature_any(descriptor, method_name, ctx)
-    if signature is None:
-        return None
-    selected = _select_matching_descriptor_signature(signature, args, ctx)
-    if selected is not None:
-        return selected, 0
-    selected = _select_matching_descriptor_signature(
-        signature, [descriptor, *args], ctx
-    )
-    if selected is None:
-        return None
-    return selected, 1
 
 
 # TODO: replace this with something based on TypeObject.get_attribute()
