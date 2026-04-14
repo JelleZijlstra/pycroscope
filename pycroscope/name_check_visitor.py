@@ -13856,6 +13856,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return Composite(self.being_assigned, composite, node)
         elif isinstance(node.ctx, ast.Load):
             root_composite = self._get_locally_narrowed_composite(root_composite, node)
+            if self.in_annotation and isinstance(root_composite.value, KnownValue):
+                try:
+                    attr_value = getattr(root_composite.value.val, node.attr)
+                except AttributeError:
+                    pass
+                else:
+                    # Annotation metadata may need the exact runtime object. The
+                    # normal attribute path can intentionally widen class attrs.
+                    return Composite(KnownValue(attr_value), composite, node)
             if self._is_checking():
                 if (
                     isinstance(root_composite.value, KnownValue)
