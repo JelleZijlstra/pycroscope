@@ -2723,19 +2723,6 @@ def _typevar_map_from_type_value(
     return TypeVarMap()
 
 
-def _specialize_symbol_for_owner(
-    receiver_tobj: TypeObject,
-    owner_tobj: TypeObject,
-    symbol: ClassSymbol,
-    ctx: CanAssignContext,
-    policy: AttributePolicy,
-) -> ClassSymbol:
-    substitutions = _get_symbol_owner_substitutions_from_type_objects(
-        receiver_tobj, owner_tobj, ctx=ctx, policy=policy
-    )
-    return symbol.substitute_typevars(substitutions)
-
-
 def _specialize_selected_attribute(
     receiver_tobj: TypeObject,
     selected: SelectedAttribute,
@@ -3810,46 +3797,6 @@ def _get_typed_descriptor_value(
     if _is_callable_member_value(typed_value, ctx):
         return typed_value
     return lookup_value
-
-
-# TODO: remove
-def _get_attribute_value_from_symbol(
-    name: str,
-    symbol: ClassSymbol,
-    ctx: CanAssignContext,
-    *,
-    on_class: bool,
-    receiver_value: TypedValue | None,
-) -> Value:
-    """Compatibility wrapper for callers that still resolve from bare symbols."""
-    merged_attribute = MergedAttribute(
-        name=name,
-        owner=(
-            receiver_value.get_type_object(ctx)
-            if receiver_value is not None
-            else ctx.make_type_object(object)
-        ),
-        runtime_symbol=symbol,
-        typeshed_symbol=None,
-        annotation=symbol.annotation,
-        initializer=symbol.initializer,
-        property_info=symbol.property_info,
-        is_method=symbol.is_method,
-        is_classmethod=symbol.is_classmethod,
-        is_staticmethod=symbol.is_staticmethod,
-        is_classvar=symbol.is_classvar,
-        is_initvar=symbol.is_initvar,
-        returns_self_on_class_access=symbol.returns_self_on_class_access,
-        is_metaclass_owner=False,
-    )
-    value = _resolve_merged_attribute_access(
-        merged_attribute,
-        ctx,
-        policy=AttributePolicy(
-            on_class=on_class, receiver=receiver_value or AnyValue(AnySource.inference)
-        ),
-    ).value
-    return value
 
 
 def _is_selected_attribute_data_descriptor(

@@ -287,6 +287,23 @@ class TestCompare(TestNameCheckVisitorBase):
             "1" in it  # E: incompatible_argument
 
     @assert_passes()
+    def test_optional_unconstrained_typevar_equality(self):
+        from typing import TypeVar
+
+        T = TypeVar("T")
+        TInt = TypeVar("TInt", bound=int)
+
+        def capybara(result: T | None) -> bool:
+            results: list[T | None] = []
+            return any(existing == result for existing in results)
+
+        def hutia(x: T | None, y: T | None) -> bool:
+            return x == y
+
+        def pacarana(x: TInt | None, y: TInt | None) -> bool:
+            return x == y
+
+    @assert_passes()
     def test_failing_eq(self):
         class FlakyCapybara:
             def __eq__(self, other: int) -> bool:
