@@ -3530,64 +3530,6 @@ def _descriptor_method_signature_any(
     return signature
 
 
-def _select_matching_descriptor_signature(
-    signature: Signature | OverloadedSignature,
-    args: Sequence[Value],
-    ctx: CanAssignContext,
-) -> Signature | None:
-    """Choose the overload compatible with the simulated descriptor call."""
-    if isinstance(signature, Signature):
-        if _descriptor_signature_accepts_args(signature, args, ctx):
-            return signature
-        return None
-    for overload in signature.signatures:
-        if _descriptor_signature_accepts_args(overload, args, ctx):
-            return overload
-    return None
-
-
-def _descriptor_signature_accepts_args(
-    signature: Signature, args: Sequence[Value], ctx: CanAssignContext
-) -> bool:
-    """Cheap yes/no call check for simulated descriptor invocations.
-
-    Descriptor matching is especially sensitive to symbolic ``Self`` values.
-    Use direct parameter/argument assignability here so overload selection does
-    not trigger the broader call inference machinery.
-    """
-    ellipsis = signature.get_param_of_kind(ParameterKind.ELLIPSIS)
-    if ellipsis is not None:
-        return True
-
-    from .relations import Relation, has_relation
-
-    positional_params = [
-        parameter
-        for parameter in signature.parameters.values()
-        if parameter.kind
-        in (ParameterKind.POSITIONAL_ONLY, ParameterKind.POSITIONAL_OR_KEYWORD)
-    ]
-    variadic_param = signature.get_param_of_kind(ParameterKind.VAR_POSITIONAL)
-    if len(args) > len(positional_params) and variadic_param is None:
-        return False
-    for index, arg in enumerate(args):
-        if index < len(positional_params):
-            parameter = positional_params[index]
-        elif variadic_param is not None:
-            parameter = variadic_param
-        else:
-            return False
-        if isinstance(
-            has_relation(parameter.annotation, arg, Relation.ASSIGNABLE, ctx),
-            CanAssignError,
-        ):
-            return False
-    for parameter in positional_params[len(args) :]:
-        if parameter.default is None:
-            return False
-    return True
-
-
 def _substitute_symbol_value(value: Value, substitutions: TypeVarMap) -> Value:
     if not substitutions:
         return value
