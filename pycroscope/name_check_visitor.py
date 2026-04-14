@@ -13865,13 +13865,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return Composite(self.being_assigned, composite, node)
         elif isinstance(node.ctx, ast.Load):
             root_composite = self._get_locally_narrowed_composite(root_composite, node)
-            if self.in_annotation and isinstance(root_composite.value, KnownValue):
-                try:
-                    value = KnownValue(getattr(root_composite.value.val, node.attr))
-                except AttributeError:
-                    pass
-                else:
-                    return Composite(value, composite, node)
             if self._is_checking():
                 if (
                     isinstance(root_composite.value, KnownValue)
@@ -13888,28 +13881,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 use_fallback=True,
                 ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
             )
-            root_info = _attribute_root_class_info(root_composite.value)
-            if (
-                node.attr == "__slots__"
-                and root_info.is_class_object is True
-                and root_info.class_key is not None
-                and (
-                    synthetic_class := self.checker.get_synthetic_class(
-                        root_info.class_key
-                    )
-                )
-                is not None
-                and self._get_declared_symbol_initializer(
-                    synthetic_class.get_type_object(self.checker), "__slots__"
-                )
-                is None
-            ):
-                self._show_error_if_checking(
-                    node,
-                    f"{root_composite.value} has no attribute {node.attr!r}",
-                    ErrorCode.undefined_attribute,
-                )
-                value = AnyValue(AnySource.error)
             self._check_deprecated_property_getter(node, root_composite.value)
             self.check_deprecation(node, value)
             if self._should_use_varname_value(value):
@@ -14489,16 +14460,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             if resolved_self_value is None:
                 resolved_self_value = specialized_self_value
-        if isinstance(root_composite.value, TypeVarValue):
-            resolved_self_value = root_composite.value
-            lookup_root_value = root_composite.value.get_fallback_value()
-        elif isinstance(root_composite.value, SubclassValue) and isinstance(
-            root_composite.value.typ, TypeVarValue
-        ):
-            resolved_self_value = root_composite.value
-            lookup_root_value = SubclassValue.make(
-                root_composite.value.typ.get_fallback_value()
-            )
         if root_composite.value is NO_RETURN_VALUE:
             return NO_RETURN_VALUE
         fallback_root = replace_fallback(root_composite.value)
@@ -14535,8 +14496,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # fallback values for regular attribute lookup so attributes.get_attribute()
         # never receives a MultiValuedValue/IntersectionValue directly.
         is_type_alias_symbol = _is_type_alias_symbol_composite(root_composite)
-        if not isinstance(root_composite.value, TypeAliasValue):
-            is_type_alias_symbol = False
         if not is_type_alias_symbol:
             resolved_value = root_composite.value
             while True:
@@ -14567,13 +14526,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     use_fallback=use_fallback,
                     record_reads=record_reads,
                 )
-                if (
-                    subresult is UNINITIALIZED_VALUE
-                    and use_fallback
-                    and node is not None
-                    and not isinstance(subval_basic, IntersectionValue)
-                ):
-                    subresult = self._get_attribute_fallback(subval, attr, node)
                 subresult = _drop_uninitialized_value(subresult)
                 if (
                     subresult is UNINITIALIZED_VALUE
@@ -14722,12 +14674,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             # treated as having arbitrary attributes.
             has_dynamic_getattr = _static_hasattr(root_value.val, "__getattr__")
             if has_dynamic_getattr and _is_typing_alias_value(root_value.val):
-                has_dynamic_getattr = False
-            if (
-                attr == "__slots__"
-                and isinstance(root_value.val, type)
-                and self.checker.get_synthetic_class(root_value.val) is not None
-            ):
                 has_dynamic_getattr = False
             if not _has_only_known_attributes(
                 self.checker.ts_finder, root_value.val
