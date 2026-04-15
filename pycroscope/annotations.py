@@ -124,6 +124,7 @@ from .value import (
     PartialValue,
     PartialValueOperation,
     Qualifier,
+    SelfOwnerExtension,
     SequenceValue,
     SubclassValue,
     SyntheticClassObjectValue,
@@ -1940,6 +1941,8 @@ def _annotation_expr_from_value(value: Value, ctx: Context) -> AnnotationExpr:
 
 
 def _is_self_annotation_value(value: Value) -> bool:
+    if isinstance(value, AnnotatedValue):
+        value = value.value
     return isinstance(value, KnownValue) and is_typing_name(value.val, "Self")
 
 
@@ -1957,6 +1960,10 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
     elif isinstance(value, TypeFormValue):
         return value
     elif isinstance(value, AnnotatedValue):
+        self_owner = next(value.get_metadata_of_type(SelfOwnerExtension), None)
+        if self_owner is not None:
+            with override(ctx, "self_key", self_owner.class_key):
+                return _type_from_value(value.value, ctx)
         return _type_from_value(value.value, ctx)
     elif isinstance(value, PartialValue):
         if value.operation is PartialValueOperation.SUBSCRIPT:

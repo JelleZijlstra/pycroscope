@@ -284,6 +284,7 @@ from .value import (
     PredicateValue,
     PropertyInfo,
     ReferencingValue,
+    SelfOwnerExtension,
     SequenceValue,
     SimpleType,
     SkipDeprecatedExtension,
@@ -426,6 +427,10 @@ def _drop_uninitialized_value(value: Value) -> Value:
 
 
 def _runtime_union_operand_from_value(value: Value) -> object | None:
+    if isinstance(value, AnnotatedValue):
+        if value.has_metadata_of_type(SelfOwnerExtension):
+            return None
+        return _runtime_union_operand_from_value(value.value)
     value = replace_fallback(value)
     if isinstance(value, KnownValue):
         return value.val
@@ -2580,6 +2585,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self.node_context.contexts.pop()
         if ret is None:
             ret = VOID
+        ret = self._postprocess_inferred_value(ret)
         if self.annotate:
             set_inferred_value(node, ret)
         if self.error_for_implicit_any:
@@ -2591,6 +2597,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         ErrorCode.implicit_any,
                     )
         return ret
+
+    def _postprocess_inferred_value(self, value: Value) -> Value:
+        if self.current_class_key is None:
+            return value
+        if not _is_literal_self_expression_value(value):
+            return value
+        return annotate_value(value, [SelfOwnerExtension(self.current_class_key)])
 
     def generic_visit(self, node: ast.AST) -> None:
         # Inlined version of ast.Visitor.generic_visit for performance.
@@ -14733,6 +14746,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             composite = self.composite_from_walrus(node)
         else:
             composite = Composite(self.visit(node), None, node)
+        composite = Composite(
+            self._postprocess_inferred_value(composite.value),
+            composite.varname,
+            composite.node,
+        )
         if self.annotate:
             set_inferred_value(node, composite.value)
         return composite
@@ -16983,8 +17001,18 @@ def _is_self_type_value(value: Value) -> bool:
 
 
 def _is_self_expression_value(value: Value) -> bool:
+    if isinstance(value, AnnotatedValue):
+        return _is_self_expression_value(value.value)
     if is_self_typevar_value(value, include_nested_placeholders=True):
         return True
+    if isinstance(value, KnownValueWithTypeVars):
+        return is_typing_name(value.val, "Self")
+    return isinstance(value, KnownValue) and is_typing_name(value.val, "Self")
+
+
+def _is_literal_self_expression_value(value: Value) -> bool:
+    if isinstance(value, AnnotatedValue):
+        return _is_literal_self_expression_value(value.value)
     if isinstance(value, KnownValueWithTypeVars):
         return is_typing_name(value.val, "Self")
     return isinstance(value, KnownValue) and is_typing_name(value.val, "Self")
@@ -17346,6 +17374,8 @@ def _is_valid_implicit_type_alias_name_value(value: Value) -> bool:
     elif isinstance(value, AnyValue):
         return False
     elif isinstance(value, KnownValue):
+        if value.val is None:
+            return True
         return _is_definitely_class_object_value(value) or _is_typing_alias_value(
             value.val
         )

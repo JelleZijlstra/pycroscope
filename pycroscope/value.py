@@ -3376,6 +3376,14 @@ class Extension:
 
 
 @dataclass(frozen=True)
+class SelfOwnerExtension(Extension):
+    class_key: type | str
+
+    def __str__(self) -> str:
+        return f"SelfOwner[{self.class_key}]"
+
+
+@dataclass(frozen=True)
 class CustomCheckExtension(Extension):
     custom_check: CustomCheck
 
