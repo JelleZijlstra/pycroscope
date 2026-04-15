@@ -17462,6 +17462,10 @@ def _is_runtime_literal_index(value: Value) -> bool:
 
 
 def _should_use_static_annotation_subscript(value: Value) -> bool:
+    if isinstance(value, AnnotatedValue):
+        return _should_use_static_annotation_subscript(value.value)
+    if _is_self_expression_value(value):
+        return True
     if not isinstance(value, KnownValue):
         return False
     root = value.val
@@ -17475,6 +17479,8 @@ def _should_use_static_annotation_subscript(value: Value) -> bool:
 
 
 def _should_use_static_annotation_subscript_on_import_failure(value: Value) -> bool:
+    if isinstance(value, AnnotatedValue):
+        return _should_use_static_annotation_subscript_on_import_failure(value.value)
     if not isinstance(value, KnownValue):
         return False
     root = value.val

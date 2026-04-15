@@ -2092,6 +2092,18 @@ def _annotation_expr_from_subscripted_value(
 def _type_from_subscripted_value(
     root: Value, members: Sequence[Value], ctx: Context
 ) -> Value:
+    if isinstance(root, AnnotatedValue):
+        self_owner = next(root.get_metadata_of_type(SelfOwnerExtension), None)
+        if self_owner is not None:
+            with override(ctx, "self_key", self_owner.class_key):
+                return _type_from_subscripted_value(root.value, members, ctx)
+        return _type_from_subscripted_value(root.value, members, ctx)
+    if _is_self_annotation_value(root):
+        ctx.show_error(
+            "Self cannot be further subscripted",
+            error_code=ErrorCode.invalid_specialization,
+        )
+        return AnyValue(AnySource.error)
     if isinstance(root, GenericValue):
         root_type_param_list: list[TypeParam] = []
         for arg in root.args:

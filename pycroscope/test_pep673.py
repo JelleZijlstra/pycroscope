@@ -704,6 +704,14 @@ class TestPEP673(TestNameCheckVisitorBase):
                 raise NotImplementedError
 
     @assert_passes(run_in_both_module_modes=True)
+    def test_self_is_not_subscriptable(self):
+        from typing import Self
+
+        class Box:
+            def bad(self, other: Self[int]) -> None:  # E: invalid_specialization
+                raise NotImplementedError
+
+    @assert_passes(run_in_both_module_modes=True)
     def test_invalid_self_in_nested_class_body_method(self):
         from typing_extensions import Self
 
