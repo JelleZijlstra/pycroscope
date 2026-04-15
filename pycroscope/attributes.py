@@ -227,7 +227,10 @@ def get_attribute(ctx: AttrContext) -> Value:
         if class_key is not None:
             tobj = ctx.get_can_assign_context().make_type_object(class_key)
             attr = tobj.get_attribute(
-                ctx.attr, AttributePolicy(on_class=True, receiver=ctx.root_value.typ)
+                ctx.attr,
+                ctx.get_type_object_attribute_policy(
+                    on_class=True, receiver=ctx.root_value.typ
+                ),
             )
             if attr is not None:
                 return attr.value

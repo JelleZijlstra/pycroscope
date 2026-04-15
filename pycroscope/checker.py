@@ -1999,14 +1999,28 @@ class Checker:
 
         entries: list[_DataclassFieldEntry] = []
         for record in field_records:
-            symbol = tobj.get_declared_symbol_from_mro(record.field_name, self)
-            if symbol is None:
+            merged_attr = tobj._specialize_selected_attribute_pair(
+                record.field_name,
+                self,
+                policy=AttributePolicy(receiver=TypedValue(typ)),
+                selected=tobj._select_declared_attribute(record.field_name),
+            )
+            if merged_attr is None:
                 continue
             field_info = record.field_info
-            excluded = symbol.is_method or symbol.is_classvar or (not field_info.init)
+            excluded = (
+                merged_attr.is_method
+                or merged_attr.is_classvar
+                or (not field_info.init)
+            )
             if excluded:
                 continue
-            attr = symbol.get_effective_type()
+            if merged_attr.annotation is not None:
+                attr = merged_attr.annotation
+            elif merged_attr.initializer is not None:
+                attr = merged_attr.initializer
+            else:
+                attr = AnyValue(AnySource.inference)
             param_name = (
                 field_info.alias if field_info.alias is not None else record.field_name
             )
@@ -2030,7 +2044,7 @@ class Checker:
                         default=default,
                         annotation=annotation,
                     ),
-                    is_initvar=symbol.is_initvar,
+                    is_initvar=merged_attr.is_initvar,
                 )
             )
         return entries

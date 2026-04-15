@@ -201,7 +201,7 @@ class TestPEP673(TestNameCheckVisitorBase):
         from dataclasses import dataclass
         from typing import Generic, TypeVar
 
-        from typing_extensions import Self
+        from typing_extensions import Self, assert_type
 
         T = TypeVar("T")
 
@@ -213,6 +213,7 @@ class TestPEP673(TestNameCheckVisitorBase):
         @dataclass
         class OrdinalLinkedList(LinkedList[int]):
             def ordinal_value(self) -> str:
+                assert_type(self.value, int)
                 return str(self.value)
 
         xs = OrdinalLinkedList(
@@ -701,6 +702,19 @@ class TestPEP673(TestNameCheckVisitorBase):
         class Meta(type):
             def __new__(cls, *args: Any) -> Self:  # E: invalid_self_usage
                 raise NotImplementedError
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_self_is_not_subscriptable(self):
+        from typing_extensions import Self
+
+        class Box:
+            try:
+
+                def bad(self, other: Self[int]) -> None:  # E: invalid_specialization
+                    raise NotImplementedError
+
+            except TypeError:
+                pass
 
     @assert_passes(run_in_both_module_modes=True)
     def test_invalid_self_in_nested_class_body_method(self):
