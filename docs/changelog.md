@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Respect class-level runtime constructor signatures for some metaclass-driven and extension-backed classes, so keyword-only constructors like `repoguess.Params(...)` no longer fall back to a bogus `object.__init__` call shape.
 - Make the command-line runner inject `typing.reveal_type` into `builtins` before importing user modules, with a compatible fallback on older Python versions, so top-level runtime use of `reveal_type()` no longer fails during CLI analysis.
 - Weaken inferred constructor-return generics, so fresh values like `Box(1)` and nested `defaultdict(...)` calls can satisfy broader annotated generic targets without forcing explicit specialization.
 - Avoid internal errors for some constructor-style generic patterns like `type[T] | T`, and stop showing a misleading `None.` module prefix in messages for generated callables.
