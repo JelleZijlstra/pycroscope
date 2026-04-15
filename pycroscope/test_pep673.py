@@ -705,7 +705,7 @@ class TestPEP673(TestNameCheckVisitorBase):
 
     @assert_passes(run_in_both_module_modes=True)
     def test_self_is_not_subscriptable(self):
-        from typing import Self
+        from typing_extensions import Self
 
         class Box:
             try:
