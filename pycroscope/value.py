@@ -34,6 +34,7 @@ from collections.abc import (
     Callable,
     Collection,
     Container,
+    Generator,
     Iterable,
     Iterator,
     Mapping,
@@ -3809,20 +3810,20 @@ class AnnotatedValue(Value):
         for val in self.metadata:
             yield from val.walk_values()
 
-    def get_metadata_of_type(self, typ: type[T]) -> Iterable[T]:
+    def get_metadata_of_type(self, typ: type[T]) -> Generator[T, None, None]:
         """Return any metadata of the given type."""
         for data in self.metadata:
             if isinstance(data, typ):
                 yield data
 
-    def get_custom_check_of_type(self, typ: type[T]) -> Iterable[T]:
+    def get_custom_check_of_type(self, typ: type[T]) -> Generator[T, None, None]:
         """Return any CustomChecks of the given type in the metadata."""
         for custom_check in self.get_metadata_of_type(CustomCheckExtension):
             if isinstance(custom_check.custom_check, typ):
                 yield custom_check.custom_check
 
     def has_metadata_of_type(self, typ: type[Extension]) -> bool:
-        """Return whether there is metadat of the given type."""
+        """Return whether there is metadata of the given type."""
         return any(isinstance(data, typ) for data in self.metadata)
 
     def __str__(self) -> str:

@@ -201,7 +201,7 @@ class TestPEP673(TestNameCheckVisitorBase):
         from dataclasses import dataclass
         from typing import Generic, TypeVar
 
-        from typing_extensions import Self
+        from typing_extensions import Self, assert_type
 
         T = TypeVar("T")
 
@@ -213,6 +213,7 @@ class TestPEP673(TestNameCheckVisitorBase):
         @dataclass
         class OrdinalLinkedList(LinkedList[int]):
             def ordinal_value(self) -> str:
+                assert_type(self.value, int)
                 return str(self.value)
 
         xs = OrdinalLinkedList(
