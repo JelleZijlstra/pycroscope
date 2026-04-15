@@ -37,6 +37,15 @@ T = TypeVar("T")
 NT = NewType("NT", int)
 
 
+class _SignatureMeta(type):
+    def __call__(cls, *, x: int, y: str = "") -> object:
+        return super().__call__()
+
+
+class _SignatureParams(metaclass=_SignatureMeta):
+    pass
+
+
 def test_type_param_str_is_concise() -> None:
     bounded = TypeVar("S", bound=int)
     constrained = TypeVar("T", str, bytes)
@@ -207,6 +216,26 @@ def test_get_argspec_self() -> None:
     assert isinstance(sig.return_value, TypeVarValue)
     my_self = sig.return_value.typevar_param
     assert my_self.owner == ClassOwner(__name__, "ClassWithCall", ClassWithCall)
+
+
+def test_get_argspec_uses_class_level_signature_for_extension_like_class() -> None:
+    asc = Checker().arg_spec_cache
+    sig = asc.get_argspec(_SignatureParams)
+
+    assert isinstance(sig, Signature)
+    assert list(sig.parameters) == ["x", "y"]
+    assert sig.parameters["x"] == SigParameter(
+        "x", kind=ParameterKind.KEYWORD_ONLY, annotation=TypedValue(int)
+    )
+    assert sig.parameters["y"] == SigParameter(
+        "y",
+        kind=ParameterKind.KEYWORD_ONLY,
+        annotation=TypedValue(str),
+        default=KnownValue(""),
+    )
+    assert sig.callable is _SignatureMeta.__call__
+    assert sig.bound_receiver_param_name == "cls"
+    assert sig.return_value == TypedValue(object)
 
 
 def test_get_argspec():

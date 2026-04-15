@@ -1090,6 +1090,7 @@ class ArgSpecCache:
                     )
                     constructor = obj
                 else:
+                    class_signature = self._safe_get_signature(obj)
                     if override is not None:
                         constructor = override
                         inspect_sig = self._safe_get_signature(constructor)
@@ -1105,6 +1106,18 @@ class ArgSpecCache:
                         is_dunder_new = True
                         constructor = obj.__new__
                         inspect_sig = self._safe_get_signature(constructor)
+                    elif (
+                        safe_getattr(obj, "__init__", None) is object.__init__
+                        and class_signature is not None
+                        and class_signature.parameters
+                    ):
+                        constructor = obj
+                        inspect_sig = class_signature.replace(
+                            parameters=[
+                                _SELF_PARAM,
+                                *class_signature.parameters.values(),
+                            ]
+                        )
                     elif _is_plain_object_constructor(obj):
                         constructor = obj.__init__
                         inspect_sig = inspect.Signature(parameters=[_SELF_PARAM])
