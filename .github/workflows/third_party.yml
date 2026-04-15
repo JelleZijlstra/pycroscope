@@ -1,0 +1,21 @@
+name: Third Party
+
+on: [push, pull_request]
+
+jobs:
+  third-party:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install pycroscope
+        run: pip install .
+
+      - name: Run third-party checks
+        run: python tools/third_party_ci.py
