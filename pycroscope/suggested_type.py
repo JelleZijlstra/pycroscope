@@ -451,12 +451,16 @@ def _prepare_simple_type(value: SimpleType, ctx: CanAssignContext | None) -> Val
                 return SequenceValue(
                     tuple, [(False, prepare_type(elt, ctx)) for elt in members]
                 )
-        return GenericValue(value.typ, [prepare_type(arg, ctx) for arg in value.args])
+        return GenericValue(
+            value.typ, [prepare_type(arg, ctx) for arg in value.args], weak=value.weak
+        )
     elif isinstance(value, (TypedDictValue, CallableValue)):
         return value
     elif isinstance(value, GenericValue):
         # TODO maybe turn DictIncompleteValue into TypedDictValue?
-        return GenericValue(value.typ, [prepare_type(arg, ctx) for arg in value.args])
+        return GenericValue(
+            value.typ, [prepare_type(arg, ctx) for arg in value.args], weak=value.weak
+        )
     elif isinstance(value, VariableNameValue):
         return AnyValue(AnySource.unannotated)
     elif isinstance(value, KnownValue):

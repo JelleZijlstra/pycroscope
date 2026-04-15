@@ -981,7 +981,7 @@ def _sequence_common_getitem_impl(ctx: CallContext, typ: type) -> ImplReturn:
                     else:
                         # If the value contains unpacked values, we don't attempt
                         # to resolve the slice.
-                        return GenericValue(typ, self_value.args)
+                        return GenericValue(typ, self_value.args, weak=self_value.weak)
                 elif self_value.typ in (list, tuple, collections.abc.Sequence):
                     # For generics of exactly list/tuple, return the self type.
                     if from_tuple_subtype:
@@ -1006,7 +1006,9 @@ def _sequence_common_getitem_impl(ctx: CallContext, typ: type) -> ImplReturn:
                 if generated_tuple_sequence and isinstance(
                     original_self_value, GenericValue
                 ):
-                    return GenericValue(typ, original_self_value.args)
+                    return GenericValue(
+                        typ, original_self_value.args, weak=original_self_value.weak
+                    )
                 return self_value
             else:
                 ctx.show_error(f"Invalid {typ.__name__} key {key}")

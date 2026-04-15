@@ -555,13 +555,17 @@ class TestConstructors(TestNameCheckVisitorBase):
             my_enumerate([1], start="x")  # E: incompatible_argument
             assert_is_value(
                 my_enumerate([1]),
-                GenericValue("_pycroscope_tests.initnew.my_enumerate", [KnownValue(1)]),
+                GenericValue(
+                    "_pycroscope_tests.initnew.my_enumerate", [KnownValue(1)], weak=True
+                ),
             )
 
             overloadinit()  # E: incompatible_call
             assert_is_value(
                 overloadinit(1, "x", 2),
-                GenericValue("_pycroscope_tests.initnew.overloadinit", [KnownValue(2)]),
+                GenericValue(
+                    "_pycroscope_tests.initnew.overloadinit", [KnownValue(2)], weak=True
+                ),
             )
 
             simplenew()  # E: incompatible_call
@@ -572,7 +576,9 @@ class TestConstructors(TestNameCheckVisitorBase):
             overloadnew()  # E: incompatible_call
             assert_is_value(
                 overloadnew(1, "x", 2),
-                GenericValue("_pycroscope_tests.initnew.overloadnew", [KnownValue(2)]),
+                GenericValue(
+                    "_pycroscope_tests.initnew.overloadnew", [KnownValue(2)], weak=True
+                ),
             )
 
     @assert_passes()
@@ -1074,7 +1080,8 @@ class TestIntegration(TestNameCheckVisitorBase):
 
         def capybara():
             assert_is_value(
-                itertools.count(1), GenericValue(itertools.count, [TypedValue(int)])
+                itertools.count(1),
+                GenericValue(itertools.count, [TypedValue(int)], weak=True),
             )
 
     @assert_passes()
