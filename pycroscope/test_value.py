@@ -459,6 +459,21 @@ def test_nested_weak_tuple_value_arg_allows_empty_lists_in_defaultdict() -> None
     assert_can_assign(left, right)
 
 
+def test_weak_generic_allows_forward_only_invariant_assignability() -> None:
+    left = GenericValue(
+        dict, [TypedValue(str), GenericValue(dict, [TypedValue(str), TypedValue(int)])]
+    )
+    right = GenericValue(
+        dict,
+        [
+            TypedValue(str),
+            GenericValue(defaultdict, [TypedValue(str), TypedValue(int)], weak=True),
+        ],
+    )
+
+    assert_can_assign(left, right)
+
+
 def test_strong_list_is_assignable_to_empty_weak_list() -> None:
     assert_can_assign(SequenceValue(list, []), GenericValue(list, [TypedValue(int)]))
 
@@ -1200,7 +1215,7 @@ def test_unite_and_simplify() -> None:
     vals = [GenericValue(list, [TypedValue(int)]), KnownValue([])]
     assert unite_and_simplify(*vals, limit=2) == GenericValue(
         list, [TypedValue(int)]
-    ) | GenericValue(list, [AnyValue(AnySource.unreachable)])
+    ) | GenericValue(list, [AnyValue(AnySource.unreachable)], weak=True)
 
 
 def test_unpack_values() -> None:

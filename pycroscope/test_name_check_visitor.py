@@ -556,6 +556,27 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             force_runtime_module_load_failure=True,
         )
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_code_only_constructor_returns_are_weakened(self):
+        from collections import defaultdict
+        from typing import Generic, TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Box(Generic[T]):
+            value: T
+
+            def __init__(self, value: T) -> None:
+                self.value = value
+
+        def capybara() -> None:
+            box: Box[int | str] = Box(1)
+            nested: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+            assert_type(box.value, int | str)
+            assert_type(nested, dict[str, dict[str, int]])
+
     def test_code_only_import_failure_reports_failing_line(self):
         self.assert_passes(
             """

@@ -1038,9 +1038,7 @@ def _has_relation(
                     variances = _get_generic_variances(
                         comparison_left.typ, len(comparison_left.args), ctx
                     )
-                    strict_invariant = not isinstance(
-                        right, (SequenceValue, DictIncompleteValue)
-                    )
+                    strict_invariant = not _allows_forward_only_invariant_rhs(right)
                     bounds_maps = []
                     for i, (my_arg, their_arg, variance) in enumerate(
                         zip(comparison_left.args, generic_args, variances)
@@ -1280,12 +1278,20 @@ def _has_relation_for_generic_arg(
     forward = _has_relation_for_generic_arg_pair(left, right, relation, ctx)
     if isinstance(forward, CanAssignError):
         return forward
-    if relation is Relation.ASSIGNABLE and not strict_invariant:
+    if relation is Relation.ASSIGNABLE and (
+        not strict_invariant or _allows_forward_only_invariant_rhs(right)
+    ):
         return forward
     backward = _has_relation_for_generic_arg_pair(right, left, relation, ctx)
     if isinstance(backward, CanAssignError):
         return backward
     return unify_bounds_maps([forward, backward])
+
+
+def _allows_forward_only_invariant_rhs(value: Value) -> bool:
+    if isinstance(value, AnnotatedValue):
+        return _allows_forward_only_invariant_rhs(value.value)
+    return isinstance(value, GenericValue) and value.weak
 
 
 def _get_generic_variances(

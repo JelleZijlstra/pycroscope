@@ -2168,12 +2168,17 @@ class GenericValue(TypedValue):
 
     args: tuple[Value, ...]
     """The generic arguments to the type."""
+    weak: bool
+    """Whether assignability should relax invariant generic arguments on the RHS."""
 
-    def __init__(self, typ: type | str, args: Iterable[Value]) -> None:
+    def __init__(
+        self, typ: type | str, args: Iterable[Value], *, weak: bool = False
+    ) -> None:
         super().__init__(typ)
         args = tuple(args)
         assert all(isinstance(arg, Value) for arg in args), args
         self.args = args
+        self.weak = weak
 
     def __str__(self) -> str:
         if self.typ is tuple:
@@ -2181,7 +2186,8 @@ class GenericValue(TypedValue):
         else:
             args = self.args
         args_str = ", ".join(str(arg) for arg in args)
-        return f"{stringify_object(self.typ)}[{args_str}]"
+        weak_marker = "~" if self.weak else ""
+        return f"{stringify_object(self.typ)}{weak_marker}[{args_str}]"
 
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
@@ -2226,10 +2232,12 @@ class GenericValue(TypedValue):
                     )
                     continue
             new_args.append(substituted)
-        return GenericValue(self.typ, new_args)
+        return GenericValue(self.typ, new_args, weak=self.weak)
 
     def simplify(self) -> Value:
-        return GenericValue(self.typ, [arg.simplify() for arg in self.args])
+        return GenericValue(
+            self.typ, [arg.simplify() for arg in self.args], weak=self.weak
+        )
 
     def decompose(self) -> Iterable[Value] | None:
         if self.typ is tuple and len(self.args) == 1:
@@ -2266,7 +2274,7 @@ class SequenceValue(GenericValue):
         else:
             # Using Never for mutable types leads to issues
             args = (AnyValue(AnySource.unreachable),)
-        super().__init__(typ, args)
+        super().__init__(typ, args, weak=True)
         self.members = tuple(members)
 
     def get_member_sequence(self) -> Sequence[Value] | None:
@@ -2348,7 +2356,7 @@ class SequenceValue(GenericValue):
         arg = unite_values(*members)
         if arg is NO_RETURN_VALUE:
             arg = AnyValue(AnySource.unreachable)
-        return GenericValue(self.typ, [arg])
+        return GenericValue(self.typ, [arg], weak=True)
 
     def decompose(self) -> Iterable[Value] | None:
         if not self.members:
@@ -2430,7 +2438,7 @@ class DictIncompleteValue(GenericValue):
             value_type = unite_values(*[pair.value for pair in kv_pairs])
         else:
             key_type = value_type = AnyValue(AnySource.unreachable)
-        super().__init__(typ, (key_type, value_type))
+        super().__init__(typ, (key_type, value_type), weak=True)
         self.kv_pairs = tuple(kv_pairs)
 
     def __str__(self) -> str:
@@ -2457,7 +2465,7 @@ class DictIncompleteValue(GenericValue):
             key = AnyValue(AnySource.unreachable)
         if value is NO_RETURN_VALUE:
             value = AnyValue(AnySource.unreachable)
-        return GenericValue(self.typ, [key, value])
+        return GenericValue(self.typ, [key, value], weak=True)
 
     @property
     def items(self) -> Sequence[tuple[Value, Value]]:

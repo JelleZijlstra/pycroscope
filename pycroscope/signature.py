@@ -15,7 +15,7 @@ import warnings
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from types import FunctionType, MethodType
-from typing import Any, ClassVar, Literal, NamedTuple, TypeVar
+from typing import Any, ClassVar, Literal, NamedTuple, TypeVar, get_args, get_origin
 
 from typing_extensions import Self, assert_never
 
@@ -110,6 +110,7 @@ from .value import (
     UnboundMethodValue,
     UpperBound,
     Value,
+    Variance,
     _iter_typevar_map_items,
     _typevar_map_from_varlike_pairs,
     annotate_value,
@@ -192,6 +193,111 @@ def _should_widen_constructor_typevar_solutions(
         and isinstance(callable_obj, FunctionType)
         and callable_obj.__name__ in {"__init__", "__new__"}
     )
+
+
+def _constructor_origin_from_callee(callee: Value | None) -> type | str | None:
+    if callee is None:
+        return None
+    callee = replace_fallback(callee)
+    if (
+        isinstance(callee, PartialValue)
+        and callee.operation is PartialValueOperation.SUBSCRIPT
+    ):
+        return _constructor_origin_from_callee(callee.root)
+    if isinstance(callee, KnownValue):
+        origin = get_origin(callee.val)
+        if isinstance(origin, type):
+            return origin
+        if isinstance(callee.val, type):
+            return callee.val
+        return None
+    if isinstance(callee, SyntheticClassObjectValue):
+        return callee.class_type.typ
+    if isinstance(callee, SubclassValue):
+        typ = callee.typ
+        if isinstance(typ, GenericValue):
+            return typ.typ
+        if isinstance(typ, TypedValue):
+            return typ.typ
+        return None
+    return None
+
+
+def _constructor_should_preserve_strong_return(callee: Value | None) -> bool:
+    if callee is None:
+        return False
+    callee = replace_fallback(callee)
+    if (
+        isinstance(callee, PartialValue)
+        and callee.operation is PartialValueOperation.SUBSCRIPT
+    ):
+        return _constructor_should_preserve_strong_return(callee.root)
+    if isinstance(callee, SubclassValue):
+        return not isinstance(callee.typ, (TypedValue, GenericValue))
+    return False
+
+
+def _is_explicitly_specialized_constructor_callee(callee: Value | None) -> bool:
+    if callee is None:
+        return False
+    callee = replace_fallback(callee)
+    if (
+        isinstance(callee, PartialValue)
+        and callee.operation is PartialValueOperation.SUBSCRIPT
+    ):
+        return _constructor_origin_from_callee(callee.root) is not None
+    if isinstance(callee, KnownValue):
+        origin = get_origin(callee.val)
+        return isinstance(origin, type) and bool(get_args(callee.val))
+    return False
+
+
+def _should_weaken_call_return(
+    callable_obj: object | None,
+    callee: Value | None,
+    return_value: Value,
+    ctx: CanAssignContext,
+    *,
+    has_inferable_typevars: bool,
+) -> bool:
+    if not has_inferable_typevars:
+        return False
+    origin = _constructor_origin_from_callee(callee)
+    if origin is None or not isinstance(return_value, GenericValue):
+        return False
+    if return_value.typ != origin:
+        return False
+    if _constructor_should_preserve_strong_return(callee):
+        return False
+    if not _generic_has_invariant_type_parameters(return_value, ctx):
+        return False
+    if _is_explicitly_specialized_constructor_callee(callee):
+        return False
+    if isinstance(callable_obj, MethodType):
+        callable_obj = callable_obj.__func__
+    if isinstance(callable_obj, FunctionType):
+        return callable_obj.__name__ in {"__init__", "__new__"}
+    return True
+
+
+def _generic_has_invariant_type_parameters(
+    value: GenericValue, ctx: CanAssignContext
+) -> bool:
+    return any(
+        type_param.variance is Variance.INVARIANT
+        for type_param in ctx.get_type_parameters(value.typ)
+    )
+
+
+def _weaken_call_return(return_value: "Value | ImplReturn") -> "Value | ImplReturn":
+    if isinstance(return_value, ImplReturn):
+        inner = return_value.return_value
+        if isinstance(inner, GenericValue) and not inner.weak:
+            inner = GenericValue(inner.typ, inner.args, weak=True)
+        return ImplReturn(inner, return_value.constraint, return_value.no_return_unless)
+    if isinstance(return_value, GenericValue) and not return_value.weak:
+        return GenericValue(return_value.typ, return_value.args, weak=True)
+    return return_value
 
 
 def _get_constructor_literal_runtime_type(bounds: Sequence[Bound]) -> type | None:
@@ -1687,6 +1793,19 @@ class Signature:
                 )
             else:
                 return_value = partial_return
+        final_return_value = (
+            return_value.return_value
+            if isinstance(return_value, ImplReturn)
+            else return_value
+        )
+        if _should_weaken_call_return(
+            self.callable,
+            ctx.callee,
+            final_return_value,
+            ctx.can_assign_ctx,
+            has_inferable_typevars=bool(self.inferable_typevars),
+        ):
+            return_value = _weaken_call_return(return_value)
         ret = self._apply_annotated_constraints(return_value, composites, ctx)
         return CallReturn(
             ret,
