@@ -1179,10 +1179,14 @@ class TypeVarParam:
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, TypeVarParam):
             return NotImplemented
-        # TODO: incorporate owner
+        # TODO: incorporate owner unconditionally
+        if self.is_self:
+            return other.is_self and self.owner == other.owner
         return self.typevar == other.typevar
 
     def __hash__(self) -> int:
+        if self.is_self:
+            return hash((self.typevar, self.owner))
         return hash(self.typevar)
 
 
