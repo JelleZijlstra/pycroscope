@@ -2273,7 +2273,7 @@ def _type_from_subscripted_value(
             synthetic_typ, _canonicalize_generic_args_for_value(typed_members)
         )
 
-    if isinstance(root, TypedValue) and isinstance(root.typ, str):
+    if isinstance(root, TypedValue) and isinstance(root.typ, ClassOwner):
         synthetic_typ = root.typ
         can_assign_ctx = _get_can_assign_context(ctx)
         synthetic_type_params_for_str: Sequence[TypeParam] = ()

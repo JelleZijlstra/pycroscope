@@ -75,6 +75,7 @@ from .value import (
     CanAssignContext,
     CanAssignError,
     ClassKey,
+    ClassOwner,
     DataclassTransformDecoratorExtension,
     DataclassTransformInfo,
     DictIncompleteValue,
@@ -725,13 +726,13 @@ def _super_impl(ctx: CallContext) -> Value:
                     first_arg.typ, TypedValue
                 ):
                     typ = first_arg.typ.typ
-                    if isinstance(typ, str):
+                    if isinstance(typ, ClassOwner):
                         return AnyValue(AnySource.inference)
                     return SuperValue(KnownValue(current_class), first_arg)
                 elif isinstance(first_arg, KnownValue):
                     return SuperValue(KnownValue(current_class), first_arg)
                 elif isinstance(first_arg, TypedValue):
-                    if isinstance(first_arg.typ, str):
+                    if isinstance(first_arg.typ, ClassOwner):
                         return AnyValue(AnySource.inference)
                     return SuperValue(KnownValue(current_class), first_arg)
                 else:
@@ -773,7 +774,7 @@ def _super_impl(ctx: CallContext) -> Value:
             ErrorCode.bad_super_call,
         )
 
-    if isinstance(tobj.typ, str):
+    if isinstance(tobj.typ, ClassOwner):
         return AnyValue(AnySource.inference)
 
     try:

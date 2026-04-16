@@ -13644,7 +13644,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             fallback_lookup_val = callee_val.get_type_value(self)
         if isinstance(synthetic_lookup_val, TypedValue) and isinstance(
-            synthetic_lookup_val.typ, str
+            synthetic_lookup_val.typ, ClassOwner
         ):
             synthetic_class = self.checker.get_synthetic_class(synthetic_lookup_val.typ)
             if synthetic_class is not None:
