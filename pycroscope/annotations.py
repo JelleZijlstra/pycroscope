@@ -154,7 +154,9 @@ from .value import (
     bound_self_type_from_class_key,
     class_owner_from_key,
     get_single_typevartuple_param,
+    get_type_alias_root,
     get_typevar_variance,
+    is_type_alias_partial_operation,
     iter_type_params_in_value,
     match_typevar_arguments,
     replace_fallback,
@@ -1137,9 +1139,7 @@ def _make_runtime_type_alias_value(
             normalized_type_params
         ),
     )
-    return TypeAliasValue(
-        "<runtime_generic_alias>", module, alias, runtime_allows_value_call=True
-    )
+    return TypeAliasValue("<runtime_generic_alias>", module, alias)
 
 
 def _infer_alias_type_params_from_value(alias_value: Value) -> tuple[TypeParam, ...]:
@@ -1973,6 +1973,12 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
             return _type_from_subscripted_value(value.root, value.members, ctx)
         if value.operation is PartialValueOperation.BITOR:
             return _type_from_bitor_value(value.root, value.members, ctx)
+        if value.operation is PartialValueOperation.PEP_613_ALIAS:
+            assert isinstance(value.root, TypeAliasValue)
+            return value.root.get_value()
+        if value.operation is PartialValueOperation.PEP_695_ALIAS:
+            assert isinstance(value.root, TypeAliasValue)
+            return value.root
         return value.get_fallback_value()
     elif isinstance(value, PartialCallValue):
         type_param = make_type_param_from_value(value, ctx=ctx)
@@ -2095,6 +2101,14 @@ def _annotation_expr_from_subscripted_value(
 def _type_from_subscripted_value(
     root: Value, members: Sequence[Value], ctx: Context
 ) -> Value:
+    if isinstance(root, PartialValue) and is_type_alias_partial_operation(
+        root.operation
+    ):
+        specialized = _specialize_type_alias_partial(root, members, ctx)
+        if root.operation is PartialValueOperation.PEP_613_ALIAS:
+            return specialized.runtime_value
+        return specialized.root
+
     if isinstance(root, AnnotatedValue):
         self_owner = next(root.get_metadata_of_type(SelfOwnerExtension), None)
         if self_owner is not None:
@@ -2310,74 +2324,7 @@ def _type_from_subscripted_value(
             synthetic_typ, _canonicalize_generic_args_for_value(typed_members)
         )
     if isinstance(root, TypeAliasValue):
-        type_params = tuple(root.alias.get_type_params())
-        type_arguments_are_packed = False
-        if any(_is_unpack_annotation_member(member) for member in members):
-            normalized_unpack_members = _normalize_generic_unpack_members(members, ctx)
-        else:
-            normalized_unpack_members = None
-        saw_unpack = normalized_unpack_members is not None
-        has_unbounded_unpack = (
-            saw_unpack
-            and normalized_unpack_members is not None
-            and any(is_many for is_many, _ in normalized_unpack_members)
-        )
-        packed_variadic_members = _pack_typevartuple_args_from_unpack_members(
-            type_params, members, ctx
-        )
-        if packed_variadic_members is not None:
-            args_vals = packed_variadic_members
-            type_arguments_are_packed = True
-        elif (
-            not members
-            and len(type_params) == 1
-            and isinstance(type_params[0], TypeVarTupleParam)
-        ):
-            args_vals = [TypeVarTupleBindingValue(())]
-            type_arguments_are_packed = True
-        elif (
-            saw_unpack
-            and normalized_unpack_members is not None
-            and not has_unbounded_unpack
-        ):
-            unpacked_members = [member for _, member in normalized_unpack_members]
-            if len(unpacked_members) == len(type_params):
-                args_vals = [
-                    _type_from_value_type_alias_arg(member, type_param, ctx)
-                    for member, type_param in zip(unpacked_members, type_params)
-                ]
-            else:
-                args_vals = [
-                    _type_from_alias_argument_value(member, ctx)
-                    for member in unpacked_members
-                ]
-        elif len(members) == len(type_params):
-            args_vals = [
-                _type_from_value_type_alias_arg(member, type_param, ctx)
-                for member, type_param in zip(members, type_params)
-            ]
-        else:
-            args_vals = [
-                _type_from_alias_argument_value(member, ctx) for member in members
-            ]
-        if has_unbounded_unpack and packed_variadic_members is None:
-            ctx.show_error("Unpacked TypeVarTuple cannot specialize this type alias")
-        args_vals = _validate_type_alias_arg_values(type_params, args_vals, ctx)
-        alias_value = TypeAliasValue(
-            root.name,
-            root.module,
-            root.alias,
-            tuple(args_vals),
-            runtime_allows_value_call=root.runtime_allows_value_call,
-            uses_type_alias_object_semantics=root.uses_type_alias_object_semantics,
-            type_arguments_are_packed=type_arguments_are_packed,
-        )
-        if root.runtime_allows_value_call:
-            # Explicit `TypeAlias` declarations should behave like expanded types in
-            # annotation contexts so generic solving can bind function/class type
-            # variables precisely even when runtime module loading fails.
-            return alias_value.get_value()
-        return alias_value
+        return _specialize_type_alias_value(root, members, ctx)
 
     assert isinstance(root, Value)
     if not isinstance(root, KnownValue):
@@ -2604,6 +2551,84 @@ def _type_from_subscripted_value(
             return GenericValue(origin, typed_members)
         ctx.show_error(f"Unrecognized subscripted annotation: {root}")
         return AnyValue(AnySource.error)
+
+
+def _specialize_type_alias_partial(
+    root: PartialValue, members: Sequence[Value], ctx: Context
+) -> PartialValue:
+    assert is_type_alias_partial_operation(root.operation)
+    alias_root = get_type_alias_root(root)
+    assert alias_root is not None
+    specialized_root = _specialize_type_alias_value(alias_root, members, ctx)
+    runtime_value = (
+        specialized_root.get_value()
+        if root.operation is PartialValueOperation.PEP_613_ALIAS
+        else root.runtime_value
+    )
+    return PartialValue(root.operation, specialized_root, root.node, (), runtime_value)
+
+
+def _specialize_type_alias_value(
+    root: TypeAliasValue, members: Sequence[Value], ctx: Context
+) -> TypeAliasValue:
+    type_params = tuple(root.alias.get_type_params())
+    type_arguments_are_packed = False
+    if any(_is_unpack_annotation_member(member) for member in members):
+        normalized_unpack_members = _normalize_generic_unpack_members(members, ctx)
+    else:
+        normalized_unpack_members = None
+    saw_unpack = normalized_unpack_members is not None
+    has_unbounded_unpack = (
+        saw_unpack
+        and normalized_unpack_members is not None
+        and any(is_many for is_many, _ in normalized_unpack_members)
+    )
+    packed_variadic_members = _pack_typevartuple_args_from_unpack_members(
+        type_params, members, ctx
+    )
+    if packed_variadic_members is not None:
+        args_vals = packed_variadic_members
+        type_arguments_are_packed = True
+    elif (
+        not members
+        and len(type_params) == 1
+        and isinstance(type_params[0], TypeVarTupleParam)
+    ):
+        args_vals = [TypeVarTupleBindingValue(())]
+        type_arguments_are_packed = True
+    elif (
+        saw_unpack
+        and normalized_unpack_members is not None
+        and not has_unbounded_unpack
+    ):
+        unpacked_members = [member for _, member in normalized_unpack_members]
+        if len(unpacked_members) == len(type_params):
+            args_vals = [
+                _type_from_value_type_alias_arg(member, type_param, ctx)
+                for member, type_param in zip(unpacked_members, type_params)
+            ]
+        else:
+            args_vals = [
+                _type_from_alias_argument_value(member, ctx)
+                for member in unpacked_members
+            ]
+    elif len(members) == len(type_params):
+        args_vals = [
+            _type_from_value_type_alias_arg(member, type_param, ctx)
+            for member, type_param in zip(members, type_params)
+        ]
+    else:
+        args_vals = [_type_from_alias_argument_value(member, ctx) for member in members]
+    if has_unbounded_unpack and packed_variadic_members is None:
+        ctx.show_error("Unpacked TypeVarTuple cannot specialize this type alias")
+    args_vals = _validate_type_alias_arg_values(type_params, args_vals, ctx)
+    return TypeAliasValue(
+        root.name,
+        root.module,
+        root.alias,
+        tuple(args_vals),
+        type_arguments_are_packed=type_arguments_are_packed,
+    )
 
 
 def _maybe_get_extra(origin: type) -> ClassKey:

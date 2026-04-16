@@ -85,6 +85,7 @@ from .value import (
     _iter_typevar_map_items,
     _typevar_map_from_varlike_pairs,
     annotate_value,
+    get_type_alias_root,
     replace_fallback,
     set_self,
     unite_values,
@@ -192,11 +193,13 @@ def _get_type_object_attribute(
 
 
 def get_attribute(ctx: AttrContext) -> Value:
+    alias_root = get_type_alias_root(ctx.root_value)
     if (
-        isinstance(ctx.root_value, TypeAliasValue)
-        and ctx.root_value.uses_type_alias_object_semantics
+        alias_root is not None
+        and isinstance(ctx.root_value, PartialValue)
+        and ctx.root_value.operation is PartialValueOperation.PEP_695_ALIAS
     ):
-        return _get_attribute_from_type_alias(ctx.root_value, ctx)
+        return _get_attribute_from_type_alias(alias_root, ctx)
     lookup_root_value = (
         ctx.root_value if ctx.lookup_root_value is None else ctx.lookup_root_value
     )

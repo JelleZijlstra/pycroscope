@@ -2059,28 +2059,16 @@ class Checker:
             )
             if sig is not None:
                 return sig
-        if (
-            isinstance(value, TypeAliasValue)
-            and value.runtime_allows_value_call
-            and not value.type_arguments
-            and not value.alias.get_type_params()
-        ):
-            alias_value = value.get_value()
-            # Explicit TypeAlias declarations can denote class objects (e.g.
-            # `Alias: TypeAlias = list`) that should remain callable.
-            if isinstance(alias_value, KnownValue) and isinstance(
-                alias_value.val, type
+            if value.operation in (
+                PartialValueOperation.PEP_613_ALIAS,
+                PartialValueOperation.PEP_695_ALIAS,
             ):
+                if value.operation is PartialValueOperation.PEP_613_ALIAS and is_union(
+                    replace_fallback(value.runtime_value)
+                ):
+                    return None
                 return self.signature_from_value(
-                    alias_value,
-                    get_return_override=get_return_override,
-                    get_call_attribute=get_call_attribute,
-                )
-            if isinstance(alias_value, TypedValue) and isinstance(
-                alias_value.typ, type
-            ):
-                return self.signature_from_value(
-                    KnownValue(alias_value.typ),
+                    value.runtime_value,
                     get_return_override=get_return_override,
                     get_call_attribute=get_call_attribute,
                 )
