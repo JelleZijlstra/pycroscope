@@ -71,6 +71,7 @@ from .value import (
     CanAssign,
     CanAssignContext,
     CanAssignError,
+    ClassKey,
     ConstraintExtension,
     DictIncompleteValue,
     GenericValue,
@@ -195,7 +196,7 @@ def _should_widen_constructor_typevar_solutions(
     )
 
 
-def _constructor_origin_from_callee(callee: Value | None) -> type | str | None:
+def _constructor_origin_from_callee(callee: Value | None) -> ClassKey | None:
     if callee is None:
         return None
     callee = replace_fallback(callee)

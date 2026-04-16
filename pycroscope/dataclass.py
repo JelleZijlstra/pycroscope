@@ -15,6 +15,7 @@ from .value import (
     AnySource,
     AnyValue,
     CallableValue,
+    ClassKey,
     ClassSymbol,
     DataclassInfo,
     GenericValue,
@@ -54,7 +55,7 @@ def get_synthetic_constructor_signature(
     type_object: "pycroscope.type_object.TypeObject",
     instance_type: Value,
     *,
-    get_field_parameters: Callable[[type | str], list[SigParameter]],
+    get_field_parameters: Callable[[ClassKey], list[SigParameter]],
 ) -> Signature | None:
     params = get_field_parameters(type_object.typ)
     if not params and type_object.get_direct_dataclass_info() is None:
@@ -68,7 +69,7 @@ def get_synthetic_constructor_signature(
 def get_synthetic_init_value(
     type_object: "pycroscope.type_object.TypeObject",
     *,
-    get_field_parameters: Callable[[type | str], list[SigParameter]],
+    get_field_parameters: Callable[[ClassKey], list[SigParameter]],
 ) -> Value | None:
     dataclass_info = type_object.get_direct_dataclass_info()
     if dataclass_info is not None and not dataclass_info.init:
@@ -95,7 +96,7 @@ def get_synthetic_init_value(
 def get_synthetic_match_args_value(
     type_object: "pycroscope.type_object.TypeObject",
     *,
-    get_field_parameters: Callable[[type | str], list[SigParameter]],
+    get_field_parameters: Callable[[ClassKey], list[SigParameter]],
 ) -> Value | None:
     dataclass_info = type_object.get_direct_dataclass_info()
     if dataclass_info is not None and not dataclass_info.match_args:
@@ -127,8 +128,8 @@ def apply_synthetic_attributes(
     semantics: DataclassInfo | None,
     *,
     type_object: "pycroscope.type_object.TypeObject",
-    get_slot_names: Callable[[type | str], tuple[str, ...] | None],
-    get_field_parameters: Callable[[type | str], list[SigParameter]],
+    get_slot_names: Callable[[ClassKey], tuple[str, ...] | None],
+    get_field_parameters: Callable[[ClassKey], list[SigParameter]],
 ) -> None:
     if semantics is None:
         return

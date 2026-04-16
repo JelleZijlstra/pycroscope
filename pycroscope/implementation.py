@@ -74,6 +74,7 @@ from .value import (
     CallableValue,
     CanAssignContext,
     CanAssignError,
+    ClassKey,
     DataclassTransformDecoratorExtension,
     DataclassTransformInfo,
     DictIncompleteValue,
@@ -101,6 +102,7 @@ from .value import (
     TypeVarValue,
     Value,
     assert_is_value,
+    class_owner_from_key,
     concrete_values_from_iterable,
     dump_value,
     flatten_values,
@@ -2040,10 +2042,12 @@ def _dump_value_impl(ctx: CallContext) -> Value:
     return value
 
 
-def _get_class_key(ctx: CallContext) -> type | str | None:
+def _get_class_key(ctx: CallContext) -> ClassKey | None:
     typ = replace_fallback(ctx.vars["typ"])
-    if isinstance(typ, KnownValue) and isinstance(typ.val, (type, str)):
+    if isinstance(typ, KnownValue) and isinstance(typ.val, type):
         return typ.val
+    if isinstance(typ, KnownValue) and isinstance(typ.val, str):
+        return class_owner_from_key(typ.val)
     elif isinstance(typ, SyntheticClassObjectValue):
         return typ.class_type.typ
     else:

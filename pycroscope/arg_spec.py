@@ -74,6 +74,8 @@ from .value import (
     AnyValue,
     CanAssignContext,
     CanAssignError,
+    ClassKey,
+    ClassOwner,
     Extension,
     GenericBases,
     GenericValue,
@@ -97,6 +99,7 @@ from .value import (
     TypeVarTupleValue,
     TypeVarValue,
     Value,
+    class_owner_from_key,
     get_namedtuple_field_annotation,
     get_self_param,
     is_async_iterable,
@@ -107,6 +110,17 @@ from .value import (
 )
 
 _GET_OVERLOADS = []
+
+
+def _typeshed_key(class_key: object) -> type | str:
+    if isinstance(class_key, ClassOwner):
+        return str(class_key)
+    if isinstance(class_key, str):
+        return class_key
+    if not isinstance(class_key, type):
+        return get_fully_qualified_name(class_key) or str(class_key)
+    return class_key
+
 
 try:
     from typing_extensions import get_overloads
@@ -615,7 +629,8 @@ class ArgSpecCache:
                 return None
             return (
                 GenericValue(
-                    "contextlib._AsyncGeneratorContextManager", [maybe_iterable]
+                    class_owner_from_key("contextlib._AsyncGeneratorContextManager"),
+                    [maybe_iterable],
                 ),
                 True,
             )
@@ -623,7 +638,10 @@ class ArgSpecCache:
         if isinstance(maybe_iterable, CanAssignError):
             return None
         return (
-            GenericValue("contextlib._GeneratorContextManager", [maybe_iterable]),
+            GenericValue(
+                class_owner_from_key("contextlib._GeneratorContextManager"),
+                [maybe_iterable],
+            ),
             True,
         )
 
@@ -1331,7 +1349,7 @@ class ArgSpecCache:
             # Python 2.
             return None
 
-    def get_type_parameters(self, typ: type | str) -> list[TypeParam]:
+    def get_type_parameters(self, typ: ClassKey) -> list[TypeParam]:
         try:
             cached = self.type_params_cache[typ]
         except Exception:
@@ -1345,7 +1363,7 @@ class ArgSpecCache:
             cached = None
         if cached is not None:
             return list(cached)
-        if isinstance(typ, str):
+        if isinstance(typ, ClassOwner):
             return []
         runtime_type_params = safe_getattr(typ, "__type_params__", ())
         if not runtime_type_params:
@@ -1367,7 +1385,7 @@ class ArgSpecCache:
 
     def get_generic_bases(
         self,
-        typ: type | str,
+        typ: ClassKey,
         generic_args: Sequence[Value] = (),
         *,
         substitute_typevars: bool = True,
@@ -1597,20 +1615,20 @@ class ArgSpecCache:
                 )
         return AnyValue(AnySource.generic_argument)
 
-    def _get_generic_bases_cached(self, typ: type | str) -> GenericBases:
+    def _get_generic_bases_cached(self, typ: ClassKey) -> GenericBases:
         try:
             return self.generic_bases_cache[typ]
         except KeyError:
             pass
         except Exception:
             return {}  # We don't support unhashable types.
-        if isinstance(typ, str):
-            bases = self.ts_finder.get_bases_for_fq_name(typ)
+        if isinstance(typ, ClassOwner):
+            bases = self.ts_finder.get_bases_for_fq_name(str(typ))
         else:
-            bases = self.ts_finder.get_bases(typ)
+            bases = self.ts_finder.get_bases(_typeshed_key(typ))
         generic_bases = self._extract_bases(typ, bases)
         if generic_bases is None:
-            if isinstance(typ, str):
+            if isinstance(typ, ClassOwner):
                 # Synthetic classes may not have typeshed entries.
                 generic_bases = {}
                 self.generic_bases_cache[typ] = generic_bases
@@ -1637,7 +1655,7 @@ class ArgSpecCache:
         return type_from_runtime(base, ctx=AnnotationsContext(self_key=owner))
 
     def _extract_bases(
-        self, typ: type | str, bases: Sequence[Value] | None
+        self, typ: ClassKey, bases: Sequence[Value] | None
     ) -> GenericBases | None:
         if bases is None:
             return None
@@ -1661,7 +1679,7 @@ class ArgSpecCache:
         generic_bases[typ] = self_typevars
         for base in bases:
             if isinstance(base, TypedValue):
-                if isinstance(base.typ, str):
+                if isinstance(base.typ, ClassOwner):
                     assert base.typ != typ, base
                 else:
                     assert base.typ is not typ, base

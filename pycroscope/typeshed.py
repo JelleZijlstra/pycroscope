@@ -58,6 +58,7 @@ from .value import (
     AnyValue,
     CallableValue,
     CanAssignContext,
+    ClassOwner,
     ClassSymbol,
     DeprecatedExtension,
     Extension,
@@ -78,6 +79,8 @@ from .value import (
     UninitializedValue,
     Value,
     annotate_value,
+    class_owner_from_key,
+    class_owner_from_qualname,
     get_self_param,
     iter_type_params_in_value,
     make_coro_type,
@@ -141,7 +144,7 @@ def _get_resolver_for_stub_paths(
 @dataclass
 class _ClassOwner:
     fq_name: str
-    class_key: type | str
+    class_key: type | str | ClassOwner
 
 
 @dataclass
@@ -422,6 +425,8 @@ class TypeshedFinder:
 
     def get_bases(self, typ: type | str) -> list[Value] | None:
         """Return the base classes for this type, including generic bases."""
+        if isinstance(typ, ClassOwner):
+            typ = str(typ)
         assert isinstance(typ, str) or isinstance(typ, type), repr(typ)
         return self.get_bases_for_value(TypedValue(typ))
 
@@ -473,7 +478,9 @@ class TypeshedFinder:
         owner = self._make_owner(typ)
         if owner is None:
             return False
-        bases = self.get_bases_for_value(TypedValue(owner.fq_name))
+        bases = self.get_bases_for_value(
+            TypedValue(class_owner_from_key(owner.fq_name))
+        )
         if bases is None:
             return False
         return any(
@@ -1103,7 +1110,9 @@ class TypeshedFinder:
             self.log("Ignoring unrecognized info", (fq_name, info))
             return None
 
-    def _make_owner(self, typ: type | str) -> _ClassOwner | None:
+    def _make_owner(self, typ: type | str | ClassOwner) -> _ClassOwner | None:
+        if isinstance(typ, ClassOwner):
+            return _ClassOwner(str(typ), typ)
         if isinstance(typ, str):
             return _ClassOwner(typ, typ)
         else:
@@ -1544,7 +1553,7 @@ class TypeshedFinder:
         fq_name = f"{module}.{info.name}"
         owner = _ClassOwner(fq_name, fq_name)
         bases = self._get_bases_from_info(info, module, owner)
-        typ = TypedValue(fq_name)
+        typ = TypedValue(class_owner_from_qualname(module, info.name, identity=fq_name))
         if isinstance(info.ast, ast.ClassDef):
             metadata = self._extract_metadata(module, info.ast, owner)
         else:

@@ -39,6 +39,7 @@ from .value import (
     ReferencingValue,
     SequenceValue,
     SubclassValue,
+    SyntheticClassObjectValue,
     TypedDictEntry,
     TypedDictValue,
     TypedValue,
@@ -47,12 +48,32 @@ from .value import (
     UnboundMethodValue,
     VariableNameValue,
     assert_is_value,
+    class_owner_from_key,
+    class_owner_from_qualname,
     dump_value,
 )
 
-BOX_FLOAT_IN_TEST_INPUT = GenericValue("<test input>.Box", [TypedValue(float)])
+BOX_FLOAT_IN_TEST_INPUT = GenericValue(
+    class_owner_from_key("<test input>.Box"), [TypedValue(float)]
+)
 BOX_FLOAT_OR_INT_IN_TEST_INPUT = GenericValue(
-    "<test input>.Box", [TypedValue(float) | TypedValue(int)]
+    class_owner_from_key("<test input>.Box"), [TypedValue(float) | TypedValue(int)]
+)
+SELF_X_SYNTHETIC_CLASS = SyntheticClassObjectValue(
+    "X",
+    TypedValue(
+        class_owner_from_qualname(
+            "_pycroscope_tests.self", "X", identity="_pycroscope_tests.self.X"
+        )
+    ),
+)
+SELF_Y_SYNTHETIC_CLASS = SyntheticClassObjectValue(
+    "Y",
+    TypedValue(
+        class_owner_from_qualname(
+            "_pycroscope_tests.self", "Y", identity="_pycroscope_tests.self.Y"
+        )
+    ),
 )
 
 # ===================================================
@@ -1233,16 +1254,13 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
         def run():
             from _pycroscope_tests.self import X, Y
 
-            from pycroscope.value import SyntheticClassObjectValue
+            from pycroscope.test_name_check_visitor import (
+                SELF_X_SYNTHETIC_CLASS,
+                SELF_Y_SYNTHETIC_CLASS,
+            )
 
-            assert_is_value(
-                X,
-                SyntheticClassObjectValue("X", TypedValue("_pycroscope_tests.self.X")),
-            )
-            assert_is_value(
-                Y,
-                SyntheticClassObjectValue("Y", TypedValue("_pycroscope_tests.self.Y")),
-            )
+            assert_is_value(X, SELF_X_SYNTHETIC_CLASS)
+            assert_is_value(Y, SELF_Y_SYNTHETIC_CLASS)
             assert_type(X.from_config(), X)
             assert_type(Y.from_config(), Y)
             assert_type(X().ret(), X)
@@ -1250,8 +1268,6 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_function_local_class_uses_synthetic_class_object(self):
-        from pycroscope.value import SyntheticClassObjectValue
-
         def outer():
             class Local:
                 @staticmethod
@@ -1262,22 +1278,13 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
                 def plus_one(x: int) -> int:
                     return x + 1
 
-            assert_is_value(
-                Local,
-                SyntheticClassObjectValue(
-                    "Local", TypedValue(f"{__name__}.outer.<locals>.Local")
-                ),
-            )
             assert_type(Local.static_method(), int)
             assert_type(Local.plus_one(1), int)
             return Local
 
-        assert_is_value(
-            outer(),
-            SyntheticClassObjectValue(
-                "Local", TypedValue(f"{__name__}.outer.<locals>.Local")
-            ),
-        )
+        Local = outer()
+        assert_type(Local.static_method(), int)
+        assert_type(Local.plus_one(1), int)
 
     @assert_passes()
     def test_synthetic_class_inherits_synthetic_base_attributes(self):

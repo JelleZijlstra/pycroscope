@@ -104,6 +104,8 @@ from .value import (
     CallableValue,
     CanAssignContext,
     CanAssignError,
+    ClassKey,
+    ClassOwner,
     CustomCheckExtension,
     DictIncompleteValue,
     Extension,
@@ -150,6 +152,7 @@ from .value import (
     Variance,
     annotate_value,
     bound_self_type_from_class_key,
+    class_owner_from_key,
     get_single_typevartuple_param,
     get_typevar_variance,
     iter_type_params_in_value,
@@ -202,7 +205,7 @@ class AnnotationVisitor(ErrorContext, CanAssignContext, Protocol):
     def invalid_self_annotation_message(self, annotation: ast.AST) -> str | None:
         raise NotImplementedError
 
-    def get_self_key(self) -> type | str | None:
+    def get_self_key(self) -> ClassKey | None:
         raise NotImplementedError
 
     def get_type_alias_cache(self) -> dict[object, TypeAlias]:
@@ -217,7 +220,7 @@ class Context:
 
     """
 
-    self_key: type | str | None = field(kw_only=True)
+    self_key: ClassKey | None = field(kw_only=True)
     should_suppress_errors: bool = field(default=False, init=False)
     """While this is True, no annotation errors are emitted."""
     should_allow_undefined_names: bool = field(default=False, init=False)
@@ -2589,13 +2592,13 @@ def _type_from_subscripted_value(
         return AnyValue(AnySource.error)
 
 
-def _maybe_get_extra(origin: type) -> type | str:
+def _maybe_get_extra(origin: type) -> ClassKey:
     # ContextManager is defined oddly and we lose the Protocol if we don't use
     # synthetic types.
     if any(origin is cls for cls in CONTEXT_MANAGER_TYPES):
-        return "contextlib.AbstractContextManager"
+        return class_owner_from_key("contextlib.AbstractContextManager")
     elif any(origin is cls for cls in ASYNC_CONTEXT_MANAGER_TYPES):
-        return "contextlib.AbstractAsyncContextManager"
+        return class_owner_from_key("contextlib.AbstractAsyncContextManager")
     else:
         return origin
 
@@ -2627,7 +2630,7 @@ class _DefaultContext(Context):
         *,
         visitor: CanAssignContext | None,
         node: ast.AST | None,
-        self_key: type | str | None = None,
+        self_key: ClassKey | None = None,
         globals: Mapping[str, object] | None = None,
         use_name_node_for_error: bool = False,
     ) -> None:
@@ -3241,7 +3244,7 @@ def _value_of_origin_args(
         return AnyValue(AnySource.error)
 
 
-def _maybe_typed_value(val: type | str) -> Value:
+def _maybe_typed_value(val: ClassKey) -> Value:
     if val is type(None):
         return KnownValue(None)
     elif val is Hashable:
@@ -3448,5 +3451,7 @@ _CONTEXT_MANAGER_TYPES = {
 }
 
 
-def is_context_manager_type(typ: str | type) -> bool:
+def is_context_manager_type(typ: ClassKey) -> bool:
+    if isinstance(typ, ClassOwner):
+        return str(typ) in _CONTEXT_MANAGER_TYPES
     return typ in _CONTEXT_MANAGER_TYPES

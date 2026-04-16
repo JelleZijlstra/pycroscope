@@ -359,8 +359,8 @@ class Constraint(AbstractConstraint):
                     yield target_type
                 else:
                     yield inner_value
-            elif isinstance(inner_value, TypedValue) and isinstance(
-                inner_value.typ, str
+            elif isinstance(inner_value, TypedValue) and not isinstance(
+                inner_value.typ, type
             ):
                 # TODO handle synthetic types correctly here.
                 yield value

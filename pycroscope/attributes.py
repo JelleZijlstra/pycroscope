@@ -55,6 +55,8 @@ from .value import (
     AnyValue,
     CallableValue,
     CanAssignContext,
+    ClassKey,
+    ClassOwner,
     ClassSymbol,
     CustomCheckExtension,
     GenericBases,
@@ -83,6 +85,7 @@ from .value import (
     _iter_typevar_map_items,
     _typevar_map_from_varlike_pairs,
     annotate_value,
+    class_owner_from_key,
     replace_fallback,
     set_self,
     unite_values,
@@ -153,11 +156,11 @@ class AttrContext:
         raise NotImplementedError
 
     def get_generic_bases(
-        self, typ: type | str, generic_args: Sequence[Value]
+        self, typ: ClassKey, generic_args: Sequence[Value]
     ) -> GenericBases:
         raise NotImplementedError
 
-    def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
+    def get_synthetic_class(self, typ: ClassKey) -> SyntheticClassObjectValue | None:
         raise NotImplementedError
 
     def clone_for_attribute_lookup(
@@ -358,7 +361,7 @@ def _maybe_specialize_class_partial_root(root_value: Value, ctx: AttrContext) ->
         return root_value
     root = replace_fallback(root_value.root)
     can_assign_ctx = ctx.get_can_assign_context()
-    class_key: type | str | None = None
+    class_key: ClassKey | None = None
     if isinstance(root, SyntheticClassObjectValue) and isinstance(
         root.class_type, TypedValue
     ):
@@ -444,7 +447,7 @@ def _super_receiver_type_value(value: Value) -> tuple[TypedValue | None, bool]:
     return None, False
 
 
-def _super_thisclass_key(value: Value) -> type | str | None:
+def _super_thisclass_key(value: Value) -> ClassKey | None:
     value = replace_fallback(value)
     if isinstance(value, KnownValue) and isinstance(value.val, type):
         return value.val
@@ -651,7 +654,7 @@ def _get_attribute_from_synthetic_typed_value(
 
 
 def _get_attribute_from_synthetic_class(
-    class_key: type | str, self_value: Value, ctx: AttrContext
+    class_key: ClassKey, self_value: Value, ctx: AttrContext
 ) -> Value:
     assert isinstance(self_value, SyntheticClassObjectValue)
     can_assign_ctx = ctx.get_can_assign_context()
@@ -914,22 +917,21 @@ def _get_runtime_class_attribute_from_synthetic_class(
 
 
 def _substitute_typevars(
-    typ: type | str,
+    typ: ClassKey,
     generic_args: Sequence[Value],
     result: Value,
     provider: object,
     ctx: AttrContext,
 ) -> Value:
     generic_bases = ctx.get_generic_bases(typ, generic_args)
-    provider_key: type | str | None
-    if isinstance(provider, (type, str)) and provider in generic_bases:
-        provider_key = provider
-    else:
+    provider_key: ClassKey | None = _normalize_class_key(provider)
+    if provider_key not in generic_bases:
         provider_key = None
-    if provider_key is None and not isinstance(provider, str):
+    if provider_key is None and not isinstance(provider, (str, ClassOwner)):
         origin = get_origin(provider)
-        if isinstance(origin, (type, str)) and origin in generic_bases:
-            provider_key = origin
+        provider_key = _normalize_class_key(origin)
+        if provider_key not in generic_bases:
+            provider_key = None
     if provider_key is not None:
         provider_typevars = generic_bases[provider_key]
         substituted_typevars = _typevar_map_from_varlike_pairs(
@@ -952,6 +954,14 @@ def _substitute_typevars(
         else:
             result = result.substitute_typevars(tv_map)
     return result
+
+
+def _normalize_class_key(value: object) -> ClassKey | None:
+    if isinstance(value, (type, ClassOwner)):
+        return value
+    if isinstance(value, str):
+        return class_owner_from_key(value)
+    return None
 
 
 def _unwrap_value_from_typed(result: Value, typ: type, ctx: AttrContext) -> Value:

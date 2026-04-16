@@ -36,6 +36,7 @@ from pycroscope.value import (
     CanAssign,
     CanAssignContext,
     CanAssignError,
+    ClassKey,
     DictIncompleteValue,
     Extension,
     GenericValue,
@@ -1295,7 +1296,7 @@ def _allows_forward_only_invariant_rhs(value: Value) -> bool:
 
 
 def _get_generic_variances(
-    typ: type | str, num_args: int, ctx: CanAssignContext
+    typ: ClassKey, num_args: int, ctx: CanAssignContext
 ) -> Sequence[Variance]:
     tobj = ctx.make_type_object(typ)
     type_params = tobj.get_declared_type_params()
