@@ -970,7 +970,7 @@ class ArgSpecCache:
             FunctionsSafeToCall.contains(obj, self.options)
             or (safe_isinstance(obj, type) and safe_issubclass(obj, self.safe_bases))
         )
-        if safe_isinstance(obj, (type, str)):
+        if safe_isinstance(obj, (type, ClassOwner)):
             type_params = self.get_type_parameters(obj)
         else:
             type_params = []

@@ -299,10 +299,10 @@ class TypeshedFinder:
         allow_call: bool = False,
         type_params: Sequence[TypeParam] = (),
     ) -> ConcreteSignature | None:
-        if isinstance(obj, str):
+        if isinstance(obj, ClassOwner):
             # Synthetic type
             return self.get_argspec_for_fully_qualified_name(
-                obj, obj, type_params=type_params
+                str(obj), str(obj), type_params=type_params
             )
         if inspect.ismethoddescriptor(obj) and hasattr_static(obj, "__objclass__"):
             return self._get_sig_from_method_descriptor(obj, allow_call)
@@ -367,7 +367,9 @@ class TypeshedFinder:
                             if safe_isinstance(parent_obj, type):
                                 owner = self._make_owner(parent_obj)
                             else:
-                                owner = self._make_owner(parent_fqn)
+                                owner = _ClassOwner(
+                                    parent_fqn, class_owner_from_key(parent_fqn)
+                                )
                         sig = self._get_signature_from_info(
                             info, obj, fq_name, mod, owner, allow_call=allow_call
                         )
@@ -1106,16 +1108,13 @@ class TypeshedFinder:
             self.log("Ignoring unrecognized info", (fq_name, info))
             return None
 
-    def _make_owner(self, typ: type | str | ClassOwner) -> _ClassOwner | None:
+    def _make_owner(self, typ: type | ClassOwner) -> _ClassOwner | None:
         if isinstance(typ, ClassOwner):
             return _ClassOwner(str(typ), typ)
-        if isinstance(typ, str):
-            return _ClassOwner(typ, class_owner_from_key(typ))
-        else:
-            fq_name = self._get_fq_name(typ)
-            if fq_name is None:
-                return None
-            return _ClassOwner(fq_name, typ)
+        fq_name = self._get_fq_name(typ)
+        if fq_name is None:
+            return None
+        return _ClassOwner(fq_name, typ)
 
     def _get_fq_name(self, obj: Any) -> str | None:
         if obj is GeneratorType:

@@ -182,15 +182,10 @@ def class_keys_match(left: ClassKey, right: ClassKey) -> bool:
     return left == right
 
 
-# TODO: Let TypeshedFinder accept ClassKey directly so callers do not need to
-# care about this conversion boundary.
-def _typeshed_key(class_key: object) -> type | str:
+# TODO: Let TypeshedFinder expose a single ClassKey-native interface end to end.
+def _typeshed_key(class_key: ClassKey) -> type | str:
     if isinstance(class_key, ClassOwner):
         return str(class_key)
-    if isinstance(class_key, str):
-        return class_key
-    if not isinstance(class_key, type):
-        return stringify_object(class_key)
     return class_key
 
 

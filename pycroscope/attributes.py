@@ -85,7 +85,6 @@ from .value import (
     _iter_typevar_map_items,
     _typevar_map_from_varlike_pairs,
     annotate_value,
-    class_owner_from_key,
     replace_fallback,
     set_self,
     unite_values,
@@ -927,7 +926,7 @@ def _substitute_typevars(
     provider_key: ClassKey | None = _normalize_class_key(provider)
     if provider_key not in generic_bases:
         provider_key = None
-    if provider_key is None and not isinstance(provider, (str, ClassOwner)):
+    if provider_key is None and not isinstance(provider, ClassOwner):
         origin = get_origin(provider)
         provider_key = _normalize_class_key(origin)
         if provider_key not in generic_bases:
@@ -959,8 +958,6 @@ def _substitute_typevars(
 def _normalize_class_key(value: object) -> ClassKey | None:
     if isinstance(value, (type, ClassOwner)):
         return value
-    if isinstance(value, str):
-        return class_owner_from_key(value)
     return None
 
 
