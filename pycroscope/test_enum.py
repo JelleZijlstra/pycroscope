@@ -139,10 +139,7 @@ class TestEnum(TestNameCheckVisitorBase):
         from typing_extensions import Literal, assert_type
 
         class Example(enum.Enum):
-            # TODO: _ignore_ should not need incompatible_override here.
-            _ignore_ = (  # E: incompatible_override
-                ("temp", "spare") if random() else frozenset({"temp", "spare"})
-            )
+            _ignore_ = ("temp", "spare") if random() else frozenset({"temp", "spare"})
             temp = 0
             spare = 1
             first = 2

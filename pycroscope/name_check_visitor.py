@@ -3527,7 +3527,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _check_for_incompatible_overrides(
         self, varname: str, node: ast.AST, value: Value
     ) -> None:
-        if self.current_tobj is None:
+        if self.current_tobj is None or self.current_class is None:
             return
         if varname == "__post_init__" and self.current_tobj.is_dataclass():
             # Dataclasses synthesize the expected __post_init__ contract from InitVar
@@ -3539,22 +3539,31 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
         if varname.startswith("__") and not varname.endswith("__"):
             return
-        if self.current_class is None:
+        policy = AttributePolicy(
+            receiver=TypedValue(self.current_class),
+            visitor=self,
+            node=node,
+            prefer_symbolic=True,
+        )
+        with self.catch_errors():
+            child_attr = self.current_tobj.get_attribute(varname, policy)
+        if child_attr is None:
             return
-        child_symbol = self.current_tobj.get_declared_symbol(varname)
-        child_is_classvar = child_symbol is not None and child_symbol.is_classvar
-        child_override_value = self._normalize_override_child_value(value)
 
         for base_value in self.current_tobj.get_direct_bases():
             if isinstance(base_value, AnyValue):
                 continue
             base_tobj = self.checker.make_type_object(base_value.typ)
-            base_attr = base_tobj.get_attribute(
-                varname,
-                AttributePolicy(
-                    receiver=base_value, visitor=self, node=node, prefer_symbolic=True
-                ),
-            )
+            with self.catch_errors():
+                base_attr = base_tobj.get_attribute(
+                    varname,
+                    AttributePolicy(
+                        receiver=base_value,
+                        visitor=self,
+                        node=node,
+                        prefer_symbolic=True,
+                    ),
+                )
             if base_attr is None:
                 continue
             if base_attr.symbol.is_final:
@@ -3564,7 +3573,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ErrorCode.incompatible_override,
                 )
                 continue
-            if child_is_classvar and base_attr.symbol.is_instance_only:
+            if child_attr.symbol.is_classvar and base_attr.symbol.is_instance_only:
                 self._show_error_if_checking(
                     node,
                     f"Class variable {varname} cannot override instance variable from"
@@ -3572,11 +3581,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ErrorCode.incompatible_override,
                 )
                 continue
-            if (
-                base_attr.symbol.is_classvar
-                and child_symbol is not None
-                and child_symbol.is_instance_only
-            ):
+            if base_attr.symbol.is_classvar and child_attr.symbol.is_instance_only:
                 self._show_error_if_checking(
                     node,
                     f"Instance variable {varname} cannot override class variable from"
@@ -3585,17 +3590,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 continue
 
-            can_assign = self._can_assign_to_base(
-                base_attr.override_value, child_override_value, base_value.typ, node
-            )
+            can_assign = self._can_assign_to_base(base_attr, child_attr)
             if isinstance(can_assign, CanAssignError):
                 error = CanAssignError(
                     children=[
                         CanAssignError(
-                            f"Base class: {self.display_value(base_attr.override_value)}"
+                            f"Base class: {self.display_value(base_attr.value)}"
                         ),
                         CanAssignError(
-                            f"Child class: {self.display_value(child_override_value)}"
+                            f"Child class: {self.display_value(child_attr.value)}"
                         ),
                         can_assign,
                     ]
@@ -3627,44 +3630,96 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         getter = KnownValue(obj.fget)
         return self.check_call(node, getter, [root_composite])
 
+    def _extract_settable_type(self, setter: Value) -> Value:
+        sig = self.signature_from_value(setter)
+        if not isinstance(sig, Signature):
+            return AnyValue(AnySource.inference)
+        params = list(sig.parameters.values())
+        if (
+            len(params) >= 2
+            and params[0].kind
+            in (ParameterKind.POSITIONAL_ONLY, ParameterKind.POSITIONAL_OR_KEYWORD)
+            and params[1].kind
+            in (ParameterKind.POSITIONAL_ONLY, ParameterKind.POSITIONAL_OR_KEYWORD)
+        ):
+            return params[1].annotation
+        return AnyValue(AnySource.inference)
+
     def _can_assign_to_base(
-        self,
-        base_value: Value,
-        child_value: Value,
-        base_class: type | str,
-        node: ast.AST,
+        self, base_attr: TypeObjectAttribute, child_attr: TypeObjectAttribute
     ) -> CanAssign:
         # TODO: This is still a bit ad hoc. I think the right way to do it would be to
         # check all three operations: get, set, and delete. For each of them, what's
         # allowed on the base should be allowed on the child. Though we'll still need
         # some mild special casing of callables so pycroscope sees different functions as
         # compatible.
-        if base_value is UNINITIALIZED_VALUE:
-            return {}
-        if isinstance(base_value, KnownValue):
-            if isinstance(base_value.val, property):
-                return self._can_assign_to_base_property(
-                    base_value.val, child_value, base_class, node
+        if base_attr.symbol.property_info is not None:
+            if (
+                base_attr.symbol.property_info.fset is not None
+                and base_attr.symbol.property_info.fset.initializer is not None
+            ):
+                if child_attr.symbol.property_info is not None:
+                    if (
+                        child_attr.symbol.property_info.fset is None
+                        or child_attr.symbol.property_info.fset.initializer is None
+                    ):
+                        return CanAssignError(
+                            "Property is settable on base class but not on child class"
+                        )
+                    child_settable = self._extract_settable_type(
+                        child_attr.symbol.property_info.fset.initializer
+                    )
+                else:
+                    if (
+                        child_attr.symbol.annotation is not None
+                        and not child_attr.symbol.is_classvar
+                        and not child_attr.symbol.is_readonly
+                    ):
+                        child_settable = child_attr.symbol.annotation
+                    else:
+                        # TODO: We could allow overriding a property with a settable bare attribute
+                        return CanAssignError(
+                            "Property is settable on base class but not on child class"
+                        )
+                base_settable = self._extract_settable_type(
+                    base_attr.symbol.property_info.fset.initializer
                 )
-            if callable(base_value.val):
+                # Reversed because this is a contravariant position
+                setter_can_assign = has_relation(
+                    child_settable, base_settable, Relation.ASSIGNABLE, self
+                )
+                if isinstance(setter_can_assign, CanAssignError):
+                    return CanAssignError(
+                        f"Setter {child_settable} for property is incompatible "
+                        f"with base class setter {base_settable}",
+                        children=[setter_can_assign],
+                    )
+
+            if base_attr.symbol.property_info.fdel is not None and not (
+                child_attr.symbol.property_info is not None
+                and child_attr.symbol.property_info.fdel is not None
+            ):
+                return CanAssignError(
+                    "Property is deletable on base class but not on child class"
+                )
+
+        if isinstance(base_attr.value, KnownValue):
+            if callable(base_attr.value.val):
                 callable_result = self._can_assign_to_base_callable(
-                    base_value, child_value
+                    base_attr.value, child_attr.value
                 )
                 if callable_result is None:
                     return {}
                 return callable_result
-        if isinstance(child_value, KnownValue) and isinstance(
-            child_value.val, property
-        ):
-            assert self.current_class is not None
-            child_value = self.resolve_property(
-                child_value.val, Composite(TypedValue(self.current_class)), node
+        if isinstance(base_attr.value, CallableValue):
+            callable_result = self._can_assign_to_base_callable(
+                base_attr.value, child_attr.value
             )
-        if isinstance(base_value, CallableValue):
-            callable_result = self._can_assign_to_base_callable(base_value, child_value)
             if callable_result is not None:
                 return callable_result
-        return has_relation(base_value, child_value, Relation.ASSIGNABLE, self)
+        return has_relation(
+            base_attr.value, child_attr.value, Relation.ASSIGNABLE, self
+        )
 
     def _can_assign_to_base_property(
         self,
@@ -3713,13 +3768,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         if not isinstance(child_sig, (Signature, OverloadedSignature)):
             return CanAssignError(f"{child_value} is not callable")
-        base_bound = base_sig.bind_self(ctx=self)
-        if base_bound is None:
-            return None
-        child_bound = child_sig.bind_self(ctx=self)
-        if child_bound is None:
-            return CanAssignError(f"{child_value} is missing a receiver argument")
-        return base_bound.can_assign(child_bound, self)
+        return base_sig.can_assign(child_sig, self)
 
     def _check_for_class_variable_redefinition(
         self, varname: str, node: ast.AST
