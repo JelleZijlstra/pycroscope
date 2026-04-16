@@ -3624,15 +3624,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def display_value(self, value: Value) -> str:
         return self.checker.display_value(value)
 
-    def resolve_property(
-        self, obj: property, root_composite: Composite, node: ast.AST | None
-    ) -> Value:
-        if obj.fget is None:
-            return UNINITIALIZED_VALUE
-
-        getter = KnownValue(obj.fget)
-        return self.check_call(node, getter, [root_composite])
-
     def _extract_settable_type(self, setter: Value) -> Value:
         sig = self.signature_from_value(setter)
         if not isinstance(sig, Signature):
