@@ -240,26 +240,6 @@ def test_get_argspec_uses_class_level_signature_for_extension_like_class() -> No
     assert sig.return_value == TypedValue(object)
 
 
-def test_get_argspec_uses_class_level_signature_for_extension_like_class() -> None:
-    asc = Checker().arg_spec_cache
-    sig = asc.get_argspec(_SignatureParams)
-
-    assert isinstance(sig, Signature)
-    assert list(sig.parameters) == ["x", "y"]
-    assert sig.parameters["x"] == SigParameter(
-        "x", kind=ParameterKind.KEYWORD_ONLY, annotation=TypedValue(int)
-    )
-    assert sig.parameters["y"] == SigParameter(
-        "y",
-        kind=ParameterKind.KEYWORD_ONLY,
-        annotation=TypedValue(str),
-        default=KnownValue(""),
-    )
-    assert sig.callable is _SignatureMeta.__call__
-    assert sig.bound_receiver_param_name == "cls"
-    assert sig.return_value == TypedValue(object)
-
-
 def test_get_argspec():
     checker = Checker()
     visitor = ConfiguredNameCheckVisitor(
