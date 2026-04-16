@@ -3610,14 +3610,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     detail=str(error),
                 )
 
-    def _normalize_override_child_value(self, value: Value) -> Value:
-        resolved = replace_fallback(value)
-        if isinstance(resolved, KnownValue) and isinstance(
-            resolved.val, types.MethodType
-        ):
-            return KnownValue(resolved.val.__func__)
-        return value
-
     def display_value(self, value: Value) -> str:
         return self.checker.display_value(value)
 
@@ -3720,40 +3712,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return has_relation(
             base_attr.value, child_attr.value, Relation.ASSIGNABLE, self
         )
-
-    def _can_assign_to_base_property(
-        self,
-        base_property: property,
-        child_value: Value,
-        base_class: type | str,
-        node: ast.AST,
-    ) -> CanAssign:
-        if isinstance(child_value, KnownValue) and isinstance(
-            child_value.val, property
-        ):
-            if base_property.fset is not None and child_value.val.fset is None:
-                return CanAssignError(
-                    "Property is settable on base class but not on child class"
-                )
-            if base_property.fdel is not None and child_value.val.fdel is None:
-                return CanAssignError(
-                    "Property is settable on base class but not on child class"
-                )
-            assert self.current_class is not None
-            child_value = self.resolve_property(
-                child_value.val, Composite(TypedValue(self.current_class)), node
-            )
-        base_value = self.resolve_property(
-            base_property, Composite(TypedValue(base_class)), node
-        )
-        get_direction = has_relation(base_value, child_value, Relation.ASSIGNABLE, self)
-        if isinstance(get_direction, CanAssignError):
-            return get_direction
-        if base_property.fset is not None:
-            # settable properties behave invariantly, so we need to check both directions
-            return has_relation(child_value, base_value, Relation.ASSIGNABLE, self)
-        else:
-            return get_direction
 
     def _can_assign_to_base_callable(
         self, base_value: Value, child_value: Value

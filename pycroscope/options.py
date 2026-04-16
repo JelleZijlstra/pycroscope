@@ -57,6 +57,7 @@ else:
 
 
 T = TypeVar("T")
+U = TypeVar("U")
 ModulePath = tuple[str, ...]
 _ROLE_REFERENCE_RE = re.compile(r":([a-zA-Z_]+):`([^`]+)`")
 _ROLE_NAME_TO_MYST_ROLE = {
@@ -133,6 +134,7 @@ class ConfigOption(Generic[T]):
     priority: int = 0  # higher number = lower priority
 
     def __init_subclass__(cls) -> None:
+        super().__init_subclass__()
         if hasattr(cls, "name"):
             if cls.name in cls.registry:
                 raise ValueError(f"Duplicate option {cls.name}")
@@ -207,15 +209,15 @@ class IntegerOption(ConfigOption[int]):
         )
 
 
-class ConcatenatedOption(ConfigOption[Sequence[T]]):
+class ConcatenatedOption(ConfigOption[Sequence[U]]):
     """Option for which the value is the concatenation of all the overrides."""
 
     @classmethod
     def get_value_from_instances(
-        cls: "type[ConcatenatedOption[T]]",
-        instances: Sequence["ConcatenatedOption[T]"],
+        cls: "type[ConfigOption[Sequence[U]]]",
+        instances: Sequence["ConfigOption[Sequence[U]]"],
         module_path: ModulePath,
-    ) -> Sequence[T]:
+    ) -> Sequence[U]:
         values = []
         for instance in instances:
             if instance.is_applicable_to(module_path):
