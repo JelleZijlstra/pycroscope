@@ -22,6 +22,7 @@ from .value import (
     SyntheticModuleValue,
     TypedValue,
     UnboundMethodValue,
+    class_owner_from_key,
 )
 
 
@@ -131,7 +132,7 @@ def test_should_suggest_type_union() -> None:
 
 def test_should_not_suggest_non_annotation_values() -> None:
     assert not should_suggest_type(
-        SyntheticClassObjectValue("Cls", TypedValue("mod.Cls"))
+        SyntheticClassObjectValue("Cls", TypedValue(class_owner_from_key("mod.Cls")))
     )
     assert not should_suggest_type(SyntheticModuleValue(("mod",)))
     assert not should_suggest_type(UnboundMethodValue("f", Composite(TypedValue(int))))

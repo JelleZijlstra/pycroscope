@@ -70,6 +70,8 @@ from .value import (
     CanAssign,
     CanAssignContext,
     CanAssignError,
+    ClassKey,
+    ClassOwner,
     ClassSymbol,
     DataclassFieldInfo,
     DataclassInfo,
@@ -176,18 +178,15 @@ class AdditionalBaseProviders(PyObjectSequenceOption[_BaseProvider]):
     name = "additional_base_providers"
 
 
-def runtime_type_generic_alias(typ: type) -> str:
-    return f"{typ.__module__}.{typ.__qualname__}"
+def class_keys_match(left: ClassKey, right: ClassKey) -> bool:
+    return left == right
 
 
-def class_keys_match(left: type | str, right: type | str) -> bool:
-    if left == right:
-        return True
-    if isinstance(left, type) and isinstance(right, str):
-        return runtime_type_generic_alias(left) == right
-    if isinstance(left, str) and isinstance(right, type):
-        return left == runtime_type_generic_alias(right)
-    return False
+# TODO: Let TypeshedFinder expose a single ClassKey-native interface end to end.
+def _typeshed_key(class_key: ClassKey) -> type | str:
+    if isinstance(class_key, ClassOwner):
+        return str(class_key)
+    return class_key
 
 
 @dataclass(frozen=True)
@@ -249,7 +248,7 @@ class AttributePolicy:
     self_value: Value | None = None
     """Value used to interpret typing.Self. Usually the same as receiver, but the
     difference matters for protocols."""
-    anchor: type | str | None = None
+    anchor: ClassKey | None = None
     """Only attributes that appear in the MRO after the anchor are considered.
     This is used for super()."""
     visitor: "pycroscope.name_check_visitor.NameCheckVisitor | None" = None
@@ -369,8 +368,8 @@ def _extract_runtime_protocol_members(typ: type) -> set[str]:
 
 def _get_additional_bases(
     checker: "pycroscope.checker.Checker", typ: type
-) -> set[type | str]:
-    bases: set[type | str] = set()
+) -> set[ClassKey]:
+    bases: set[ClassKey] = set()
     for provider in checker.options.get_value_for(AdditionalBaseProviders):
         bases |= provider(typ)
     return bases
@@ -525,7 +524,7 @@ class NamedTupleField:
 class TypeObject:
     """Represents one logical type, with lazy and incrementally populated metadata."""
 
-    typ: type | str
+    typ: ClassKey
     _checker: "pycroscope.checker.Checker"
     _direct_bases: tuple[MroValue, ...] | None
     _mro: Sequence[MroEntry] | None
@@ -552,7 +551,7 @@ class TypeObject:
     _protocol_positive_cache: dict[tuple[Value, Value], BoundsMap]
     _metaclass: MroValue | None
 
-    def __init__(self, checker: "pycroscope.checker.Checker", typ: type | str) -> None:
+    def __init__(self, checker: "pycroscope.checker.Checker", typ: ClassKey) -> None:
         self.typ = typ
         self._checker = checker
         self._synthetic_declared_symbols = None
@@ -648,7 +647,7 @@ class TypeObject:
             _get_mro_from_mro_value(base, parent_tv_map, self._checker, virtual=True)
             for base in virtual_bases
         ]
-        if isinstance(self.typ, str):
+        if isinstance(self.typ, ClassOwner):
             child_mros = [
                 _mark_direct_base_non_virtual(child_mro) for child_mro in child_mros
             ]
@@ -668,11 +667,11 @@ class TypeObject:
         return result
 
     def _compute_is_final(self) -> bool:
-        if isinstance(self.typ, str):
-            return self._checker.ts_finder.is_final(self.typ)
-        return self._checker.ts_finder.is_final(self.typ) or safe_getattr(
-            self.typ, "__final__", False
-        )
+        if isinstance(self.typ, ClassOwner):
+            return self._checker.ts_finder.is_final(_typeshed_key(self.typ))
+        return self._checker.ts_finder.is_final(
+            _typeshed_key(self.typ)
+        ) or safe_getattr(self.typ, "__final__", False)
 
     def _compute_is_disjoint_base(self) -> bool:
         if isinstance(self.typ, type):
@@ -683,7 +682,7 @@ class TypeObject:
         return bool(self._directly_disjoint_base)
 
     def _compute_is_protocol(self) -> bool:
-        if isinstance(self.typ, str):
+        if isinstance(self.typ, ClassOwner):
             return any(
                 (base_key := _class_key_from_value(base_value)) is not None
                 and is_typing_name(base_key, "Protocol")
@@ -722,7 +721,7 @@ class TypeObject:
                     ordered_names.append(record.field_name)
                 records_by_name[record.field_name] = record
             return tuple(records_by_name[name] for name in ordered_names)
-        if isinstance(self.typ, str):
+        if isinstance(self.typ, ClassOwner):
             return ()
         return type_object_builder._get_runtime_dataclass_fields(self.typ)
 
@@ -894,7 +893,7 @@ class TypeObject:
             if key not in present_keys
         ]
 
-    def _iter_candidate_virtual_bases(self) -> Iterator[type | str]:
+    def _iter_candidate_virtual_bases(self) -> Iterator[ClassKey]:
         if isinstance(self.typ, type):
             yield from _get_additional_bases(self._checker, self.typ)
         if self._compute_is_thrift_enum():
@@ -1154,13 +1153,15 @@ class TypeObject:
             self._mro = self._compute_mro()
         return self._mro
 
-    def is_in_mro(self, typ: type | str) -> bool:
+    def is_in_mro(self, typ: ClassKey) -> bool:
         return any(
             entry.tobj is not None and entry.tobj.typ == typ for entry in self.get_mro()
         )
 
     def _get_protocol_members_contributed_by_self(self) -> set[str]:
-        if isinstance(self.typ, str) or self._checker.ts_finder.is_protocol(self.typ):
+        if isinstance(self.typ, ClassOwner) or self._checker.ts_finder.is_protocol(
+            self.typ
+        ):
             members = {
                 attr
                 for attr in self._checker.ts_finder.get_all_attributes(self.typ)
@@ -1205,7 +1206,7 @@ class TypeObject:
         return _match_up_generic_params(params, args)
 
     def get_substitutions_for_base(
-        self, base: type | str, args: Sequence[Value]
+        self, base: ClassKey, args: Sequence[Value]
     ) -> TypeVarMap | None:
         for mro_entry in self.get_mro():
             if mro_entry.tobj is None:
@@ -1222,7 +1223,7 @@ class TypeObject:
         return None
 
     def get_generic_args_for_base(
-        self, base: type | str, args: Sequence[Value]
+        self, base: ClassKey, args: Sequence[Value]
     ) -> list[Value] | None:
         substitutions = self.get_substitutions_for_base(base, args)
         if substitutions is None:
@@ -1386,7 +1387,7 @@ class TypeObject:
 
     def get_declared_symbols(self) -> MutableMapping[str, ClassSymbol]:
         if self._declared_symbols is None:
-            if isinstance(self.typ, str) and self._virtual_symbols is None:
+            if isinstance(self.typ, ClassOwner) and self._virtual_symbols is None:
                 self._declared_symbols = self.get_synthetic_declared_symbols()
             else:
                 self._declared_symbols = self._compute_declared_symbols()
@@ -1484,7 +1485,7 @@ class TypeObject:
             is_metaclass=is_metaclass,
         )
         if merged is None:
-            if isinstance(self.typ, str) and self.has_any_base():
+            if isinstance(self.typ, ClassOwner) and self.has_any_base():
                 unknown_value = AnyValue(AnySource.from_another)
                 return TypeObjectAttribute(
                     name=name,
@@ -1508,7 +1509,7 @@ class TypeObject:
         return _apply_descriptor_protocol(merged, self._checker, policy)
 
     def _select_declared_attribute(
-        self, name: str, *, anchor: type | str | None = None
+        self, name: str, *, anchor: ClassKey | None = None
     ) -> tuple[SelectedAttribute | None, SelectedAttribute | None]:
         """Select runtime/typeshed class-MRO symbols before specialization."""
         runtime_attr = self.get_selected_attribute(
@@ -1603,7 +1604,7 @@ class TypeObject:
         *,
         is_metaclass_owner: bool,
         use_typeshed: bool,
-        anchor: type | str | None = None,
+        anchor: ClassKey | None = None,
     ) -> SelectedAttribute | None:
         seen_anchor = anchor is None
         for i, entry in enumerate(self.get_mro()):
@@ -1628,7 +1629,7 @@ class TypeObject:
             )
         return None
 
-    def is_assignable_to_type(self, typ: type | str) -> bool:
+    def is_assignable_to_type(self, typ: ClassKey) -> bool:
         return self.is_universally_assignable() or any(
             entry.tobj is not None
             and (
@@ -1773,7 +1774,7 @@ class TypeObject:
             protocol_self_typevar_map = TypeVarMap()
             actual_self_typevar_map = TypeVarMap()
         apply_synthetic_member_rules = (
-            isinstance(self.typ, str)
+            isinstance(self.typ, ClassOwner)
             and _get_synthetic_class_for_key(self.typ, ctx) is not None
         )
         class_object_check = _is_definitely_class_object_value(other_val)
@@ -1785,7 +1786,7 @@ class TypeObject:
             # For __call__, we check compatibility with the other object itself.
             if member == "__call__":
                 expected = UNINITIALIZED_VALUE
-                if isinstance(self.typ, str):
+                if isinstance(self.typ, ClassOwner):
                     symbol = self.get_declared_symbol_from_mro(member, ctx)
                     if symbol is not None:
                         expected = symbol.get_effective_type()
@@ -2451,7 +2452,7 @@ def _resolve_member_access(
     )
 
 
-def _class_key_from_value(value: Value) -> type | str | None:
+def _class_key_from_value(value: Value) -> ClassKey | None:
     # This helper is intentionally a little broader than the abstraction we
     # ultimately want: many callers use it for "what class does this value point
     # at?" regardless of whether the value is itself a class object/subclass or
@@ -2465,12 +2466,12 @@ def _class_key_from_value(value: Value) -> type | str | None:
     return None
 
 
-def _iter_class_keys_from_value(value: Value) -> list[type | str]:
+def _iter_class_keys_from_value(value: Value) -> list[ClassKey]:
     if isinstance(value, AnnotatedValue):
         return _iter_class_keys_from_value(value.value)
     value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):
-        keys: list[type | str] = []
+        keys: list[ClassKey] = []
         for subval in value.vals:
             keys.extend(_iter_class_keys_from_value(subval))
         return keys
@@ -2482,7 +2483,7 @@ def _iter_class_keys_from_value(value: Value) -> list[type | str]:
     return _iter_class_keys_from_simple_value(value)
 
 
-def _iter_class_keys_from_simple_value(value: SimpleType) -> list[type | str]:
+def _iter_class_keys_from_simple_value(value: SimpleType) -> list[ClassKey]:
     if isinstance(value, SyntheticClassObjectValue):
         return _typed_class_key(value.class_type)
     elif isinstance(value, SubclassValue):
@@ -2511,7 +2512,7 @@ def _iter_class_keys_from_simple_value(value: SimpleType) -> list[type | str]:
         assert_never(value)
 
 
-def _typed_class_key(value: Value) -> list[type | str]:
+def _typed_class_key(value: Value) -> list[ClassKey]:
     if isinstance(value, TypedValue):
         return [value.typ]
     return []
@@ -2541,7 +2542,7 @@ def _transform_known_class_attribute(
 def normalize_synthetic_descriptor_attribute(
     value: Value,
     *,
-    owner: type | str | None = None,
+    owner: ClassKey | None = None,
     is_self_returning_classmethod: bool = False,
     unknown_descriptor_means_any: bool = True,
 ) -> Value:
@@ -2611,7 +2612,7 @@ def normalize_synthetic_descriptor_attribute(
 
 def _class_key_and_generic_args_from_type_value(
     receiver_value: TypedValue | TypeVarValue,
-) -> tuple[type | str, Sequence[Value]]:
+) -> tuple[ClassKey, Sequence[Value]]:
     if isinstance(receiver_value, TypeVarValue):
         assert receiver_value.typevar_param.bound is not None
         class_key = _class_key_from_value(receiver_value.typevar_param.bound)
@@ -2842,7 +2843,7 @@ def _shield_nested_self_in_signature(
 
 
 def _is_informative_runtime_attribute(attribute: SpecializedAttribute) -> bool:
-    if isinstance(attribute.selected.owner.typ, str):
+    if isinstance(attribute.selected.owner.typ, ClassOwner):
         # for synthetic classes, assume all symbols were explicitly created and are useful
         return True
     return _is_informative_symbol(attribute.selected.symbol)
@@ -3576,7 +3577,7 @@ def _get_symbol_owner_substitutions_from_type_objects(
     return receiver_substitutions.merge(owner_substitutions)
 
 
-def _make_type_object_for_key(class_key: type | str, ctx: object) -> TypeObject | None:
+def _make_type_object_for_key(class_key: ClassKey, ctx: object) -> TypeObject | None:
     make_type_object = safe_getattr(ctx, "make_type_object", None)
     if callable(make_type_object):
         return make_type_object(class_key)
@@ -3588,7 +3589,7 @@ def _make_type_object_for_key(class_key: type | str, ctx: object) -> TypeObject 
 
 
 def _get_synthetic_class_for_key(
-    class_key: type | str, ctx: CanAssignContext
+    class_key: ClassKey, ctx: CanAssignContext
 ) -> SyntheticClassObjectValue | None:
     get_synthetic_class = safe_getattr(ctx, "get_synthetic_class", None)
     if callable(get_synthetic_class):
@@ -3603,8 +3604,8 @@ def _get_synthetic_class_for_key(
 
 
 def lookup_declared_symbol_with_owner(
-    class_key: type | str, member: str, ctx: CanAssignContext
-) -> tuple[type | str, ClassSymbol] | None:
+    class_key: ClassKey, member: str, ctx: CanAssignContext
+) -> tuple[ClassKey, ClassSymbol] | None:
     type_object = _make_type_object_for_key(class_key, ctx)
     if type_object is None:
         return None
@@ -3616,15 +3617,13 @@ def lookup_declared_symbol_with_owner(
 
 
 def _is_member_defined_on_class_key(
-    class_key: type | str, member: str, ctx: CanAssignContext
+    class_key: ClassKey, member: str, ctx: CanAssignContext
 ) -> bool:
     match = lookup_declared_symbol_with_owner(class_key, member, ctx)
     return match is not None and not match[1].is_initvar
 
 
-def _is_member_method(
-    class_key: type | str, member: str, ctx: CanAssignContext
-) -> bool:
+def _is_member_method(class_key: ClassKey, member: str, ctx: CanAssignContext) -> bool:
     match = lookup_declared_symbol_with_owner(class_key, member, ctx)
     return match is not None and match[1].is_method
 
@@ -3694,8 +3693,8 @@ def _protocol_member_bind_receiver(
 
 
 def _metaclass_key_for_class(
-    class_key: type | str, ctx: CanAssignContext
-) -> type | str | None:
+    class_key: ClassKey, ctx: CanAssignContext
+) -> ClassKey | None:
     tobj = ctx.make_type_object(class_key)
     metaclass = tobj.get_metaclass()
     match metaclass:
@@ -3708,7 +3707,7 @@ def _metaclass_key_for_class(
 
 
 def _is_member_from_metaclass(
-    class_key: type | str, member: str, ctx: CanAssignContext
+    class_key: ClassKey, member: str, ctx: CanAssignContext
 ) -> bool:
     metaclass_key = _metaclass_key_for_class(class_key, ctx)
     if metaclass_key is None:
@@ -3717,7 +3716,7 @@ def _is_member_from_metaclass(
 
 
 def _should_refine_class_object_member_lookup(
-    actual: Value, class_key: type | str, member: str, ctx: CanAssignContext
+    actual: Value, class_key: ClassKey, member: str, ctx: CanAssignContext
 ) -> bool:
     if _is_member_from_metaclass(class_key, member, ctx):
         return False
@@ -3775,11 +3774,22 @@ def _signature_has_receiver_parameter(
             annotation_key
         ) == stringify_object(self_key):
             return True
-        if isinstance(annotation_key, str) and isinstance(self_key, type):
-            return annotation_key.rsplit(".", maxsplit=1)[-1] == self_key.__name__
-        if isinstance(annotation_key, type) and isinstance(self_key, str):
-            return self_key.rsplit(".", maxsplit=1)[-1] == annotation_key.__name__
-        if not isinstance(annotation_key, str) and not isinstance(self_key, str):
+        if isinstance(annotation_key, ClassOwner) and isinstance(self_key, type):
+            annotation_name = annotation_key.qualname
+            return annotation_name.rsplit(".", maxsplit=1)[-1] == self_key.__name__
+        if isinstance(annotation_key, type) and isinstance(self_key, ClassOwner):
+            self_name = self_key.qualname
+            return self_name.rsplit(".", maxsplit=1)[-1] == annotation_key.__name__
+        if isinstance(annotation_key, ClassOwner) and isinstance(self_key, ClassOwner):
+            annotation_name = annotation_key.qualname
+            self_name = self_key.qualname
+            return (
+                annotation_name.rsplit(".", maxsplit=1)[-1]
+                == self_name.rsplit(".", maxsplit=1)[-1]
+            )
+        if not isinstance(annotation_key, ClassOwner) and not isinstance(
+            self_key, ClassOwner
+        ):
             return False
         return not isinstance(
             get_tv_map(first_parameter.annotation, self_value, ctx), CanAssignError
@@ -3789,7 +3799,7 @@ def _signature_has_receiver_parameter(
     )
 
 
-def _receiver_key_from_value(value: Value) -> type | str | None:
+def _receiver_key_from_value(value: Value) -> ClassKey | None:
     key = _class_key_from_value(value)
     if key is not None:
         return key
@@ -3800,7 +3810,7 @@ def _receiver_key_from_value(value: Value) -> type | str | None:
 
 
 def _class_object_value_for_key(
-    class_key: type | str, ctx: CanAssignContext
+    class_key: ClassKey, ctx: CanAssignContext
 ) -> Value | None:
     synthetic = _get_synthetic_class_for_key(class_key, ctx)
     if synthetic is not None:
@@ -3917,7 +3927,7 @@ def _protocol_member_is_method(
 
 
 def _substitute_receiver_self_typevar(
-    value: Value, receiver_value: Value, receiver_type_key: type | str
+    value: Value, receiver_value: Value, receiver_type_key: ClassKey
 ) -> Value:
     """Substitute only receiver-bound ``Self`` occurrences.
 
@@ -3984,7 +3994,7 @@ def _default_protocol_receiver_annotation(
 
 
 def _get_protocol_member_callable(
-    symbol: ClassSymbol, *, owner: type | str | None = None
+    symbol: ClassSymbol, *, owner: ClassKey | None = None
 ) -> Value | None:
     initializer = symbol.initializer
     if initializer is None:
@@ -4122,8 +4132,8 @@ def _is_definitely_class_object_value(value: Value) -> bool:
     if isinstance(value, TypedValue):
         if isinstance(value.typ, type):
             return safe_issubclass(value.typ, type)
-        elif isinstance(value.typ, str):
-            return value.typ in {"type", "builtins.type"}
+        elif isinstance(value.typ, ClassOwner):
+            return str(value.typ) in {"type", "builtins.type"}
         else:
             assert_never(value.typ)
     return False
@@ -4449,7 +4459,7 @@ def _add_namedtuple_dunder_new_symbol(
 
 
 def _make_namedtuple_constructor_impl(
-    typ: type | str, fields: Sequence[NamedTupleField]
+    typ: ClassKey, fields: Sequence[NamedTupleField]
 ) -> Impl:
     def infer_namedtuple_return(ctx: CallContext) -> Value:
         return SequenceValue(

@@ -46,6 +46,7 @@ from .value import (
     TypeVarTupleParam,
     TypeVarValue,
     Value,
+    class_owner_from_key,
     concrete_values_from_iterable,
     unite_and_simplify,
     unpack_values,
@@ -856,9 +857,20 @@ def test_synthetic_class_object_value_nominal_class() -> None:
     assert_cannot_assign(SubclassValue(TypedValue(str)), int_cls)
 
 
+def test_class_owner_stringification_is_readable() -> None:
+    owner = value.class_owner_from_qualname("mod", "Cls", identity="mod.Cls")
+
+    assert str(TypedValue(owner)) == "mod.Cls"
+    assert str(GenericValue(owner, [TypedValue(int)])) == "mod.Cls[int]"
+
+
 def test_synthetic_class_object_value_matches_specialized_type() -> None:
-    synthetic_cls = value.SyntheticClassObjectValue("C", TypedValue("mod.C"))
-    specialized = SubclassValue(GenericValue("mod.C", [TypedValue(int)]))
+    synthetic_cls = value.SyntheticClassObjectValue(
+        "C", TypedValue(class_owner_from_key("mod.C"))
+    )
+    specialized = SubclassValue(
+        GenericValue(class_owner_from_key("mod.C"), [TypedValue(int)])
+    )
 
     # Unspecialized class objects should still match specialized type[...] forms.
     assert_can_assign(specialized, synthetic_cls)
@@ -866,14 +878,22 @@ def test_synthetic_class_object_value_matches_specialized_type() -> None:
 
 
 def test_synthetic_class_object_value_unresolved_nominal_class() -> None:
-    unresolved_cls = value.SyntheticClassObjectValue("X", TypedValue("mod.X"))
-    other_cls = value.SyntheticClassObjectValue("Y", TypedValue("mod.Y"))
+    unresolved_cls = value.SyntheticClassObjectValue(
+        "X", TypedValue(class_owner_from_key("mod.X"))
+    )
+    other_cls = value.SyntheticClassObjectValue(
+        "Y", TypedValue(class_owner_from_key("mod.Y"))
+    )
 
     # Synthetic class objects with unresolved class names should still behave
     # like class objects for assignability checks.
     assert_can_assign(TypedValue(type), unresolved_cls)
-    assert_can_assign(SubclassValue(TypedValue("mod.X")), unresolved_cls)
-    assert_cannot_assign(SubclassValue(TypedValue("mod.Y")), unresolved_cls)
+    assert_can_assign(
+        SubclassValue(TypedValue(class_owner_from_key("mod.X"))), unresolved_cls
+    )
+    assert_cannot_assign(
+        SubclassValue(TypedValue(class_owner_from_key("mod.Y"))), unresolved_cls
+    )
     assert_cannot_assign(unresolved_cls, other_cls)
 
 

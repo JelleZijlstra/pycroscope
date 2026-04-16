@@ -74,6 +74,8 @@ from .value import (
     CallableValue,
     CanAssignContext,
     CanAssignError,
+    ClassKey,
+    ClassOwner,
     DataclassTransformDecoratorExtension,
     DataclassTransformInfo,
     DictIncompleteValue,
@@ -101,6 +103,7 @@ from .value import (
     TypeVarValue,
     Value,
     assert_is_value,
+    class_owner_from_key,
     concrete_values_from_iterable,
     dump_value,
     flatten_values,
@@ -723,13 +726,13 @@ def _super_impl(ctx: CallContext) -> Value:
                     first_arg.typ, TypedValue
                 ):
                     typ = first_arg.typ.typ
-                    if isinstance(typ, str):
+                    if isinstance(typ, ClassOwner):
                         return AnyValue(AnySource.inference)
                     return SuperValue(KnownValue(current_class), first_arg)
                 elif isinstance(first_arg, KnownValue):
                     return SuperValue(KnownValue(current_class), first_arg)
                 elif isinstance(first_arg, TypedValue):
-                    if isinstance(first_arg.typ, str):
+                    if isinstance(first_arg.typ, ClassOwner):
                         return AnyValue(AnySource.inference)
                     return SuperValue(KnownValue(current_class), first_arg)
                 else:
@@ -771,7 +774,7 @@ def _super_impl(ctx: CallContext) -> Value:
             ErrorCode.bad_super_call,
         )
 
-    if isinstance(tobj.typ, str):
+    if isinstance(tobj.typ, ClassOwner):
         return AnyValue(AnySource.inference)
 
     try:
@@ -2040,10 +2043,12 @@ def _dump_value_impl(ctx: CallContext) -> Value:
     return value
 
 
-def _get_class_key(ctx: CallContext) -> type | str | None:
+def _get_class_key(ctx: CallContext) -> ClassKey | None:
     typ = replace_fallback(ctx.vars["typ"])
-    if isinstance(typ, KnownValue) and isinstance(typ.val, (type, str)):
+    if isinstance(typ, KnownValue) and isinstance(typ.val, type):
         return typ.val
+    if isinstance(typ, KnownValue) and isinstance(typ.val, str):
+        return class_owner_from_key(typ.val)
     elif isinstance(typ, SyntheticClassObjectValue):
         return typ.class_type.typ
     else:

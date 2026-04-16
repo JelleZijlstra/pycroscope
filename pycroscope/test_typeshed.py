@@ -52,11 +52,63 @@ from .value import (
     Value,
     _iter_typevar_map_items,
     assert_is_value,
+    class_owner_from_key,
+    class_owner_from_qualname,
 )
 
 T = TypeVar("T")
 TParam = TypeVarParam(T)
 NT = NewType("NT", int)
+
+
+def _synthetic_key(name: str):
+    return class_owner_from_key(name)
+
+
+_CDATA_VALUE = TypedValue(
+    class_owner_from_qualname("_ctypes", "_CData", identity="_ctypes._CData")
+)
+_INITNEW_SIMPLE_VALUE = TypedValue(
+    class_owner_from_qualname(
+        "_pycroscope_tests.initnew",
+        "simple",
+        identity="_pycroscope_tests.initnew.simple",
+    )
+)
+_INITNEW_MY_ENUMERATE_VALUE = GenericValue(
+    class_owner_from_qualname(
+        "_pycroscope_tests.initnew",
+        "my_enumerate",
+        identity="_pycroscope_tests.initnew.my_enumerate",
+    ),
+    [KnownValue(1)],
+    weak=True,
+)
+_INITNEW_OVERLOADINIT_VALUE = GenericValue(
+    class_owner_from_qualname(
+        "_pycroscope_tests.initnew",
+        "overloadinit",
+        identity="_pycroscope_tests.initnew.overloadinit",
+    ),
+    [KnownValue(2)],
+    weak=True,
+)
+_INITNEW_SIMPLENEW_VALUE = TypedValue(
+    class_owner_from_qualname(
+        "_pycroscope_tests.initnew",
+        "simplenew",
+        identity="_pycroscope_tests.initnew.simplenew",
+    )
+)
+_INITNEW_OVERLOADNEW_VALUE = GenericValue(
+    class_owner_from_qualname(
+        "_pycroscope_tests.initnew",
+        "overloadnew",
+        identity="_pycroscope_tests.initnew.overloadnew",
+    ),
+    [KnownValue(2)],
+    weak=True,
+)
 
 
 class TestTypeshedClient(TestNameCheckVisitorBase):
@@ -108,10 +160,11 @@ class TestTypeshedClient(TestNameCheckVisitorBase):
     def test_get_direct_symbol_ignores_undotted_local_name(self):
         tsf = TypeshedFinder(Checker(), verbose=True)
 
-        assert tsf.get_direct_symbol("Params", "__new__") is None
-        assert tsf.get_bases_for_fq_name("Params") is None
+        params = _synthetic_key("Params")
+        assert tsf.get_direct_symbol(params, "__new__") is None
+        assert tsf.get_bases_for_fq_name(params) is None
         assert (
-            tsf.get_attribute("Params", "__new__", on_class=True) is UNINITIALIZED_VALUE
+            tsf.get_attribute(params, "__new__", on_class=True) is UNINITIALIZED_VALUE
         )
 
     def test_newtype(self):
@@ -243,27 +296,28 @@ class TestTypeshedClient(TestNameCheckVisitorBase):
             search_context = get_search_context(typeshed=temp_dir, search_path=[])
             tsf.resolver = Resolver(search_context)
 
-            attr = tsf.get_direct_symbol("sample.C", "x")
+            sample_c = _synthetic_key("sample.C")
+            attr = tsf.get_direct_symbol(sample_c, "x")
             assert attr is not None
             assert attr.annotation == TypedValue(int)
             assert attr.is_instance_only
 
-            prop = tsf.get_direct_symbol("sample.C", "name")
+            prop = tsf.get_direct_symbol(sample_c, "name")
             assert prop is not None
             assert prop.property_info is not None
             assert prop.property_info.fget is not None
 
-            make = tsf.get_direct_symbol("sample.C", "make")
+            make = tsf.get_direct_symbol(sample_c, "make")
             assert make is not None
             assert make.is_method
             assert make.is_classmethod
             assert isinstance(make.initializer, CallableValue)
 
-            build = tsf.get_direct_symbol("sample.C", "build")
+            build = tsf.get_direct_symbol(sample_c, "build")
             assert build is not None
             assert build.is_method
             assert build.is_staticmethod
-            assert tsf.get_direct_symbol("sample.C", "missing") is None
+            assert tsf.get_direct_symbol(sample_c, "missing") is None
 
     def test_override_typeshed_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_str:
@@ -420,7 +474,9 @@ class TestBundledStubs(TestNameCheckVisitorBase):
         def capybara():
             from _pycroscope_tests.cdata import f
 
-            assert_is_value(f(), TypedValue("_ctypes._CData"))
+            from pycroscope.test_typeshed import _CDATA_VALUE
+
+            assert_is_value(f(), _CDATA_VALUE)
 
     @assert_passes()
     def test_ast(self):
@@ -547,39 +603,30 @@ class TestConstructors(TestNameCheckVisitorBase):
                 simplenew,
             )
 
+            from pycroscope.test_typeshed import (
+                _INITNEW_MY_ENUMERATE_VALUE,
+                _INITNEW_OVERLOADINIT_VALUE,
+                _INITNEW_OVERLOADNEW_VALUE,
+                _INITNEW_SIMPLE_VALUE,
+                _INITNEW_SIMPLENEW_VALUE,
+            )
+
             simple()  # E: incompatible_call
             simple("x")  # E: incompatible_argument
-            assert_is_value(simple(1), TypedValue("_pycroscope_tests.initnew.simple"))
+            assert_is_value(simple(1), _INITNEW_SIMPLE_VALUE)
 
             my_enumerate()  # E: incompatible_call
             my_enumerate([1], start="x")  # E: incompatible_argument
-            assert_is_value(
-                my_enumerate([1]),
-                GenericValue(
-                    "_pycroscope_tests.initnew.my_enumerate", [KnownValue(1)], weak=True
-                ),
-            )
+            assert_is_value(my_enumerate([1]), _INITNEW_MY_ENUMERATE_VALUE)
 
             overloadinit()  # E: incompatible_call
-            assert_is_value(
-                overloadinit(1, "x", 2),
-                GenericValue(
-                    "_pycroscope_tests.initnew.overloadinit", [KnownValue(2)], weak=True
-                ),
-            )
+            assert_is_value(overloadinit(1, "x", 2), _INITNEW_OVERLOADINIT_VALUE)
 
             simplenew()  # E: incompatible_call
-            assert_is_value(
-                simplenew(1), TypedValue("_pycroscope_tests.initnew.simplenew")
-            )
+            assert_is_value(simplenew(1), _INITNEW_SIMPLENEW_VALUE)
 
             overloadnew()  # E: incompatible_call
-            assert_is_value(
-                overloadnew(1, "x", 2),
-                GenericValue(
-                    "_pycroscope_tests.initnew.overloadnew", [KnownValue(2)], weak=True
-                ),
-            )
+            assert_is_value(overloadnew(1, "x", 2), _INITNEW_OVERLOADNEW_VALUE)
 
     @assert_passes()
     def test_typeshed_constructors(self):
@@ -662,9 +709,8 @@ class TestGetGenericBases:
         self._assert_runtime_any_base(typing_extensions.Any)
 
     def test_runtime_annotated_special_form(self):
-        assert {"typing.Annotated": TypeVarMap()} == self.get_generic_bases(
-            "typing.Annotated"
-        )
+        annotated = _synthetic_key("typing.Annotated")
+        assert {annotated: TypeVarMap()} == self.get_generic_bases(annotated)
 
     def check(
         self,
@@ -672,15 +718,30 @@ class TestGetGenericBases:
         base: Union[type, str],
         args: typing.Sequence[Value] = (),
     ) -> None:
-        actual = self.get_generic_bases(base, args)
+        normalized_base = _synthetic_key(base) if isinstance(base, str) else base
+        actual = self.get_generic_bases(normalized_base, args)
         cleaned = {
             base: [value for _, value in _iter_typevar_map_items(tv_map)]
             for base, tv_map in actual.items()
         }
+        normalized_expected = expected
         if isinstance(expected, list):
-            assert cleaned in expected
+            normalized_expected = [
+                {
+                    (_synthetic_key(key) if isinstance(key, str) else key): values
+                    for key, values in expected_item.items()
+                }
+                for expected_item in expected
+            ]
         else:
-            assert expected == cleaned
+            normalized_expected = {
+                (_synthetic_key(key) if isinstance(key, str) else key): values
+                for key, values in expected.items()
+            }
+        if isinstance(expected, list):
+            assert cleaned in normalized_expected
+        else:
+            assert normalized_expected == cleaned
 
     def test_coroutine(self):
         one = KnownValue(1)
@@ -720,7 +781,9 @@ class TestGetGenericBases:
     def test_struct_time(self):
         expected = {
             time.struct_time: [],
-            "_typeshed.structseq": [AnyValue(AnySource.explicit) | TypedValue(int)],
+            class_owner_from_qualname(
+                "_typeshed", "structseq", identity="_typeshed.structseq"
+            ): [AnyValue(AnySource.explicit) | TypedValue(int)],
             tuple: [SequenceValue(tuple, [(False, TypedValue(int))] * 9)],
             collections.abc.Collection: [TypedValue(int)],
             collections.abc.Reversible: [TypedValue(int)],
@@ -926,8 +989,8 @@ class TestGetGenericBases:
 class TestCheckerGenericBases:
     def test_register_synthetic_type_bases_tracks_direct_synthetic_base(self):
         checker = Checker()
-        base = "test.Base"
-        child = "test.Child"
+        base = _synthetic_key("test.Base")
+        child = _synthetic_key("test.Child")
         checker.register_synthetic_type_bases(base, [])
         checker.register_synthetic_type_bases(
             child, [SyntheticClassObjectValue("Base", TypedValue(base))]
@@ -939,9 +1002,9 @@ class TestCheckerGenericBases:
 
     def test_register_synthetic_type_bases_tracks_transitive_synthetic_bases(self):
         checker = Checker()
-        grandparent = "test.Grandparent"
-        parent = "test.Parent"
-        child = "test.Child"
+        grandparent = _synthetic_key("test.Grandparent")
+        parent = _synthetic_key("test.Parent")
+        child = _synthetic_key("test.Child")
         checker.register_synthetic_type_bases(
             parent, [SyntheticClassObjectValue("Grandparent", TypedValue(grandparent))]
         )
@@ -956,8 +1019,8 @@ class TestCheckerGenericBases:
 
     def test_register_synthetic_type_bases_substitutes_declared_type_params(self):
         checker = Checker()
-        base = "test.Base"
-        child = "test.Child"
+        base = _synthetic_key("test.Base")
+        child = _synthetic_key("test.Child")
         checker.register_synthetic_type_bases(base, [], declared_type_params=[TParam])
         checker.register_synthetic_type_bases(
             child,
@@ -970,8 +1033,8 @@ class TestCheckerGenericBases:
 
     def test_register_synthetic_type_bases_handles_subclass_generic_base(self):
         checker = Checker()
-        base = "test.Base"
-        child = "test.Child"
+        base = _synthetic_key("test.Base")
+        child = _synthetic_key("test.Child")
         checker.register_synthetic_type_bases(base, [], declared_type_params=[TParam])
         checker.register_synthetic_type_bases(
             child, [SubclassValue(GenericValue(base, [TypedValue(int)]))]

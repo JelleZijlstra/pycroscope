@@ -18,7 +18,6 @@ from .test_node_visitor import assert_passes
 from .value import (
     AnySource,
     AnyValue,
-    ClassOwner,
     GenericValue,
     KnownValue,
     NewTypeValue,
@@ -30,6 +29,7 @@ from .value import (
     TypeVarTupleParam,
     TypeVarValue,
     assert_is_value,
+    class_owner_from_key,
     match_typevar_arguments,
 )
 
@@ -110,7 +110,7 @@ def test_collapse_constructor_overloads_to_single_generic() -> None:
                 annotation=TypedValue(int),
             )
         ],
-        GenericValue("test.Box", [TypedValue(int)]),
+        GenericValue(class_owner_from_key("test.Box"), [TypedValue(int)]),
     )
     str_sig = Signature.make(
         [
@@ -120,11 +120,11 @@ def test_collapse_constructor_overloads_to_single_generic() -> None:
                 annotation=TypedValue(str),
             )
         ],
-        GenericValue("test.Box", [TypedValue(str)]),
+        GenericValue(class_owner_from_key("test.Box"), [TypedValue(str)]),
     )
 
     collapsed = checker._collapse_constructor_overloads_to_single_generic(
-        [int_sig, str_sig], class_type="test.Box"
+        [int_sig, str_sig], class_type=class_owner_from_key("test.Box")
     )
 
     assert collapsed is not None
@@ -132,7 +132,9 @@ def test_collapse_constructor_overloads_to_single_generic() -> None:
     assert param.name == "value"
     assert isinstance(param.annotation, TypeVarValue)
     assert param.annotation.typevar_param.typevar.__constraints__ == (int, str)
-    assert collapsed.return_value == GenericValue("test.Box", [param.annotation])
+    assert collapsed.return_value == GenericValue(
+        class_owner_from_key("test.Box"), [param.annotation]
+    )
 
 
 def test_collapse_constructor_overloads_requires_matching_keyword_names() -> None:
@@ -145,7 +147,7 @@ def test_collapse_constructor_overloads_requires_matching_keyword_names() -> Non
                 annotation=TypedValue(int),
             )
         ],
-        GenericValue("test.Box", [TypedValue(int)]),
+        GenericValue(class_owner_from_key("test.Box"), [TypedValue(int)]),
     )
     str_sig = Signature.make(
         [
@@ -155,11 +157,11 @@ def test_collapse_constructor_overloads_requires_matching_keyword_names() -> Non
                 annotation=TypedValue(str),
             )
         ],
-        GenericValue("test.Box", [TypedValue(str)]),
+        GenericValue(class_owner_from_key("test.Box"), [TypedValue(str)]),
     )
 
     collapsed = checker._collapse_constructor_overloads_to_single_generic(
-        [int_sig, str_sig], class_type="test.Box"
+        [int_sig, str_sig], class_type=class_owner_from_key("test.Box")
     )
 
     assert collapsed is None
@@ -215,7 +217,7 @@ def test_get_argspec_self() -> None:
     assert isinstance(sig, Signature)
     assert isinstance(sig.return_value, TypeVarValue)
     my_self = sig.return_value.typevar_param
-    assert my_self.owner == ClassOwner(__name__, "ClassWithCall", ClassWithCall)
+    assert my_self.owner is ClassWithCall
 
 
 def test_get_argspec_uses_class_level_signature_for_extension_like_class() -> None:

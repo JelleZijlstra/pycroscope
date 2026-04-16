@@ -43,6 +43,7 @@ from .value import (
     TypeAliasValue,
     TypedValue,
     assert_is_value,
+    class_owner_from_key,
 )
 
 
@@ -230,7 +231,7 @@ class TestConstraintHelpers:
         varname = VarnameWithOrigin("box")
         int_constraint = Constraint(varname, ConstraintType.is_instance, True, int)
 
-        synthetic_value = TypedValue("Synthetic")
+        synthetic_value = TypedValue(class_owner_from_key("Synthetic"))
         assert list(int_constraint.apply_to_value(synthetic_value, checker)) == [
             synthetic_value
         ]
