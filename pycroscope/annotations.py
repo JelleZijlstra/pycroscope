@@ -2329,6 +2329,13 @@ def _type_from_subscripted_value(
             args_vals = packed_variadic_members
             type_arguments_are_packed = True
         elif (
+            not members
+            and len(type_params) == 1
+            and isinstance(type_params[0], TypeVarTupleParam)
+        ):
+            args_vals = [TypeVarTupleBindingValue(())]
+            type_arguments_are_packed = True
+        elif (
             saw_unpack
             and normalized_unpack_members is not None
             and not has_unbounded_unpack
@@ -2363,7 +2370,6 @@ def _type_from_subscripted_value(
             tuple(args_vals),
             runtime_allows_value_call=root.runtime_allows_value_call,
             uses_type_alias_object_semantics=root.uses_type_alias_object_semantics,
-            is_specialized=True,
             type_arguments_are_packed=type_arguments_are_packed,
         )
         if root.runtime_allows_value_call:
@@ -2386,7 +2392,15 @@ def _type_from_subscripted_value(
         alias_object = root
         runtime_type_params = tuple(alias_object.__type_params__)
         type_params = tuple(make_type_param(tp, ctx=ctx) for tp in runtime_type_params)
-        if len(members) == len(type_params):
+        type_arguments_are_packed = False
+        if (
+            not members
+            and len(type_params) == 1
+            and isinstance(type_params[0], TypeVarTupleParam)
+        ):
+            args_vals = [TypeVarTupleBindingValue(())]
+            type_arguments_are_packed = True
+        elif len(members) == len(type_params):
             args_vals = [
                 _type_from_value_type_alias_arg(member, type_param, ctx)
                 for member, type_param in zip(members, type_params)
@@ -2406,7 +2420,7 @@ def _type_from_subscripted_value(
             alias_object.__module__,
             alias,
             tuple(args_vals),
-            is_specialized=True,
+            type_arguments_are_packed=type_arguments_are_packed,
         )
     if root is typing.Union:
         return unite_values(*[_type_from_value(elt, ctx) for elt in members])
