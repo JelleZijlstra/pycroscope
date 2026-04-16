@@ -4722,6 +4722,8 @@ def stringify_object(obj: Any) -> str:
     # Stringify arbitrary Python objects such as methods and types.
     if isinstance(obj, str):
         return obj
+    if isinstance(obj, (ClassOwner, FunctionOwner, AliasOwner)):
+        return str(obj)
     try:
         if not safe_isinstance(obj, type):
             objclass = getattr(obj, "__objclass__", None)

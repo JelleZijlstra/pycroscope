@@ -603,7 +603,7 @@ class TypeObject:
 
     def _compute_declared_type_params(self) -> tuple[TypeParam, ...]:
         # First try stubs
-        ts_bases = self._checker.ts_finder.get_bases(_typeshed_key(self.typ))
+        ts_bases = self._checker.ts_finder.get_bases(self.typ)
         if ts_bases is not None:
             return tuple(_compute_type_params_from_bases(ts_bases))
 
@@ -616,7 +616,7 @@ class TypeObject:
     def _compute_direct_bases(self) -> tuple[MroValue, ...]:
         if self.typ is object:
             return ()
-        ts_bases = self._checker.ts_finder.get_bases(_typeshed_key(self.typ))
+        ts_bases = self._checker.ts_finder.get_bases(self.typ)
         if ts_bases is not None:
             if not ts_bases:
                 return (TypedValue(object),)
@@ -1165,13 +1165,11 @@ class TypeObject:
 
     def _get_protocol_members_contributed_by_self(self) -> set[str]:
         if isinstance(self.typ, ClassOwner) or self._checker.ts_finder.is_protocol(
-            _typeshed_key(self.typ)
+            self.typ
         ):
             members = {
                 attr
-                for attr in self._checker.ts_finder.get_all_attributes(
-                    _typeshed_key(self.typ)
-                )
+                for attr in self._checker.ts_finder.get_all_attributes(self.typ)
                 if attr != "__slots__"
             }
             return members | self._get_protocol_members_from_overlay()
@@ -1622,9 +1620,7 @@ class TypeObject:
                     seen_anchor = True
                 continue
             if use_typeshed:
-                symbol = self._checker.ts_finder.get_direct_symbol(
-                    _typeshed_key(entry.tobj.typ), name
-                )
+                symbol = self._checker.ts_finder.get_direct_symbol(entry.tobj.typ, name)
             else:
                 symbol = entry.tobj.get_declared_symbols().get(name)
             if symbol is None:
@@ -3783,35 +3779,21 @@ def _signature_has_receiver_parameter(
             annotation_key
         ) == stringify_object(self_key):
             return True
-        if isinstance(annotation_key, (ClassOwner, str)) and isinstance(self_key, type):
-            annotation_name = (
-                annotation_key.qualname
-                if isinstance(annotation_key, ClassOwner)
-                else annotation_key
-            )
+        if isinstance(annotation_key, ClassOwner) and isinstance(self_key, type):
+            annotation_name = annotation_key.qualname
             return annotation_name.rsplit(".", maxsplit=1)[-1] == self_key.__name__
-        if isinstance(annotation_key, type) and isinstance(self_key, (ClassOwner, str)):
-            self_name = (
-                self_key.qualname if isinstance(self_key, ClassOwner) else self_key
-            )
+        if isinstance(annotation_key, type) and isinstance(self_key, ClassOwner):
+            self_name = self_key.qualname
             return self_name.rsplit(".", maxsplit=1)[-1] == annotation_key.__name__
-        if isinstance(annotation_key, (ClassOwner, str)) and isinstance(
-            self_key, (ClassOwner, str)
-        ):
-            annotation_name = (
-                annotation_key.qualname
-                if isinstance(annotation_key, ClassOwner)
-                else annotation_key
-            )
-            self_name = (
-                self_key.qualname if isinstance(self_key, ClassOwner) else self_key
-            )
+        if isinstance(annotation_key, ClassOwner) and isinstance(self_key, ClassOwner):
+            annotation_name = annotation_key.qualname
+            self_name = self_key.qualname
             return (
                 annotation_name.rsplit(".", maxsplit=1)[-1]
                 == self_name.rsplit(".", maxsplit=1)[-1]
             )
-        if not isinstance(annotation_key, (ClassOwner, str)) and not isinstance(
-            self_key, (ClassOwner, str)
+        if not isinstance(annotation_key, ClassOwner) and not isinstance(
+            self_key, ClassOwner
         ):
             return False
         return not isinstance(
@@ -4155,7 +4137,7 @@ def _is_definitely_class_object_value(value: Value) -> bool:
     if isinstance(value, TypedValue):
         if isinstance(value.typ, type):
             return safe_issubclass(value.typ, type)
-        elif isinstance(value.typ, (ClassOwner, str)):
+        elif isinstance(value.typ, ClassOwner):
             return str(value.typ) in {"type", "builtins.type"}
         else:
             assert_never(value.typ)

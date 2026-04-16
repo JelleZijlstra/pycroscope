@@ -58,6 +58,7 @@ from .value import (
     AnyValue,
     CallableValue,
     CanAssignContext,
+    ClassKey,
     ClassOwner,
     ClassSymbol,
     DeprecatedExtension,
@@ -144,7 +145,7 @@ def _get_resolver_for_stub_paths(
 @dataclass
 class _ClassOwner:
     fq_name: str
-    class_key: type | str | ClassOwner
+    class_key: ClassKey
 
 
 @dataclass
@@ -423,11 +424,8 @@ class TypeshedFinder:
                     return True
         return False
 
-    def get_bases(self, typ: type | str) -> list[Value] | None:
+    def get_bases(self, typ: ClassKey) -> list[Value] | None:
         """Return the base classes for this type, including generic bases."""
-        if isinstance(typ, ClassOwner):
-            typ = str(typ)
-        assert isinstance(typ, str) or isinstance(typ, type), repr(typ)
         return self.get_bases_for_value(TypedValue(typ))
 
     def get_bases_for_value(self, val: Value) -> list[Value] | None:
@@ -449,7 +447,7 @@ class TypeshedFinder:
                 if typ is EnumMeta:
                     return [TypedValue(type)]
             else:
-                fq_name = val.typ
+                fq_name = str(val.typ)
                 if fq_name == "collections.abc.Set":
                     return [
                         GenericValue(Collection, (TypeVarValue(TypeVarParam(T_co)),))
@@ -473,14 +471,12 @@ class TypeshedFinder:
             return self._get_bases_for_owner(owner)
         return None
 
-    def is_protocol(self, typ: type | str) -> bool:
+    def is_protocol(self, typ: ClassKey) -> bool:
         """Return whether this type is marked as a Protocol in the stubs."""
         owner = self._make_owner(typ)
         if owner is None:
             return False
-        bases = self.get_bases_for_value(
-            TypedValue(class_owner_from_key(owner.fq_name))
-        )
+        bases = self.get_bases_for_value(TypedValue(owner.class_key))
         if bases is None:
             return False
         return any(
@@ -488,7 +484,7 @@ class TypeshedFinder:
             for base in bases
         )
 
-    def get_bases_recursively(self, typ: type | str) -> list[Value]:
+    def get_bases_recursively(self, typ: ClassKey) -> list[Value]:
         stack = [TypedValue(typ)]
         seen = set()
         bases = []
@@ -504,7 +500,7 @@ class TypeshedFinder:
                 bases += new_bases
         return bases
 
-    def get_bases_for_fq_name(self, typ: type | str) -> list[Value] | None:
+    def get_bases_for_fq_name(self, typ: ClassKey) -> list[Value] | None:
         owner = self._make_owner(typ)
         if owner is None:
             return None
@@ -523,7 +519,7 @@ class TypeshedFinder:
         mod, _ = owner.fq_name.rsplit(".", maxsplit=1)
         return self._get_bases_from_info(info, mod, owner)
 
-    def get_attribute(self, typ: type | str, attr: str, *, on_class: bool) -> Value:
+    def get_attribute(self, typ: ClassKey, attr: str, *, on_class: bool) -> Value:
         """Return the stub for this attribute.
 
         Does not look at parent classes. Returns UNINITIALIZED_VALUE if no
@@ -555,7 +551,7 @@ class TypeshedFinder:
             self._attribute_cache[key] = val
             return val
 
-    def get_direct_symbol(self, typ: type | str, attr: str) -> ClassSymbol | None:
+    def get_direct_symbol(self, typ: ClassKey, attr: str) -> ClassSymbol | None:
         """Return the symbol declared directly on this class in stubs."""
         owner = self._make_owner(typ)
         if owner is None:
@@ -574,8 +570,8 @@ class TypeshedFinder:
             return symbol
 
     def get_attribute_recursively(
-        self, typ: type | str, attr: str, *, on_class: bool
-    ) -> tuple[Value, type | str]:
+        self, typ: ClassKey, attr: str, *, on_class: bool
+    ) -> tuple[Value, ClassKey]:
         """Get an attribute from a fully qualified class.
 
         Returns a tuple (value, provider).
@@ -588,7 +584,7 @@ class TypeshedFinder:
                     return possible_value, base.typ
         return UNINITIALIZED_VALUE, object
 
-    def has_attribute(self, typ: type | str, attr: str) -> bool:
+    def has_attribute(self, typ: ClassKey, attr: str) -> bool:
         """Whether this type has this attribute in the stubs.
 
         Also looks at base classes.
@@ -611,7 +607,7 @@ class TypeshedFinder:
                     return True
         return False
 
-    def get_all_attributes(self, typ: type | str) -> set[str]:
+    def get_all_attributes(self, typ: ClassKey) -> set[str]:
         owner = self._make_owner(typ)
         if owner is None:
             return set()
@@ -619,9 +615,9 @@ class TypeshedFinder:
         mod, _ = owner.fq_name.rsplit(".", maxsplit=1)
         return self._get_all_attributes_from_info(info, mod, owner)
 
-    def has_stubs(self, typ: type | str) -> bool:
-        if isinstance(typ, str):
-            fq_name = typ
+    def has_stubs(self, typ: ClassKey) -> bool:
+        if isinstance(typ, ClassOwner):
+            fq_name = str(typ)
         else:
             fq_name = self._get_fq_name(typ)
             if fq_name is None:
@@ -1114,7 +1110,7 @@ class TypeshedFinder:
         if isinstance(typ, ClassOwner):
             return _ClassOwner(str(typ), typ)
         if isinstance(typ, str):
-            return _ClassOwner(typ, typ)
+            return _ClassOwner(typ, class_owner_from_key(typ))
         else:
             fq_name = self._get_fq_name(typ)
             if fq_name is None:
@@ -1194,13 +1190,18 @@ class TypeshedFinder:
                     sigs.append(sig)
                 return OverloadedSignature(sigs)
             elif isinstance(info.ast, ast.ClassDef):
+                class_key = (
+                    owner.class_key
+                    if owner is not None
+                    else class_owner_from_key(fq_name)
+                )
                 new_value, provider = self.get_attribute_recursively(
-                    fq_name, "__new__", on_class=True
+                    class_key, "__new__", on_class=True
                 )
                 from_init = False
                 if new_value is UNINITIALIZED_VALUE or provider is object:
                     init_value, provider = self.get_attribute_recursively(
-                        fq_name, "__init__", on_class=True
+                        class_key, "__init__", on_class=True
                     )
                     if (sig := self._sig_from_value(init_value)) is not None:
                         from_init = True
@@ -1220,7 +1221,11 @@ class TypeshedFinder:
                                 )
                         typ = obj
                     else:
-                        typ = fq_name
+                        typ = (
+                            owner.class_key
+                            if owner is not None
+                            else class_owner_from_key(fq_name)
+                        )
                     if type_params:
                         self_val = GenericValue(
                             typ,
@@ -1551,7 +1556,7 @@ class TypeshedFinder:
 
     def make_synthetic_type(self, module: str, info: typeshed_client.NameInfo) -> Value:
         fq_name = f"{module}.{info.name}"
-        owner = _ClassOwner(fq_name, fq_name)
+        owner = _ClassOwner(fq_name, class_owner_from_key(fq_name))
         bases = self._get_bases_from_info(info, module, owner)
         typ = TypedValue(class_owner_from_qualname(module, info.name, identity=fq_name))
         if isinstance(info.ast, ast.ClassDef):

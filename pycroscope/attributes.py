@@ -281,14 +281,14 @@ def get_attribute(ctx: AttrContext) -> Value:
             args = root_value.args
         else:
             args = ()
-        if isinstance(root_value.typ, str):
+        if isinstance(root_value.typ, ClassOwner):
             attribute_value = _get_attribute_from_synthetic_typed_value(root_value, ctx)
         else:
             attribute_value = _get_attribute_from_typed(root_value.typ, args, ctx)
     elif isinstance(root_value, SubclassValue):
-        synthetic_name: str | None = None
+        synthetic_name: ClassKey | None = None
         if isinstance(root_value.typ, TypedValue):
-            if isinstance(root_value.typ.typ, str):
+            if isinstance(root_value.typ.typ, ClassOwner):
                 synthetic_name = root_value.typ.typ
             else:
                 attribute_value = _get_attribute_from_subclass(
@@ -297,7 +297,7 @@ def get_attribute(ctx: AttrContext) -> Value:
         elif isinstance(root_value.typ, TypeVarValue):
             if root_value.typ.typevar_param.bound is not None:
                 bound = replace_fallback(root_value.typ.typevar_param.bound)
-                if isinstance(bound, TypedValue) and isinstance(bound.typ, str):
+                if isinstance(bound, TypedValue) and isinstance(bound.typ, ClassOwner):
                     synthetic_name = bound.typ
         else:
             assert_never(root_value.typ)
@@ -408,7 +408,7 @@ def _specialized_class_partial_member_to_type(
 def _get_namedtuple_member_from_sequence_value(
     root_value: SequenceValue, ctx: AttrContext
 ) -> Value | None:
-    if not isinstance(root_value.typ, str):
+    if not isinstance(root_value.typ, ClassOwner):
         return None
     type_object = ctx.get_can_assign_context().make_type_object(root_value.typ)
     if not type_object.is_direct_namedtuple():

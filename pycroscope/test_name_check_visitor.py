@@ -2031,6 +2031,21 @@ class TestSubclassValue(TestNameCheckVisitorBase):
             assert_type(ListFactory(), list[int])
             assert_type(DictFactory(), dict[str, int])
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_generic_constructor_infers_widened_type_args(self):
+        from typing import Generic, TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Box(Generic[T]):
+            def __init__(self, value: T) -> None:
+                pass
+
+        assert_type(Box(1), Box[int])
+        assert_type(Box(1.0), Box[float])
+
     @assert_passes()
     def test_init_self_annotation_disallows_class_scoped_typevars(self):
         from typing import Generic, TypeVar

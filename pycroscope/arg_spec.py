@@ -112,16 +112,6 @@ from .value import (
 _GET_OVERLOADS = []
 
 
-def _typeshed_key(class_key: object) -> type | str:
-    if isinstance(class_key, ClassOwner):
-        return str(class_key)
-    if isinstance(class_key, str):
-        return class_key
-    if not isinstance(class_key, type):
-        return get_fully_qualified_name(class_key) or str(class_key)
-    return class_key
-
-
 try:
     from typing_extensions import get_overloads
 except ImportError:
@@ -1622,10 +1612,7 @@ class ArgSpecCache:
             pass
         except Exception:
             return {}  # We don't support unhashable types.
-        if isinstance(typ, ClassOwner):
-            bases = self.ts_finder.get_bases_for_fq_name(str(typ))
-        else:
-            bases = self.ts_finder.get_bases(_typeshed_key(typ))
+        bases = self.ts_finder.get_bases(typ)
         generic_bases = self._extract_bases(typ, bases)
         if generic_bases is None:
             if isinstance(typ, ClassOwner):

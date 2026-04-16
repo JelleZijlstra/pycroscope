@@ -72,6 +72,7 @@ from .value import (
     CanAssignContext,
     CanAssignError,
     ClassKey,
+    ClassOwner,
     ConstraintExtension,
     DictIncompleteValue,
     GenericValue,
@@ -1619,9 +1620,9 @@ class Signature:
                 or (
                     self.callable is None
                     and isinstance(return_value, GenericValue)
-                    and isinstance(return_value.typ, str)
+                    and isinstance(return_value.typ, ClassOwner)
                     and isinstance(ctx.node, ast.Call)
-                    # TODO: this is nonense
+                    # TODO: this is nonsense.
                     and safe_getattr(ctx.visitor, "module", None) is None
                 )
             )

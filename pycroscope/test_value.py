@@ -857,6 +857,13 @@ def test_synthetic_class_object_value_nominal_class() -> None:
     assert_cannot_assign(SubclassValue(TypedValue(str)), int_cls)
 
 
+def test_class_owner_stringification_is_readable() -> None:
+    owner = value.class_owner_from_qualname("mod", "Cls", identity="mod.Cls")
+
+    assert str(TypedValue(owner)) == "mod.Cls"
+    assert str(GenericValue(owner, [TypedValue(int)])) == "mod.Cls[int]"
+
+
 def test_synthetic_class_object_value_matches_specialized_type() -> None:
     synthetic_cls = value.SyntheticClassObjectValue(
         "C", TypedValue(class_owner_from_key("mod.C"))

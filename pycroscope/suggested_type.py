@@ -28,6 +28,7 @@ from .value import (
     CallableValue,
     CanAssignContext,
     CanAssignError,
+    ClassOwner,
     GenericValue,
     IntersectionValue,
     KnownValue,
@@ -350,9 +351,9 @@ def display_suggested_type(
                 metadata = {"suggested_type": typ_name, "imports": []}
             else:
                 imports = []
-                if isinstance(value.typ, str):
-                    if "." in value.typ:
-                        imports.append(value.typ)
+                if isinstance(value.typ, ClassOwner):
+                    if value.typ.module:
+                        imports.append(value.typ.module)
                 elif safe_getattr(value.typ, "__module__", None) != "builtins":
                     imports.append(typ_str.split(".")[0])
                 metadata = {"suggested_type": typ_str, "imports": imports}

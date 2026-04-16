@@ -1039,8 +1039,6 @@ class Checker:
             return None
         if isinstance(typ, ClassOwner):
             return typ.qualname.rsplit(".", maxsplit=1)[-1]
-        if isinstance(typ, str):
-            return typ.rsplit(".", maxsplit=1)[-1]
         elif isinstance(typ, type):
             name = safe_getattr(typ, "__name__", None)
             if isinstance(name, str):

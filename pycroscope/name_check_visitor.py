@@ -10098,7 +10098,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(value, TypedValue):
             if isinstance(value.typ, type):
                 return safe_issubclass(value.typ, enum.Enum)
-            elif isinstance(value.typ, (ClassOwner, str)):
+            elif isinstance(value.typ, ClassOwner):
                 return self._is_enum_class_key(value.typ)
             else:
                 assert_never(value.typ)
@@ -13137,7 +13137,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(root_node, ast.Name):
             synthetic_name = self._get_referenced_synthetic_class_fq_name(root_node.id)
             type_params = self._type_params_for_variance_class_key(
-                synthetic_name, arity
+                class_owner_from_key(synthetic_name), arity
             )
             if type_params is not None:
                 return type_params
