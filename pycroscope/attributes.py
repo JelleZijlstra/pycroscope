@@ -85,7 +85,6 @@ from .value import (
     _iter_typevar_map_items,
     _typevar_map_from_varlike_pairs,
     annotate_value,
-    get_type_alias_root,
     replace_fallback,
     set_self,
     unite_values,
@@ -193,16 +192,19 @@ def _get_type_object_attribute(
 
 
 def get_attribute(ctx: AttrContext) -> Value:
-    alias_root = get_type_alias_root(ctx.root_value)
-    if (
-        alias_root is not None
-        and isinstance(ctx.root_value, PartialValue)
-        and ctx.root_value.operation is PartialValueOperation.PEP_695_ALIAS
-    ):
-        return _get_attribute_from_type_alias(alias_root, ctx)
     lookup_root_value = (
         ctx.root_value if ctx.lookup_root_value is None else ctx.lookup_root_value
     )
+    if (
+        isinstance(ctx.root_value, PartialValue)
+        and ctx.root_value.operation is PartialValueOperation.PEP_695_ALIAS
+    ):
+        assert isinstance(ctx.root_value.root, TypeAliasValue)
+        attribute_value = _get_attribute_from_type_alias(ctx.root_value.root, ctx)
+        if attribute_value is not UNINITIALIZED_VALUE:
+            return attribute_value
+        if ctx.lookup_root_value is None:
+            lookup_root_value = ctx.root_value.runtime_value
     if (
         isinstance(lookup_root_value, TypeVarValue)
         and lookup_root_value.typevar_param.bound is not None
@@ -259,12 +261,14 @@ def get_attribute(ctx: AttrContext) -> Value:
             return ctx.root_value.predicate.value
         return attribute_value
     root_value = replace_fallback(lookup_root_value)
-    if isinstance(root_value, KnownValue) and is_typing_name(
-        type(root_value.val), "TypeAliasType"
-    ):
-        return _get_attribute_from_runtime_type_alias(root_value.val, ctx)
     attribute_value: Value = UNINITIALIZED_VALUE
     if isinstance(root_value, KnownValue):
+        if is_typing_name(type(root_value.val), "TypeAliasType"):
+            attribute_value = _get_attribute_from_runtime_type_alias(
+                root_value.val, ctx
+            )
+            if attribute_value is not UNINITIALIZED_VALUE:
+                return attribute_value
         attribute_value = _get_attribute_from_known(root_value.val, ctx)
     elif isinstance(root_value, TypedValue):
         if (

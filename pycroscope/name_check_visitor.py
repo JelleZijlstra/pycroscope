@@ -14700,12 +14700,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self_value=resolved_self_value,
                 )
                 result = attributes.get_attribute(mangled_ctx)
-        if (
-            result is UNINITIALIZED_VALUE
-            and node is not None
-            and isinstance(root_composite.value, TypeAliasValue)
-            and is_type_alias_symbol
-        ):
+        if result is UNINITIALIZED_VALUE and node is not None and is_type_alias_symbol:
             self._show_error_if_checking(
                 node,
                 f"{root_composite.value} has no attribute {attr!r}",
@@ -17141,11 +17136,14 @@ def _is_type_alias_symbol_composite(root_composite: Composite) -> bool:
 
 
 def _is_type_alias_specialization_symbol_composite(root_composite: Composite) -> bool:
-    alias_root = get_type_alias_root(root_composite.value)
-    if alias_root is None:
+    if not (
+        isinstance(root_composite.value, PartialValue)
+        and is_type_alias_partial_operation(root_composite.value.operation)
+        and isinstance(root_composite.value.root, TypeAliasValue)
+    ):
         return False
     varname = root_composite.varname
-    return varname is not None and varname.varname == alias_root.name
+    return varname is not None and varname.varname == root_composite.value.root.name
 
 
 def _runtime_value_for_pep613_alias(alias_value: TypeAliasValue) -> Value:
