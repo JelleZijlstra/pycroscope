@@ -56,10 +56,6 @@ _checker = Checker()
 CTX = NameCheckVisitor("", "", ast.parse(""), checker=_checker)
 
 
-def _synthetic_key(name: str):
-    return class_owner_from_key(name)
-
-
 def assert_cannot_assign(left: Value, right: Value) -> None:
     tv_map = left.can_assign(right, CTX)
     assert isinstance(tv_map, CanAssignError)
@@ -863,10 +859,10 @@ def test_synthetic_class_object_value_nominal_class() -> None:
 
 def test_synthetic_class_object_value_matches_specialized_type() -> None:
     synthetic_cls = value.SyntheticClassObjectValue(
-        "C", TypedValue(_synthetic_key("mod.C"))
+        "C", TypedValue(class_owner_from_key("mod.C"))
     )
     specialized = SubclassValue(
-        GenericValue(_synthetic_key("mod.C"), [TypedValue(int)])
+        GenericValue(class_owner_from_key("mod.C"), [TypedValue(int)])
     )
 
     # Unspecialized class objects should still match specialized type[...] forms.
@@ -876,20 +872,20 @@ def test_synthetic_class_object_value_matches_specialized_type() -> None:
 
 def test_synthetic_class_object_value_unresolved_nominal_class() -> None:
     unresolved_cls = value.SyntheticClassObjectValue(
-        "X", TypedValue(_synthetic_key("mod.X"))
+        "X", TypedValue(class_owner_from_key("mod.X"))
     )
     other_cls = value.SyntheticClassObjectValue(
-        "Y", TypedValue(_synthetic_key("mod.Y"))
+        "Y", TypedValue(class_owner_from_key("mod.Y"))
     )
 
     # Synthetic class objects with unresolved class names should still behave
     # like class objects for assignability checks.
     assert_can_assign(TypedValue(type), unresolved_cls)
     assert_can_assign(
-        SubclassValue(TypedValue(_synthetic_key("mod.X"))), unresolved_cls
+        SubclassValue(TypedValue(class_owner_from_key("mod.X"))), unresolved_cls
     )
     assert_cannot_assign(
-        SubclassValue(TypedValue(_synthetic_key("mod.Y"))), unresolved_cls
+        SubclassValue(TypedValue(class_owner_from_key("mod.Y"))), unresolved_cls
     )
     assert_cannot_assign(unresolved_cls, other_cls)
 

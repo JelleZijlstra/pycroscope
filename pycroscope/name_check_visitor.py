@@ -2171,6 +2171,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     being_assigned: Value | None
     checker: Checker
     collector: CallSiteCollector | None
+    # TODO: Harmonize current_class/current_class_key/current_tobj. We still
+    # carry both a runtime-facing "current class" for body-time lookups and a
+    # canonical class key/type object for synthetic overlays and type metadata.
     current_class: ClassKey | None
     current_tobj: TypeObject | None
     current_dataclass_info: DataclassInfo | None

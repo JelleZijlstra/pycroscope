@@ -37,10 +37,6 @@ T = TypeVar("T")
 NT = NewType("NT", int)
 
 
-def _synthetic_key(name: str):
-    return class_owner_from_key(name)
-
-
 class _SignatureMeta(type):
     def __call__(cls, *, x: int, y: str = "") -> object:
         return super().__call__()
@@ -114,7 +110,7 @@ def test_collapse_constructor_overloads_to_single_generic() -> None:
                 annotation=TypedValue(int),
             )
         ],
-        GenericValue(_synthetic_key("test.Box"), [TypedValue(int)]),
+        GenericValue(class_owner_from_key("test.Box"), [TypedValue(int)]),
     )
     str_sig = Signature.make(
         [
@@ -124,11 +120,11 @@ def test_collapse_constructor_overloads_to_single_generic() -> None:
                 annotation=TypedValue(str),
             )
         ],
-        GenericValue(_synthetic_key("test.Box"), [TypedValue(str)]),
+        GenericValue(class_owner_from_key("test.Box"), [TypedValue(str)]),
     )
 
     collapsed = checker._collapse_constructor_overloads_to_single_generic(
-        [int_sig, str_sig], class_type=_synthetic_key("test.Box")
+        [int_sig, str_sig], class_type=class_owner_from_key("test.Box")
     )
 
     assert collapsed is not None
@@ -137,7 +133,7 @@ def test_collapse_constructor_overloads_to_single_generic() -> None:
     assert isinstance(param.annotation, TypeVarValue)
     assert param.annotation.typevar_param.typevar.__constraints__ == (int, str)
     assert collapsed.return_value == GenericValue(
-        _synthetic_key("test.Box"), [param.annotation]
+        class_owner_from_key("test.Box"), [param.annotation]
     )
 
 
@@ -151,7 +147,7 @@ def test_collapse_constructor_overloads_requires_matching_keyword_names() -> Non
                 annotation=TypedValue(int),
             )
         ],
-        GenericValue(_synthetic_key("test.Box"), [TypedValue(int)]),
+        GenericValue(class_owner_from_key("test.Box"), [TypedValue(int)]),
     )
     str_sig = Signature.make(
         [
@@ -161,11 +157,11 @@ def test_collapse_constructor_overloads_requires_matching_keyword_names() -> Non
                 annotation=TypedValue(str),
             )
         ],
-        GenericValue(_synthetic_key("test.Box"), [TypedValue(str)]),
+        GenericValue(class_owner_from_key("test.Box"), [TypedValue(str)]),
     )
 
     collapsed = checker._collapse_constructor_overloads_to_single_generic(
-        [int_sig, str_sig], class_type=_synthetic_key("test.Box")
+        [int_sig, str_sig], class_type=class_owner_from_key("test.Box")
     )
 
     assert collapsed is None

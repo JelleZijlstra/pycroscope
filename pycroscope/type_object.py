@@ -182,6 +182,8 @@ def class_keys_match(left: ClassKey, right: ClassKey) -> bool:
     return left == right
 
 
+# TODO: Let TypeshedFinder accept ClassKey directly so callers do not need to
+# care about this conversion boundary.
 def _typeshed_key(class_key: object) -> type | str:
     if isinstance(class_key, ClassOwner):
         return str(class_key)
@@ -190,12 +192,6 @@ def _typeshed_key(class_key: object) -> type | str:
     if not isinstance(class_key, type):
         return stringify_object(class_key)
     return class_key
-
-
-def _class_key_name(class_key: ClassKey) -> str:
-    if isinstance(class_key, type):
-        return class_key.__name__
-    return class_key.qualname.rsplit(".", maxsplit=1)[-1]
 
 
 @dataclass(frozen=True)
