@@ -499,6 +499,17 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         _x2: ListAlias[int]  # E: invalid_specialization
         _x3 = ListOrSetAlias()  # E: not_callable
 
+    @assert_passes(allow_import_failures=True)
+    def test_implicit_tuple_alias_specialization_after_runtime_load_failure(self):
+        from typing import TypeVar
+
+        _bad_type1: type[int, str]  # E: invalid_annotation
+
+        T = TypeVar("T")
+        IntTupleGeneric = tuple[int, T]
+
+        IntTupleGeneric[str]
+
     @assert_passes(run_in_both_module_modes=True)
     def test_explicit_type_alias_uses_runtime_attribute_semantics(self):
         from typing import TypeAlias

@@ -75,6 +75,7 @@ from .annotations import (
     SyntheticEvaluator,
     _normalize_paramspec_generic_args,
     _specialize_type_alias_partial,
+    _specialize_type_alias_value,
     annotation_expr_from_annotations,
     annotation_expr_from_ast,
     annotation_expr_from_runtime,
@@ -13265,7 +13266,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         stripped_value, root_composite.varname, root_composite.node
                     )
                 )
-                runtime_type_alias: PartialValue | None = None
+                runtime_type_alias: Value | None = None
                 if not self.in_annotation:
                     runtime_type_alias = self._get_value_position_type_alias_symbol(
                         stripped_root, node.value
@@ -13274,8 +13275,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     # Value-position specialization of a declared type alias should
                     # use the recorded alias metadata rather than the raw runtime
                     # GenericAlias object, which may not support further specialization.
-                    return _specialize_type_alias_partial(
-                        runtime_type_alias, self._maybe_unpack_tuple(index, node), self
+                    members = self._maybe_unpack_tuple(index, node)
+                    if isinstance(runtime_type_alias, PartialValue):
+                        return _specialize_type_alias_partial(
+                            runtime_type_alias, members, self, node=node
+                        )
+                    assert isinstance(runtime_type_alias, TypeAliasValue)
+                    return _specialize_type_alias_value(
+                        runtime_type_alias, members, self, node=node
                     )
                 should_use_static_annotation_subscript = self.in_annotation and (
                     get_type_alias_root(stripped_root.value) is not None
@@ -13646,12 +13653,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _get_value_position_type_alias_symbol(
         self, root_composite: Composite, node: ast.expr
-    ) -> PartialValue | None:
+    ) -> Value | None:
         # Only the alias symbol itself should preserve type-alias specialization
         # behavior in value position. Ordinary values annotated with an alias type
         # should behave like their underlying runtime values.
         if _is_type_alias_specialization_symbol_composite(root_composite):
-            assert isinstance(root_composite.value, PartialValue)
+            assert isinstance(root_composite.value, (PartialValue, TypeAliasValue))
             return root_composite.value
         return None
 
@@ -17136,14 +17143,11 @@ def _is_type_alias_symbol_composite(root_composite: Composite) -> bool:
 
 
 def _is_type_alias_specialization_symbol_composite(root_composite: Composite) -> bool:
-    if not (
-        isinstance(root_composite.value, PartialValue)
-        and is_type_alias_partial_operation(root_composite.value.operation)
-        and isinstance(root_composite.value.root, TypeAliasValue)
-    ):
+    alias_root = get_type_alias_root(root_composite.value)
+    if alias_root is None:
         return False
     varname = root_composite.varname
-    return varname is not None and varname.varname == root_composite.value.root.name
+    return varname is not None and varname.varname == alias_root.name
 
 
 def _runtime_value_for_pep613_alias(alias_value: TypeAliasValue) -> Value:
