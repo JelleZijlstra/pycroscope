@@ -695,8 +695,6 @@ class TestDataclass(TestNameCheckVisitorBase):
         import does_not_exist  # noqa: F401
         from typing_extensions import assert_type
 
-        from pycroscope.value import GenericValue, TypedValue, assert_is_value
-
         T = TypeVar("T")
 
         class Box(Generic[T]):
@@ -704,12 +702,7 @@ class TestDataclass(TestNameCheckVisitorBase):
                 self.value = value
 
         assert_type(Box(1), Box[int])
-        assert_is_value(
-            Box(1.0),
-            GenericValue(
-                "<test input>.Box", [TypedValue(float) | TypedValue(int)], weak=True
-            ),
-        )
+        assert_type(Box(1.0), Box[float | int])
         assert_type(Box(1j), Box[complex | float | int])
         assert_type(Box(""), Box[str])
         assert_type(Box[float](1), Box[float | int])

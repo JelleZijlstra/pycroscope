@@ -71,6 +71,8 @@ from .value import (
     CanAssign,
     CanAssignContext,
     CanAssignError,
+    ClassKey,
+    ClassOwner,
     ConstraintExtension,
     DictIncompleteValue,
     GenericValue,
@@ -195,7 +197,7 @@ def _should_widen_constructor_typevar_solutions(
     )
 
 
-def _constructor_origin_from_callee(callee: Value | None) -> type | str | None:
+def _constructor_origin_from_callee(callee: Value | None) -> ClassKey | None:
     if callee is None:
         return None
     callee = replace_fallback(callee)
@@ -1618,9 +1620,9 @@ class Signature:
                 or (
                     self.callable is None
                     and isinstance(return_value, GenericValue)
-                    and isinstance(return_value.typ, str)
+                    and isinstance(return_value.typ, ClassOwner)
                     and isinstance(ctx.node, ast.Call)
-                    # TODO: this is nonense
+                    # TODO: this is nonsense.
                     and safe_getattr(ctx.visitor, "module", None) is None
                 )
             )

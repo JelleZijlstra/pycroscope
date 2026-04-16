@@ -9,6 +9,11 @@ from .value import (
     KnownValue,
     TypedValue,
     assert_is_value,
+    class_owner_from_key,
+)
+
+_ASYNC_GENERATOR_CONTEXT_MANAGER_NONE = GenericValue(
+    class_owner_from_key("contextlib._AsyncGeneratorContextManager"), [KnownValue(None)]
 )
 
 
@@ -16,8 +21,6 @@ class TestNestedFunction(TestNameCheckVisitorBase):
     @assert_passes()
     def test_inference(self):
         def capybara():
-            from pycroscope.value import SyntheticClassObjectValue
-
             def nested():
                 pass
 
@@ -26,13 +29,7 @@ class TestNestedFunction(TestNameCheckVisitorBase):
 
             assert_type(nested(), None)
             nested(1)  # E: incompatible_call
-            assert_is_value(
-                NestedClass,
-                SyntheticClassObjectValue(
-                    "NestedClass",
-                    TypedValue(f"{__name__}.capybara.<locals>.NestedClass"),
-                ),
-            )
+            assert_type(NestedClass(), NestedClass)
 
     @assert_passes()
     def test_usage_in_nested_scope():
@@ -240,17 +237,14 @@ class TestDecorators(TestNameCheckVisitorBase):
         from collections.abc import AsyncGenerator
         from contextlib import asynccontextmanager
 
+        from pycroscope.test_functions import _ASYNC_GENERATOR_CONTEXT_MANAGER_NONE
+
         @asynccontextmanager
         async def make_cm() -> AsyncGenerator[None]:
             yield
 
         async def use_cm():
-            assert_is_value(
-                make_cm(),
-                GenericValue(
-                    "contextlib._AsyncGeneratorContextManager", [KnownValue(None)]
-                ),
-            )
+            assert_is_value(make_cm(), _ASYNC_GENERATOR_CONTEXT_MANAGER_NONE)
             async with make_cm() as value:
                 assert_type(value, None)
 

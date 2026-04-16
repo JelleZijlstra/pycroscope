@@ -448,11 +448,39 @@ def _iter_typevar_map_items(
         yield typevartuple, typevartuple_binding_to_value(binding)
 
 
+@dataclass(frozen=True)
+class ClassOwner:
+    module: str
+    qualname: str
+    identity: ast.AST | str
+
+    def __str__(self) -> str:
+        return f"{self.module}.{self.qualname}" if self.module else self.qualname
+
+    def __hash__(self) -> int:
+        return hash(self.identity)
+
+
+def class_owner_from_qualname(
+    module: str, qualname: str, *, identity: ast.AST | str | None = None
+) -> ClassOwner:
+    if identity is None:
+        identity = f"{module}.{qualname}" if module else qualname
+    return ClassOwner(module, qualname, identity)
+
+
+def class_owner_from_key(key: str) -> ClassOwner:
+    return class_owner_from_qualname("", key, identity=key)
+
+
+ClassKey = type | ClassOwner
+
+
 BoundsMap = Mapping[
     ExternalType["pycroscope.value.TypeParam"],
     Sequence[ExternalType["pycroscope.value.Bound"]],
 ]
-GenericBases = Mapping[type | str, TypeVarMap]
+GenericBases = Mapping[ClassKey, TypeVarMap]
 
 
 class OverlapMode(enum.Enum):
@@ -620,7 +648,7 @@ class CanAssignContext(Protocol):
 
     """
 
-    def make_type_object(self, typ: type | str) -> "pycroscope.type_object.TypeObject":
+    def make_type_object(self, typ: ClassKey) -> "pycroscope.type_object.TypeObject":
         """Return a ``pycroscope.type_object.TypeObject`` for this concrete type."""
         raise NotImplementedError
 
@@ -635,7 +663,7 @@ class CanAssignContext(Protocol):
         return AnyValue(AnySource.inference)
 
     def get_generic_bases(
-        self, typ: type | str, generic_args: Sequence["Value"] = ()
+        self, typ: ClassKey, generic_args: Sequence["Value"] = ()
     ) -> GenericBases:
         """Return the base classes for `typ` with their generic arguments.
 
@@ -653,7 +681,7 @@ class CanAssignContext(Protocol):
         """
         return {}
 
-    def get_type_parameters(self, typ: type | str) -> Sequence["TypeParam"]:
+    def get_type_parameters(self, typ: ClassKey) -> Sequence["TypeParam"]:
         """Return declared generic parameters for `typ`, if available."""
         return ()
 
@@ -1063,20 +1091,6 @@ _NO_DEFAULT = object()
 
 
 @dataclass(frozen=True)
-class ClassOwner:
-    module: str
-    qualname: str
-    # TODO: remove str case, track the AST node for synthetic classes
-    identity: ast.AST | type[object] | str
-
-    def __str__(self) -> str:
-        return f"{self.module}.{self.qualname}"
-
-    def __hash__(self) -> int:
-        return hash(self.identity)
-
-
-@dataclass(frozen=True)
 class FunctionOwner:
     module: str
     qualname: str
@@ -1102,13 +1116,17 @@ class AliasOwner:
         return hash(self.identity)
 
 
-TypeParamOwner = ClassOwner | FunctionOwner | AliasOwner
+TypeParamOwner = type | ClassOwner | FunctionOwner | AliasOwner
 
 
 def _type_param_to_string(prefix: str, name: str, owner: TypeParamOwner | None) -> str:
     result = f"{prefix}{name}"
     if owner is not None:
-        result = f"{result}@{owner}"
+        if isinstance(owner, type):
+            owner_str = stringify_object(owner)
+        else:
+            owner_str = str(owner)
+        result = f"{result}@{owner_str}"
     return result
 
 
@@ -1814,7 +1832,7 @@ class UnboundMethodValue(Value):
         """Return the runtime callable for this ``UnboundMethodValue``, or
         None if it cannot be found."""
         target: object
-        if self.owner is not None and not isinstance(self.owner, str):
+        if self.owner is not None and not isinstance(self.owner, ClassOwner):
             target = self.owner
         else:
             root = replace_fallback(self.composite.value)
@@ -1823,7 +1841,7 @@ class UnboundMethodValue(Value):
             else:
                 target = root.get_type()
         try:
-            if self.owner is not None and not isinstance(self.owner, str):
+            if self.owner is not None and not isinstance(self.owner, ClassOwner):
                 method = inspect.getattr_static(target, self.attr_name)
             else:
                 method = getattr(target, self.attr_name)
@@ -1928,8 +1946,8 @@ class TypedValue(Value):
 
     """
 
-    typ: type | str
-    """The underlying type, or a fully qualified reference to one."""
+    typ: ClassKey
+    """The underlying runtime type or synthetic class key."""
     literal_only: bool = False
     """True if this is LiteralString (PEP 675)."""
 
@@ -2025,14 +2043,14 @@ class TypedValue(Value):
             return super().can_overlap(other, ctx, mode)
 
     def get_generic_args_for_type(
-        self, typ: type | str, ctx: CanAssignContext
+        self, typ: ClassKey, ctx: CanAssignContext
     ) -> list[Value] | None:
         if isinstance(self, GenericValue):
             args = self.args
         else:
             args = ()
         generic_bases = ctx.get_generic_bases(self.typ, args)
-        params_key: type | str = typ
+        params_key: ClassKey = typ
         if params_key in generic_bases:
             raw_args: list[Value] = []
             for type_param in ctx.get_type_parameters(params_key):
@@ -2076,7 +2094,7 @@ class TypedValue(Value):
         return None
 
     def get_generic_arg_for_type(
-        self, typ: type | str, ctx: CanAssignContext, index: int
+        self, typ: ClassKey, ctx: CanAssignContext, index: int
     ) -> Value:
         args = self.get_generic_args_for_type(typ, ctx)
         if args and index < len(args):
@@ -2087,7 +2105,7 @@ class TypedValue(Value):
         return isinstance(self.typ, type) and safe_issubclass(self.typ, typ)
 
     def get_type(self) -> type | None:
-        if isinstance(self.typ, str):
+        if isinstance(self.typ, ClassOwner):
             return None
         return self.typ
 
@@ -2172,7 +2190,7 @@ class GenericValue(TypedValue):
     """Whether assignability should relax invariant generic arguments on the RHS."""
 
     def __init__(
-        self, typ: type | str, args: Iterable[Value], *, weak: bool = False
+        self, typ: ClassKey, args: Iterable[Value], *, weak: bool = False
     ) -> None:
         super().__init__(typ)
         args = tuple(args)
@@ -2266,7 +2284,7 @@ class SequenceValue(GenericValue):
     members: SequenceMembers
     """The elements of the sequence."""
 
-    def __init__(self, typ: type | str, members: Sequence[SequenceMember]) -> None:
+    def __init__(self, typ: ClassKey, members: Sequence[SequenceMember]) -> None:
         if members:
             args = (unite_values(*[typ for _, typ in members]),)
         elif typ is tuple:
@@ -2289,7 +2307,7 @@ class SequenceValue(GenericValue):
 
     def make_known_value(self) -> Value:
         """Turn this value into a KnownValue if possible."""
-        if isinstance(self.typ, str):
+        if isinstance(self.typ, ClassOwner):
             return self
         return self.make_or_known(self.typ, self.members)
 
@@ -2432,7 +2450,7 @@ class DictIncompleteValue(GenericValue):
     kv_pairs: tuple[KVPair, ...]
     """Sequence of :class:`KVPair` objects representing the keys and values of the dict."""
 
-    def __init__(self, typ: type | str, kv_pairs: Sequence[KVPair]) -> None:
+    def __init__(self, typ: ClassKey, kv_pairs: Sequence[KVPair]) -> None:
         if kv_pairs:
             key_type = unite_values(*[pair.key for pair in kv_pairs])
             value_type = unite_values(*[pair.value for pair in kv_pairs])
@@ -2640,7 +2658,7 @@ class SyntheticClassObjectValue(Value):
 
     name: str
     class_type: TypedValue | TypedDictValue
-    class_key: type | str | None = None
+    class_key: ClassKey | None = None
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "SyntheticClassObjectValue":
         substituted = self.class_type.substitute_typevars(typevars)
@@ -2675,7 +2693,7 @@ class AsyncTaskIncompleteValue(GenericValue):
     value: Value
     """The value returned by the task on completion."""
 
-    def __init__(self, typ: type | str, value: Value) -> None:
+    def __init__(self, typ: ClassKey, value: Value) -> None:
         super().__init__(typ, (value,))
         self.value = value
 
@@ -2702,7 +2720,7 @@ class CallableValue(TypedValue):
     def __init__(
         self,
         signature: "pycroscope.signature.ConcreteSignature",
-        fallback: type | str = collections.abc.Callable,
+        fallback: ClassKey = collections.abc.Callable,
     ) -> None:
         super().__init__(fallback)
         self.signature = signature
@@ -3235,22 +3253,16 @@ def is_self_typevar_value(
     )
 
 
-def get_self_param(typ: type | str) -> TypeVarParam:
+def get_self_param(typ: ClassKey) -> TypeVarParam:
     bound = TypedValue(typ)
     if isinstance(typ, type):
-        owner = ClassOwner(typ.__module__, typ.__qualname__, typ)
+        owner: TypeParamOwner = typ
     else:
-        # TODO: make synthetic types track the module/qualname
-        if "." in typ:
-            module, qualname = typ.rsplit(".", maxsplit=1)
-        else:
-            module = ""
-            qualname = typ
-        owner = ClassOwner(module, qualname, typ)
+        owner = typ
     return TypeVarParam(SelfT, bound=bound, is_self=True, owner=owner)
 
 
-def bound_self_type_from_class_key(typ: type | str) -> TypeVarValue:
+def bound_self_type_from_class_key(typ: ClassKey) -> TypeVarValue:
     return TypeVarValue(get_self_param(typ))
 
 
@@ -3321,7 +3333,7 @@ def _has_nested_self_typevar(value: Value) -> bool:
     )
 
 
-def set_self(value: Value, self_value: Value, class_key: type | str) -> Value:
+def set_self(value: Value, self_value: Value, class_key: ClassKey) -> Value:
     self_type = receiver_to_self_type(self_value)
     if _has_nested_self_typevar(self_type):
         return value
@@ -3386,7 +3398,7 @@ class Extension:
 
 @dataclass(frozen=True)
 class SelfOwnerExtension(Extension):
-    class_key: type | str
+    class_key: ClassKey
 
     def __str__(self) -> str:
         return f"SelfOwner[{self.class_key}]"
@@ -4710,6 +4722,8 @@ def stringify_object(obj: Any) -> str:
     # Stringify arbitrary Python objects such as methods and types.
     if isinstance(obj, str):
         return obj
+    if isinstance(obj, (ClassOwner, FunctionOwner, AliasOwner)):
+        return str(obj)
     try:
         if not safe_isinstance(obj, type):
             objclass = getattr(obj, "__objclass__", None)

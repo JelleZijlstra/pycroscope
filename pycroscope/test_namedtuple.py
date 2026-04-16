@@ -311,16 +311,8 @@ class TestNamedTuple(TestNameCheckVisitorBase):
 
         from typing_extensions import Literal
 
-        from pycroscope.value import SyntheticClassObjectValue, TypedValue
-
         def capybara():
             typ = collections.namedtuple("typ", "foo bar")
-            assert_is_value(
-                typ,
-                SyntheticClassObjectValue(
-                    "typ", TypedValue(f"{__name__}.capybara.<locals>.typ")
-                ),
-            )
             t = typ(1, 2)
             assert_type(t.foo, Literal[1])
             assert_type(t.bar, Literal[2])

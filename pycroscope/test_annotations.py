@@ -1,5 +1,7 @@
 # static analysis: ignore
 
+import sys
+
 from .annotations import has_invalid_paramspec_usage
 from .error_code import ErrorCode
 from .signature import OverloadedSignature, Signature, SigParameter
@@ -22,6 +24,19 @@ from .value import (
     TypeVarParam,
     TypeVarValue,
     assert_is_value,
+    class_owner_from_key,
+)
+
+_GENERATOR_CONTEXT_MANAGER_INT = GenericValue(
+    class_owner_from_key("contextlib._GeneratorContextManager"), [TypedValue(int)]
+)
+_ABSTRACT_CONTEXT_MANAGER_INT = GenericValue(
+    class_owner_from_key("contextlib.AbstractContextManager"),
+    (
+        [TypedValue(int), TypedValue(bool) | KnownValue(None)]
+        if sys.version_info >= (3, 13)
+        else [TypedValue(int)]
+    ),
 )
 
 
@@ -158,23 +173,19 @@ class TestAnnotations(TestNameCheckVisitorBase):
         from collections.abc import Generator
         from contextlib import contextmanager
 
+        from pycroscope.test_annotations import _GENERATOR_CONTEXT_MANAGER_INT
+
         @contextmanager
         def capybara() -> Generator[int]:
             yield 3
 
         def kerodon():
-            assert_is_value(
-                capybara(),
-                GenericValue("contextlib._GeneratorContextManager", [TypedValue(int)]),
-            )
+            assert_is_value(capybara(), _GENERATOR_CONTEXT_MANAGER_INT)
 
             with capybara() as e:
                 assert_type(e, int)
 
-            assert_is_value(
-                post_capybara(),
-                GenericValue("contextlib._GeneratorContextManager", [TypedValue(int)]),
-            )
+            assert_is_value(post_capybara(), _GENERATOR_CONTEXT_MANAGER_INT)
 
             with post_capybara() as e:
                 assert_type(e, int)
@@ -185,21 +196,15 @@ class TestAnnotations(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_contextmanager_class(self):
-        import sys
         from typing import ContextManager
+
+        from pycroscope.test_annotations import _ABSTRACT_CONTEXT_MANAGER_INT
 
         def f() -> ContextManager[int]:
             raise NotImplementedError
 
-        if sys.version_info >= (3, 13):
-            expected_args = [TypedValue(int), TypedValue(bool) | KnownValue(None)]
-        else:
-            expected_args = [TypedValue(int)]
-
         def capybara():
-            assert_is_value(
-                f(), GenericValue("contextlib.AbstractContextManager", expected_args)
-            )
+            assert_is_value(f(), _ABSTRACT_CONTEXT_MANAGER_INT)
             with f() as x:
                 assert_type(x, int)
 

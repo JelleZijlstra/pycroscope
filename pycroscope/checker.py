@@ -12,14 +12,12 @@ from collections.abc import Callable, Generator, Iterable, Sequence
 from contextlib import contextmanager
 from dataclasses import InitVar, dataclass, field
 from dataclasses import replace as dataclass_replace
-from functools import cache
 from itertools import chain
 from typing import TypeVar, cast
 
 from typing_extensions import assert_never
 
 from . import dataclass as dataclass_helpers
-from .analysis_lib import object_from_string
 from .annotations import Context, type_from_runtime, type_from_value
 from .arg_spec import ArgSpecCache, GenericBases
 from .attributes import AttrContext, get_attribute
@@ -62,7 +60,6 @@ from .type_object import (
     TypeObject,
     class_keys_match,
     direct_bases_from_values,
-    runtime_type_generic_alias,
 )
 from .typeshed import TypeshedFinder
 from .value import (
@@ -73,6 +70,8 @@ from .value import (
     AnyValue,
     CallableValue,
     CanAssignContext,
+    ClassKey,
+    ClassOwner,
     ClassSymbol,
     GenericValue,
     IntersectionValue,
@@ -113,16 +112,7 @@ from .value import (
     unite_values,
 )
 
-_SyntheticGenericBases = dict[type | str, TypeVarMap]
-
-
-@cache
-def _resolve_runtime_type_key(type_path: str) -> type | None:
-    try:
-        resolved = object_from_string(type_path)
-    except Exception:
-        return None
-    return resolved if isinstance(resolved, type) else None
+_SyntheticGenericBases = dict[ClassKey, TypeVarMap]
 
 
 @dataclass(frozen=True)
@@ -146,7 +136,7 @@ def _replace_signature_return(
 
 
 def _bound_method_self_value_from_typevars(
-    typevars: TypeVarMap, typ: type | str
+    typevars: TypeVarMap, typ: ClassKey
 ) -> Value | None:
     direct_self = typevars.get_typevar(get_self_param(typ))
     if direct_self is not None:
@@ -377,7 +367,7 @@ def _is_incompatible_constructor_signature(signature: ConcreteSignature) -> bool
 
 
 def _extract_generic_args_from_self_annotation(
-    annotation: Value, class_type: type | str
+    annotation: Value, class_type: ClassKey
 ) -> tuple[Value, ...] | None:
     root = replace_fallback(annotation)
     if isinstance(root, SubclassValue):
@@ -487,10 +477,10 @@ class Checker:
     should_check_unused_call_patterns: bool = field(
         default=False, init=False, repr=False
     )
-    type_object_cache: dict[type | str, TypeObject] = field(
+    type_object_cache: dict[ClassKey, TypeObject] = field(
         default_factory=dict, init=False, repr=False
     )
-    synthetic_classes: dict[type | str, SyntheticClassObjectValue] = field(
+    synthetic_classes: dict[ClassKey, SyntheticClassObjectValue] = field(
         default_factory=dict, init=False, repr=False
     )
     _relation_cache: dict[object, object] = field(
@@ -556,7 +546,7 @@ class Checker:
             should_check_unused_call_patterns=self.should_check_unused_call_patterns,
         )
 
-    def _canonical_type_object_key(self, typ: type | str) -> type | str:
+    def _canonical_type_object_key(self, typ: ClassKey) -> ClassKey:
         synthetic_class = self.get_synthetic_class(typ)
         if synthetic_class is not None and isinstance(
             synthetic_class.class_type, TypedValue
@@ -564,13 +554,9 @@ class Checker:
             class_key = synthetic_class.class_type.typ
             if isinstance(class_key, type):
                 return class_key
-        if isinstance(typ, str):
-            runtime_type = _resolve_runtime_type_key(typ)
-            if runtime_type is not None:
-                return runtime_type
         return typ
 
-    def _get_cached_type_object(self, typ: type | str) -> TypeObject | None:
+    def _get_cached_type_object(self, typ: ClassKey) -> TypeObject | None:
         canonical_key = typ
         try:
             canonical_key = self._canonical_type_object_key(typ)
@@ -579,21 +565,9 @@ class Checker:
         cached = self.type_object_cache.get(canonical_key)
         if cached is None and typ != canonical_key:
             cached = self.type_object_cache.get(typ)
-        if cached is None and isinstance(typ, str) and isinstance(canonical_key, type):
-            cached = self.type_object_cache.get(
-                runtime_type_generic_alias(canonical_key)
-            )
         return cached
 
-    def _cache_runtime_type_object_alias(
-        self, typ: type, type_object: TypeObject
-    ) -> None:
-        alias = runtime_type_generic_alias(typ)
-        existing = self.type_object_cache.get(alias)
-        if existing is None or existing.typ is typ:
-            self.type_object_cache[alias] = type_object
-
-    def make_type_object(self, typ: type | str) -> TypeObject:
+    def make_type_object(self, typ: ClassKey) -> TypeObject:
         try:
             canonical_key = self._canonical_type_object_key(typ)
         except Exception:
@@ -603,22 +577,14 @@ class Checker:
             cached = TypeObject(self, canonical_key)
             self.type_object_cache[canonical_key] = cached
             self.type_object_cache[typ] = cached
-            if isinstance(canonical_key, type):
-                self._cache_runtime_type_object_alias(canonical_key, cached)
-            if isinstance(typ, type):
-                self._cache_runtime_type_object_alias(typ, cached)
         elif isinstance(canonical_key, type) and cached.typ is not canonical_key:
             cached.typ = canonical_key
         self.type_object_cache[canonical_key] = cached
         self.type_object_cache[typ] = cached
-        if isinstance(canonical_key, type):
-            self._cache_runtime_type_object_alias(canonical_key, cached)
-        if isinstance(typ, type):
-            self._cache_runtime_type_object_alias(typ, cached)
         return cached
 
     def get_type_object_for_value(
-        self, value: SimpleType, current_class: type | str | None
+        self, value: SimpleType, current_class: ClassKey | None
     ) -> tuple[TypeObject, bool]:
         """Return a tuple of the type object, and whether it is for the class or instance."""
         match value:
@@ -646,7 +612,7 @@ class Checker:
                 assert False
 
     def get_generic_bases(
-        self, typ: type | str, generic_args: Sequence[Value] = ()
+        self, typ: ClassKey, generic_args: Sequence[Value] = ()
     ) -> GenericBases:
         generic_bases = self.arg_spec_cache.get_generic_bases(typ, generic_args)
         declared_type_params = tuple(self.get_type_parameters(typ))
@@ -687,7 +653,7 @@ class Checker:
         self._augment_namedtuple_generic_bases(typ, merged, substitution_map)
         return merged
 
-    def get_type_parameters(self, typ: type | str) -> list[TypeParam]:
+    def get_type_parameters(self, typ: ClassKey) -> list[TypeParam]:
         declared_type_params = self.make_type_object(typ).get_declared_type_params()
         return list(declared_type_params)
 
@@ -705,33 +671,19 @@ class Checker:
                 f" {self.synthetic_classes[typ]} vs {synthetic_class}"
             )
         self.synthetic_classes[typ] = synthetic_class
-        if isinstance(typ, type):
-            alias = runtime_type_generic_alias(typ)
-            existing = self.synthetic_classes.get(alias)
-            if existing is None or existing.class_type.typ is typ:
-                self.synthetic_classes[alias] = synthetic_class
 
-    def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
+    def get_synthetic_class(self, typ: ClassKey) -> SyntheticClassObjectValue | None:
         synthetic_class = self.synthetic_classes.get(typ)
         if synthetic_class is not None:
             return synthetic_class
-        if isinstance(typ, str):
-            try:
-                canonical_key = self._canonical_type_object_key(typ)
-            except Exception:
-                return None
-            if isinstance(canonical_key, type):
-                return self.synthetic_classes.get(
-                    runtime_type_generic_alias(canonical_key)
-                )
         return None
 
-    def make_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue:
+    def make_synthetic_class(self, typ: ClassKey) -> SyntheticClassObjectValue:
         synthetic_class = self.get_synthetic_class(typ)
         if synthetic_class is not None:
             return synthetic_class
-        if isinstance(typ, str):
-            name = typ.rsplit(".", 1)[-1]
+        if isinstance(typ, ClassOwner):
+            name = typ.qualname.rsplit(".", 1)[-1]
         else:
             name = typ.__name__
         synthetic_class = SyntheticClassObjectValue(name, TypedValue(typ))
@@ -739,7 +691,7 @@ class Checker:
         return synthetic_class
 
     def rekey_synthetic_class(
-        self, synthetic_class: SyntheticClassObjectValue, old_typ: type | str
+        self, synthetic_class: SyntheticClassObjectValue, old_typ: ClassKey
     ) -> None:
         """Register an existing synthetic class under its updated runtime type.
 
@@ -760,12 +712,10 @@ class Checker:
         if old_type_object.typ is not new_typ:
             old_type_object.typ = new_typ
         self.type_object_cache[new_typ] = old_type_object
-        if isinstance(new_typ, type):
-            self._cache_runtime_type_object_alias(new_typ, old_type_object)
 
     def register_synthetic_type_bases(
         self,
-        typ: type | str,
+        typ: ClassKey,
         base_values: Sequence[Value],
         *,
         declared_type_params: Sequence[TypeParam] = (),
@@ -779,7 +729,7 @@ class Checker:
             type_object.clear_declared_type_params()
 
     def register_synthetic_protocol_members(
-        self, typ: type | str, members: set[str]
+        self, typ: ClassKey, members: set[str]
     ) -> None:
         cleaned_members = {
             member
@@ -795,7 +745,7 @@ class Checker:
                 )
 
     def _get_type_object_generic_bases(
-        self, typ: type | str
+        self, typ: ClassKey
     ) -> _SyntheticGenericBases | None:
         if self.get_synthetic_class(typ) is None:
             return None
@@ -815,7 +765,7 @@ class Checker:
 
     def _augment_namedtuple_generic_bases(
         self,
-        typ: type | str,
+        typ: ClassKey,
         generic_bases: _SyntheticGenericBases,
         substitution_map: TypeVarMap,
     ) -> None:
@@ -833,7 +783,7 @@ class Checker:
             tuple_type, TypeVarMap()
         ).with_value(tuple_type_params[0], tuple_base)
 
-    def _namedtuple_tuple_base(self, typ: type | str) -> SequenceValue | None:
+    def _namedtuple_tuple_base(self, typ: ClassKey) -> SequenceValue | None:
         type_object = self.make_type_object(typ)
         if not type_object.is_namedtuple_like():
             return None
@@ -1087,8 +1037,8 @@ class Checker:
             typ = root.typ
         else:
             return None
-        if isinstance(typ, str):
-            return typ.rsplit(".", maxsplit=1)[-1]
+        if isinstance(typ, ClassOwner):
+            return typ.qualname.rsplit(".", maxsplit=1)[-1]
         elif isinstance(typ, type):
             name = safe_getattr(typ, "__name__", None)
             if isinstance(name, str):
@@ -1128,7 +1078,7 @@ class Checker:
         )
 
     def _synthetic_constructor_return_from_self_annotation(
-        self, annotation: Value, *, default: Value, class_type: type | str
+        self, annotation: Value, *, default: Value, class_type: ClassKey
     ) -> Value:
         args = _extract_generic_args_from_self_annotation(annotation, class_type)
         if args is not None:
@@ -1139,7 +1089,7 @@ class Checker:
         return default
 
     def _collapse_constructor_overloads_to_single_generic(
-        self, signatures: Sequence[Signature], *, class_type: type | str
+        self, signatures: Sequence[Signature], *, class_type: ClassKey
     ) -> Signature | None:
         if len(signatures) < 2:
             return None
@@ -1185,7 +1135,11 @@ class Checker:
         class_name = (
             class_type.__name__
             if isinstance(class_type, type)
-            else class_type.rsplit(".", maxsplit=1)[-1]
+            else (
+                class_type.qualname.rsplit(".", maxsplit=1)[-1]
+                if isinstance(class_type, ClassOwner)
+                else class_type.rsplit(".", maxsplit=1)[-1]
+            )
         )
         typevar = cast(TypeVarType, TypeVar(f"_Ctor_{class_name}_T", *constraints))
         tv_value = TypeVarValue(TypeVarParam(typevar))
@@ -1790,7 +1744,7 @@ class Checker:
         if isinstance(metaclass, AnyValue):
             return None
 
-        if isinstance(metaclass.typ, str):
+        if isinstance(metaclass.typ, ClassOwner):
             meta_tobj = self.make_type_object(metaclass.typ)
             # Ignore the default metaclass call behavior; only use an explicit override.
             symbol = meta_tobj.get_declared_symbol("__call__")
@@ -1956,7 +1910,7 @@ class Checker:
         return Signature.make([], default_instance_type)
 
     def get_synthetic_dataclass_field_parameters(
-        self, typ: type | str
+        self, typ: ClassKey
     ) -> list[SigParameter]:
         entries = self._get_synthetic_dataclass_field_entries(typ)
         params: list[SigParameter] = []
@@ -1980,7 +1934,7 @@ class Checker:
         return [*positional_params, *kw_only_params]
 
     def get_synthetic_dataclass_post_init_parameters(
-        self, typ: type | str
+        self, typ: ClassKey
     ) -> list[SigParameter]:
         entries = self._get_synthetic_dataclass_field_entries(typ)
         return [
@@ -1992,7 +1946,7 @@ class Checker:
         ]
 
     def _get_synthetic_dataclass_field_entries(
-        self, typ: type | str
+        self, typ: ClassKey
     ) -> list[_DataclassFieldEntry]:
         tobj = self.make_type_object(typ)
         field_records = tobj.get_dataclass_fields()
@@ -2442,6 +2396,13 @@ class Checker:
                 if bound is not None and value.typevars is not None:
                     bound = bound.substitute_typevars(value.typevars)
                 return bound
+            root = replace_fallback(value.composite.value)
+            if isinstance(root, TypedValue):
+                static_attr = root.get_type_object(self).get_attribute(
+                    value.attr_name, AttributePolicy(receiver=root)
+                )
+                if static_attr is not None:
+                    return self.signature_from_value(static_attr.value)
             return None
         elif isinstance(value, CallableValue):
             return value.signature
@@ -2487,7 +2448,7 @@ class Checker:
             typ = value.typ
             if typ is collections.abc.Callable or typ is types.FunctionType:
                 return ANY_SIGNATURE
-            if isinstance(typ, str):
+            if isinstance(typ, ClassOwner):
                 call_access = self.make_type_object(typ).get_attribute(
                     "__call__", AttributePolicy(receiver=value)
                 )
@@ -2863,11 +2824,11 @@ class CheckerAttrContext(AttrContext):
         return self.checker
 
     def get_generic_bases(
-        self, typ: type | str, generic_args: Sequence[Value]
+        self, typ: ClassKey, generic_args: Sequence[Value]
     ) -> GenericBases:
         return self.checker.get_generic_bases(typ, generic_args)
 
-    def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
+    def get_synthetic_class(self, typ: ClassKey) -> SyntheticClassObjectValue | None:
         return self.checker.get_synthetic_class(typ)
 
 
@@ -2883,7 +2844,7 @@ def get_inherited_synthetic_member_initializer(
     name: str,
     ctx: CanAssignContext,
     *,
-    seen: frozenset[type | str] = frozenset(),
+    seen: frozenset[ClassKey] = frozenset(),
 ) -> Value | None:
     class_key = tobj.typ
     if class_key in seen:

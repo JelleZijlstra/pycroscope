@@ -419,10 +419,7 @@ class TestConstructors(TestNameCheckVisitorBase):
     @assert_passes(allow_import_failures=True)
     def test_unimportable_constructor_subscript_preserves_explicit_new_return(self):
         import does_not_exist  # noqa: F401
-        from typing_extensions import Generic, Self, TypeVar
-
-        from pycroscope.test_name_check_visitor import BOX_FLOAT_OR_INT_IN_TEST_INPUT
-        from pycroscope.value import assert_is_value
+        from typing_extensions import Generic, Self, TypeVar, assert_type
 
         T = TypeVar("T")
 
@@ -430,7 +427,7 @@ class TestConstructors(TestNameCheckVisitorBase):
             def __new__(cls, value: T) -> Self:
                 return super().__new__(cls)
 
-        assert_is_value(Box[float](1), BOX_FLOAT_OR_INT_IN_TEST_INPUT)
+        assert_type(Box[float](1), Box[float | int])
 
     @assert_passes(allow_import_failures=True)
     def test_overloaded_constructor_prefers_synthetic_signature(self):
