@@ -45,6 +45,7 @@ from typing import (
     ClassVar,
     Literal,
     Optional,
+    TypeGuard,
     TypeVar,
     Union,
     get_args,
@@ -698,6 +699,10 @@ def _count_typevartuple_type_param_arg(value: Value) -> tuple[int, int]:
     if _is_typevartuple_annotation_value(value):
         return (1, 0)
     return (0, 0)
+
+
+def _is_runtime_class_for_attribute_tracking(obj: object) -> TypeGuard[type]:
+    return safe_isinstance(obj, type) and not isinstance(obj, GenericAlias)
 
 
 @dataclass(init=False)
@@ -15945,8 +15950,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             node.attr, ClassSymbol(initializer=self.being_assigned)
         )
 
-    def _record_type_attr_read(self, typ: type, attr_name: str, node: ast.AST) -> None:
-        if self.attribute_checker is not None:
+    def _record_type_attr_read(
+        self, typ: object, attr_name: str, node: ast.AST
+    ) -> None:
+        if (
+            self.attribute_checker is not None
+            and _is_runtime_class_for_attribute_tracking(typ)
+        ):
             self.attribute_checker.record_attribute_read(typ, attr_name, node, self)
 
     def _record_attr_read_for_value(

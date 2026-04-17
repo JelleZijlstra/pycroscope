@@ -34,6 +34,7 @@ from .safe import (
     safe_isinstance,
     safe_issubclass,
 )
+from .safe import is_union as is_runtime_union
 from .shared_options import EnforceNoUnusedCallPatterns, VariableNameValues
 from .signature import (
     ANY_SIGNATURE,
@@ -113,6 +114,18 @@ from .value import (
 )
 
 _SyntheticGenericBases = dict[ClassKey, TypeVarMap]
+
+
+def _runtime_value_is_union(value: Value) -> bool:
+    value = replace_fallback(value)
+    if isinstance(value, AnnotatedValue):
+        return _runtime_value_is_union(value.value)
+    if is_union(value):
+        return True
+    if not isinstance(value, KnownValue):
+        return False
+    origin = safe_getattr(value.val, "__origin__", None)
+    return is_runtime_union(value.val) or is_runtime_union(origin)
 
 
 @dataclass(frozen=True)
@@ -2063,8 +2076,9 @@ class Checker:
                 PartialValueOperation.PEP_613_ALIAS,
                 PartialValueOperation.PEP_695_ALIAS,
             ):
-                if value.operation is PartialValueOperation.PEP_613_ALIAS and is_union(
-                    replace_fallback(value.runtime_value)
+                if (
+                    value.operation is PartialValueOperation.PEP_613_ALIAS
+                    and _runtime_value_is_union(value.runtime_value)
                 ):
                     return None
                 return self.signature_from_value(
