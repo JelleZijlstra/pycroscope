@@ -208,21 +208,6 @@ class TypeObjectAttribute:
     is_metaclass_owner: bool
     error: CanAssignError | None = None
 
-    # TODO: what is this? probably shouldn't exist
-    @property
-    def override_value(self) -> Value:
-        if self.symbol.is_property:
-            return self.raw_value
-        if self.symbol.is_method:
-            return normalize_synthetic_descriptor_attribute(
-                self.raw_value,
-                owner=self.owner.typ,
-                is_self_returning_classmethod=self.symbol.returns_self_on_class_access,
-            )
-        if self.symbol.annotation is not None:
-            return self.declared_value
-        return self.raw_value
-
     def __str__(self) -> str:
         text = f"attribute {self.name} of {self.owner.typ} with value {self.value}"
         if self.error is None:

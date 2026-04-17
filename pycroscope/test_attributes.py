@@ -5,12 +5,7 @@ import pytest
 
 from .extensions import LiteralOnly
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import (
-    assert_passes,
-    only_before,
-    skip_before,
-    skip_if_not_installed,
-)
+from .test_node_visitor import assert_passes, skip_before, skip_if_not_installed
 from .type_object import normalize_synthetic_descriptor_attribute
 from .value import (
     AnnotatedValue,
@@ -458,14 +453,12 @@ class TestAttributes(TestNameCheckVisitorBase):
             f.attr = 42
             print(f.attr)
 
-    # TODO: Doesn't trigger incompatible_override on 3.11 for some reason.
-    @only_before((3, 11))
     @assert_passes()
     def test_enum_name(self):
         import enum
 
         class E(enum.Enum):
-            name = 1  # E: incompatible_override
+            name = 1  # TODO: should trigger incompatible_override
             no_name = 2
 
         def capybara():

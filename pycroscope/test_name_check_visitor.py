@@ -5617,6 +5617,38 @@ class TestIncompatibleOverride(TestNameCheckVisitorBase):
                 pass
 
     @assert_passes()
+    def test_classmethod_override_through_specialized_generic_base(self):
+        from collections.abc import Sequence
+        from pathlib import Path
+        from typing import Any, ClassVar, Generic, TypeVar
+
+        T = TypeVar("T")
+        # TODO: This should work if we use T instead of U below. To fix this
+        # we need to finish having each TypeVar have an owner.
+        U = TypeVar("U")
+
+        class ConfigOption(Generic[T]):
+            default_value: ClassVar[T]
+
+            @classmethod
+            def parse(
+                cls: "type[ConfigOption[T]]", data: object, source_path: Path
+            ) -> T:
+                raise NotImplementedError
+
+        class ConcatenatedOption(ConfigOption[Sequence[U]]):
+            pass
+
+        class StringSequenceOption(ConcatenatedOption[str]):
+            default_value: ClassVar[Any] = ()
+
+            @classmethod
+            def parse(
+                cls: "type[StringSequenceOption]", data: object, source_path: Path
+            ) -> Sequence[str]:
+                raise NotImplementedError
+
+    @assert_passes()
     def test_property_unannotated(self):
         class Unannotated:
             @property
