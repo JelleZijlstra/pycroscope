@@ -1655,8 +1655,7 @@ def _validate_type_alias_arg_values(
         else list(zip(type_params, [value for _, value in matched]))
     )
     if matched_args is None:
-        _show_error_from_context(
-            ctx,
+        ctx.show_error(
             f"Expected {len(type_params)} type arguments for type alias,"
             f" got {len(args_vals)}",
             error_code=ErrorCode.invalid_specialization,
@@ -1676,8 +1675,7 @@ def _validate_type_alias_arg_values(
         if type_param.bound is not None and not _is_alias_arg_compatible_with_bound(
             type_param.bound, arg, ctx
         ):
-            _show_error_from_context(
-                ctx,
+            ctx.show_error(
                 f"Type argument {arg} is not compatible with {type_param}",
                 error_code=ErrorCode.invalid_specialization,
                 node=node,
@@ -1688,28 +1686,12 @@ def _validate_type_alias_arg_values(
             constraint_list = ", ".join(
                 str(constraint) for constraint in type_param.constraints
             )
-            _show_error_from_context(
-                ctx,
+            ctx.show_error(
                 f"Type argument {arg} is not compatible with constraints ({constraint_list})",
                 error_code=ErrorCode.invalid_specialization,
                 node=node,
             )
     return normalized_args
-
-
-def _show_error_from_context(
-    ctx: Context,
-    message: str,
-    *,
-    error_code: Error = ErrorCode.invalid_annotation,
-    node: ast.AST | None = None,
-) -> None:
-    try:
-        ctx.show_error(message, error_code=error_code, node=node)
-    except TypeError:
-        if node is None:
-            raise
-        ctx.show_error(node, message, error_code)
 
 
 def _validate_generic_type_argument_count(
@@ -2653,8 +2635,8 @@ def _specialize_type_alias_value(
     else:
         args_vals = [_type_from_alias_argument_value(member, ctx) for member in members]
     if has_unbounded_unpack and packed_variadic_members is None:
-        _show_error_from_context(
-            ctx, "Unpacked TypeVarTuple cannot specialize this type alias", node=node
+        ctx.show_error(
+            "Unpacked TypeVarTuple cannot specialize this type alias", node=node
         )
     args_vals = _validate_type_alias_arg_values(type_params, args_vals, ctx, node=node)
     return TypeAliasValue(

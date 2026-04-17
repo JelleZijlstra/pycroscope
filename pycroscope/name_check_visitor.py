@@ -73,6 +73,7 @@ from .annotations import (
     Context,
     Qualifier,
     SyntheticEvaluator,
+    _DefaultContext,
     _normalize_paramspec_generic_args,
     _specialize_type_alias_partial,
     _specialize_type_alias_value,
@@ -13275,14 +13276,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     # Value-position specialization of a declared type alias should
                     # use the recorded alias metadata rather than the raw runtime
                     # GenericAlias object, which may not support further specialization.
+                    annotation_ctx = _DefaultContext(visitor=self, node=node)
                     members = self._maybe_unpack_tuple(index, node)
                     if isinstance(runtime_type_alias, PartialValue):
                         return _specialize_type_alias_partial(
-                            runtime_type_alias, members, self, node=node
+                            runtime_type_alias, members, annotation_ctx, node=node
                         )
                     assert isinstance(runtime_type_alias, TypeAliasValue)
                     return _specialize_type_alias_value(
-                        runtime_type_alias, members, self, node=node
+                        runtime_type_alias, members, annotation_ctx, node=node
                     )
                 should_use_static_annotation_subscript = self.in_annotation and (
                     get_type_alias_root(stripped_root.value) is not None
@@ -17164,9 +17166,7 @@ def _runtime_value_for_pep695_alias(
 ) -> Value:
     if alias_obj is not None:
         return KnownValue(alias_obj)
-    if hasattr(typing, "TypeAliasType"):
-        return TypedValue(typing.TypeAliasType)
-    return TypedValue(typing_extensions.TypeAliasType)
+    return TypedValue(getattr(typing, "TypeAliasType", typing_extensions.TypeAliasType))
 
 
 def _get_runtime_type_alias_value_node(node: ast.Call) -> ast.AST | None:
