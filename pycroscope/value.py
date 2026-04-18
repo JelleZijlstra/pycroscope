@@ -3296,15 +3296,6 @@ def receiver_to_self_type(
     return self_value
 
 
-def _has_nested_self_typevar(value: Value) -> bool:
-    return not (
-        isinstance(value, TypeVarValue) and value.typevar_param.is_self
-    ) and any(
-        isinstance(subval, TypeVarValue) and subval.typevar_param.is_self
-        for subval in value.walk_values()
-    )
-
-
 def set_self(value: Value, self_value: Value, class_key: ClassKey) -> Value:
     self_type = receiver_to_self_type(self_value)
     self_param = get_self_param(class_key)
