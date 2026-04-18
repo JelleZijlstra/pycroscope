@@ -35,6 +35,8 @@ class TestEnum(TestNameCheckVisitorBase):
         from enum import Enum, IntEnum
         from typing import Type
 
+        from typing_extensions import assert_type
+
         class X(Enum):
             a = 1
             b = 2
@@ -47,6 +49,7 @@ class TestEnum(TestNameCheckVisitorBase):
         ):
             for x in X:
                 assert_type(x, X)
+                # TODO: assert_type(x.name, str) (also below for the others)
 
             for et in enum_t:
                 assert_type(et, Enum)

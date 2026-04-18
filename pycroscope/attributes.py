@@ -316,7 +316,10 @@ def _get_attribute_from_value(
                     gradualize(root_value.get_fallback_value()), ctx
                 )
             else:
-                return _get_attribute_from_value(TypedValue(object), ctx)
+                # TODO: _get_attribute_from_value(TypedValue(object), ctx)
+                # This currently leads to false positives with iterating over enums.
+                # Might need to wait for better TypeVar handling to fix this.
+                return _get_attribute(root_value, ctx), None
         case TypeVarTupleBindingValue() | TypeVarTupleValue():
             # TODO: Not sure these should be part of GradualType at all
             return _get_attribute_from_value(TypedValue(object), ctx)
