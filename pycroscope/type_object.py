@@ -31,7 +31,7 @@ import pycroscope
 if TYPE_CHECKING:
     from .relations import Relation
 
-from .annotations import make_type_param, type_from_runtime
+from .annotations import make_type_param, type_from_runtime, type_from_value
 from .input_sig import AnySig, FullSignature, InputSigValue
 from .options import PyObjectSequenceOption
 from .relations import (
@@ -82,6 +82,8 @@ from .value import (
     KnownValueWithTypeVars,
     MultiValuedValue,
     ParamSpecParam,
+    PartialValue,
+    PartialValueOperation,
     PredicateValue,
     PropertyInfo,
     Qualifier,
@@ -277,6 +279,18 @@ def class_type_to_instance_type(value: Value, ctx: CanAssignContext) -> Value:
             return GenericValue(val, args)
         case KnownValue(val=val) if safe_isinstance(val, type):
             return TypedValue(val)
+        case PartialValue(
+            operation=PartialValueOperation.SUBSCRIPT,
+            root=root,
+            members=members,
+            runtime_value=TypedValue(types.GenericAlias),
+        ):
+            root_type = class_type_to_instance_type(value.root, ctx)
+            if isinstance(root_type, TypedValue):
+                args = [type_from_value(arg, ctx) for arg in value.members]
+                return GenericValue(root_type.typ, args)
+            else:
+                return AnyValue(AnySource.inference)
         case _:
             return AnyValue(AnySource.inference)
 

@@ -273,6 +273,13 @@ def _get_attribute_from_value(
             else:
                 error = None
             return intersected_value, error
+        case PartialValue(
+            operation=PartialValueOperation.SUBSCRIPT,
+            root=root,
+            members=members,
+            runtime_value=TypedValue(types.GenericAlias),
+        ):
+            return _get_attribute_from_generic_alias(root, members, ctx)
         case (
             AnnotatedValue()
             | OverlappingValue()
@@ -293,6 +300,11 @@ def _get_attribute_from_value(
             attr == ctx.attr
         ):
             return val, None
+        case PredicateValue(predicate=HasAttr()):
+            # TODO: This fixes some tests for now: test_hasattr_on_class_object_preserves_name.
+            # A better solution would be to get better at understanding
+            # attributes on TypedValue(object).
+            return UNINITIALIZED_VALUE, None
         case PredicateValue() | TypeFormValue():
             return _get_attribute_from_value(TypedValue(object), ctx)
         case TypeVarValue():
@@ -304,7 +316,10 @@ def _get_attribute_from_value(
                     gradualize(root_value.get_fallback_value()), ctx
                 )
             else:
-                return _get_attribute_from_value(TypedValue(object), ctx)
+                # TODO: _get_attribute_from_value(TypedValue(object), ctx)
+                # This currently leads to false positives with iterating over enums.
+                # Might need to wait for better TypeVar handling to fix this.
+                return _get_attribute(root_value, ctx), None
         case TypeVarTupleBindingValue() | TypeVarTupleValue():
             # TODO: Not sure these should be part of GradualType at all
             return _get_attribute_from_value(TypedValue(object), ctx)
@@ -317,16 +332,41 @@ def _get_attribute_from_value(
             | SubclassValue()
             | UnboundMethodValue()
         ):
-            return _get_attribute(ctx), None
+            return _get_attribute(root_value, ctx), None
         case _:
             assert_never(root_value)
 
 
+# attr_exceptions and attr_blocked in CPython genericaliasobject.c
+_GENERIC_ALIAS_ATTR_EXCEPTIONS = {
+    "__class__",
+    "__origin__",
+    "__args__",
+    "__unpacked__",
+    "__parameters__",
+    "__typing_unpacked_tuple_args__",
+    "__mro_entries__",
+    "__reduce_ex__",
+    "__reduce__",
+}
+
+_GENERIC_ALIAS_ATTR_BLOCKED = {"__bases__", "__copy__", "__deepcopy__"}
+
+
+def _get_attribute_from_generic_alias(
+    root: Value, members: Sequence[Value], ctx: AttrContext
+) -> tuple[Value, CanAssignError | None]:
+    if ctx.attr in _GENERIC_ALIAS_ATTR_BLOCKED:
+        return UNINITIALIZED_VALUE, CanAssignError(
+            f"GenericAlias has no attribute '{ctx.attr}'"
+        )
+    if ctx.attr in _GENERIC_ALIAS_ATTR_EXCEPTIONS:
+        return _get_attribute_from_value(TypedValue(types.GenericAlias), ctx)
+    return _get_attribute_from_value(gradualize(root), ctx)
+
+
 # TODO: Remove this and replace with the switch in _get_attribute_from_value.
-def _get_attribute(ctx: AttrContext) -> Value:
-    lookup_root_value = (
-        ctx.root_value if ctx.lookup_root_value is None else ctx.lookup_root_value
-    )
+def _get_attribute(lookup_root_value: Value, ctx: AttrContext) -> Value:
     if (
         isinstance(ctx.root_value, PartialValue)
         and ctx.root_value.operation is PartialValueOperation.PEP_695_ALIAS
@@ -474,7 +514,7 @@ def _get_attribute(ctx: AttrContext) -> Value:
             attribute_value = _get_attribute_from_subclass(dict, root_value, ctx)
         else:
             attribute_value = _get_attribute_from_synthetic_class(
-                root_value.class_type.typ, root_value, ctx
+                root_value.class_type.typ, ctx.root_composite.value, ctx
             )
     else:
         assert_never(root_value)
@@ -800,7 +840,6 @@ def _get_attribute_from_synthetic_typed_value(
 def _get_attribute_from_synthetic_class(
     class_key: ClassKey, self_value: Value, ctx: AttrContext
 ) -> Value:
-    assert isinstance(self_value, SyntheticClassObjectValue)
     can_assign_ctx = ctx.get_can_assign_context()
     attribute = _get_type_object_attribute(
         can_assign_ctx.make_type_object(class_key),

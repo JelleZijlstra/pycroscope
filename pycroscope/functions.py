@@ -577,7 +577,10 @@ def compute_parameters(
                 )
             if isinstance(node, ast.Lambda):
                 value = InferenceVarValue(
-                    TypeVarParam(cast(TypeVarType, TypeVar(f"T{tv_index}")))
+                    TypeVarParam(
+                        cast(TypeVarType, TypeVar(f"T{tv_index}")),
+                        bound=AnyValue(AnySource.inference),
+                    )
                 )
                 tv_index += 1
             else:
