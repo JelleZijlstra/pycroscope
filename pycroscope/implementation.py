@@ -338,6 +338,11 @@ def _invalid_classinfo_kind(
         return _invalid_classinfo_kind(
             value.value, ctx, is_subclass_check=is_subclass_check
         )
+    if (
+        isinstance(value, PartialValue)
+        and value.operation is PartialValueOperation.PEP_695_ALIAS
+    ):
+        return "a type alias"
     if isinstance(value, TypeAliasValue):
         return "a type alias"
     if isinstance(value, SyntheticClassObjectValue):

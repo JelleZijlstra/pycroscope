@@ -34,6 +34,7 @@ from .safe import (
     safe_isinstance,
     safe_issubclass,
 )
+from .safe import is_union as is_runtime_union
 from .shared_options import EnforceNoUnusedCallPatterns, VariableNameValues
 from .signature import (
     ANY_SIGNATURE,
@@ -113,6 +114,18 @@ from .value import (
 )
 
 _SyntheticGenericBases = dict[ClassKey, TypeVarMap]
+
+
+def _runtime_value_is_union(value: Value) -> bool:
+    value = replace_fallback(value)
+    if isinstance(value, AnnotatedValue):
+        return _runtime_value_is_union(value.value)
+    if is_union(value):
+        return True
+    if not isinstance(value, KnownValue):
+        return False
+    origin = safe_getattr(value.val, "__origin__", None)
+    return is_runtime_union(value.val) or is_runtime_union(origin)
 
 
 @dataclass(frozen=True)
@@ -2059,28 +2072,17 @@ class Checker:
             )
             if sig is not None:
                 return sig
-        if (
-            isinstance(value, TypeAliasValue)
-            and value.runtime_allows_value_call
-            and not value.type_arguments
-            and not value.alias.get_type_params()
-        ):
-            alias_value = value.get_value()
-            # Explicit TypeAlias declarations can denote class objects (e.g.
-            # `Alias: TypeAlias = list`) that should remain callable.
-            if isinstance(alias_value, KnownValue) and isinstance(
-                alias_value.val, type
+            if value.operation in (
+                PartialValueOperation.PEP_613_ALIAS,
+                PartialValueOperation.PEP_695_ALIAS,
             ):
+                if (
+                    value.operation is PartialValueOperation.PEP_613_ALIAS
+                    and _runtime_value_is_union(value.runtime_value)
+                ):
+                    return None
                 return self.signature_from_value(
-                    alias_value,
-                    get_return_override=get_return_override,
-                    get_call_attribute=get_call_attribute,
-                )
-            if isinstance(alias_value, TypedValue) and isinstance(
-                alias_value.typ, type
-            ):
-                return self.signature_from_value(
-                    KnownValue(alias_value.typ),
+                    value.runtime_value,
                     get_return_override=get_return_override,
                     get_call_attribute=get_call_attribute,
                 )

@@ -12,7 +12,12 @@ from .analysis_lib import make_module
 from .attributes import ClassAttributeTransformer
 from .checker import Checker
 from .error_code import DISABLED_IN_TESTS, ErrorCode
-from .name_check_visitor import ClassAttributeChecker, NameCheckVisitor, _static_hasattr
+from .name_check_visitor import (
+    ClassAttributeChecker,
+    NameCheckVisitor,
+    _is_runtime_class_for_attribute_tracking,
+    _static_hasattr,
+)
 from .test_config import CONFIG_PATH
 from .test_node_visitor import (
     assert_fails,
@@ -498,6 +503,17 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         _x: list[str] = ListAlias()
         _x2: ListAlias[int]  # E: invalid_specialization
         _x3 = ListOrSetAlias()  # E: not_callable
+
+    @assert_passes(allow_import_failures=True)
+    def test_implicit_tuple_alias_specialization_after_runtime_load_failure(self):
+        from typing import TypeVar
+
+        _bad_type1: type[int, str]  # E: invalid_annotation
+
+        T = TypeVar("T")
+        IntTupleGeneric = tuple[int, T]
+
+        IntTupleGeneric[str]
 
     @assert_passes(run_in_both_module_modes=True)
     def test_explicit_type_alias_uses_runtime_attribute_semantics(self):
@@ -2207,6 +2223,11 @@ class TestYieldFrom(TestNameCheckVisitorBase):
 
 
 class TestClassAttributeChecker(TestNameCheckVisitorBase):
+    def test_type_generic_alias_is_not_runtime_class_for_attribute_tracking(self):
+        from typing import Any
+
+        assert not _is_runtime_class_for_attribute_tracking(type[Any])
+
     @assert_passes(check_attributes=False)
     def test_attribute_checker_can_be_disabled(self):
         class Capybara(object):
@@ -2244,6 +2265,34 @@ class TestClassAttributeChecker(TestNameCheckVisitorBase):
             @classmethod
             def do_stuff(cls):
                 return cls.stuff  # E: attribute_is_never_set
+
+    def test_unused_attributes_ignores_type_generic_alias_reads(self):
+        code = textwrap.dedent("""
+            from typing import Any
+
+            type[Any].__name__
+            """)
+        tree = ast.parse(code, "<test input>")
+        module = _make_module(code)
+        settings = {code: code not in DISABLED_IN_TESTS for code in ErrorCode}
+        kwargs = self.visitor_cls.prepare_constructor_kwargs({"settings": settings})
+        with ClassAttributeChecker(
+            enabled=True,
+            should_check_unused_attributes=True,
+            options=kwargs["checker"].options,
+        ) as attribute_checker:
+            visitor = self.visitor_cls(
+                module.__name__,
+                code,
+                tree,
+                module=module,
+                attribute_checker=attribute_checker,
+                verbosity=0,
+                **kwargs,
+            )
+            result = visitor.check_for_test()
+            result += visitor.perform_final_checks(kwargs)
+        assert not result
 
     @assert_passes()
     def test_getattribute_overridden(self):

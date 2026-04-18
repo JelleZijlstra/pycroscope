@@ -940,6 +940,8 @@ class PartialValueOperation(enum.Enum):
     SUBSCRIPT = 1
     UNPACK = 2
     BITOR = 3
+    PEP_613_ALIAS = 4
+    PEP_695_ALIAS = 5
 
 
 @dataclass(frozen=True)
@@ -962,6 +964,10 @@ class PartialValue(Value):
             case PartialValueOperation.BITOR:
                 members = " | ".join(str(member) for member in self.members)
                 return f"{self.runtime_value} (partial from {self.root} | {members})"
+            case PartialValueOperation.PEP_613_ALIAS:
+                return f"{self.runtime_value} (PEP 613 alias for {self.root})"
+            case PartialValueOperation.PEP_695_ALIAS:
+                return f"{self.runtime_value} (PEP 695 alias for {self.root})"
             case _:
                 assert_never(self.operation)
 
@@ -993,6 +999,25 @@ class PartialValue(Value):
         for member in self.members:
             yield from member.walk_values()
         yield from self.runtime_value.walk_values()
+
+
+def is_type_alias_partial_operation(operation: PartialValueOperation) -> bool:
+    return operation in (
+        PartialValueOperation.PEP_613_ALIAS,
+        PartialValueOperation.PEP_695_ALIAS,
+    )
+
+
+def get_type_alias_root(value: Value) -> "TypeAliasValue | None":
+    if (
+        isinstance(value, PartialValue)
+        and is_type_alias_partial_operation(value.operation)
+        and isinstance(value.root, TypeAliasValue)
+    ):
+        return value.root
+    if isinstance(value, TypeAliasValue):
+        return value
+    return None
 
 
 @dataclass(frozen=True)
@@ -1536,16 +1561,12 @@ class TypeAliasValue(Value):
     """Module where the type alias is defined."""
     alias: TypeAlias = field(compare=False, hash=False)
     type_arguments: Sequence[Value] = ()
-    runtime_allows_value_call: bool = False
-    uses_type_alias_object_semantics: bool = False
-    """Whether symbol access should behave like a runtime TypeAliasType object."""
-    is_specialized: bool = False
     type_arguments_are_packed: bool = False
 
     def get_value(self) -> Value:
         val = self.alias.get_value()
         type_params = self.alias.get_type_params()
-        if self.type_arguments or self.is_specialized:
+        if self.type_arguments:
             matched_type_arguments = _match_type_alias_type_arguments(
                 type_params,
                 self.type_arguments,
@@ -1593,9 +1614,6 @@ class TypeAliasValue(Value):
             self.module,
             self.alias,
             substituted_type_arguments,
-            runtime_allows_value_call=self.runtime_allows_value_call,
-            uses_type_alias_object_semantics=self.uses_type_alias_object_semantics,
-            is_specialized=self.is_specialized,
             type_arguments_are_packed=self.type_arguments_are_packed,
         )
 
