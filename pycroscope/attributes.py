@@ -71,6 +71,7 @@ from .value import (
     OverlappingValue,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
+    PartialCallValue,
     PartialValue,
     PartialValueOperation,
     PredicateValue,
@@ -85,6 +86,8 @@ from .value import (
     TypedDictValue,
     TypedValue,
     TypeFormValue,
+    TypeVarTupleBindingValue,
+    TypeVarTupleValue,
     TypeVarValue,
     UnboundMethodValue,
     Value,
@@ -229,6 +232,14 @@ def _get_attribute_from_value(
     root_value: GradualType, ctx: AttrContext
 ) -> tuple[Value, CanAssignError | None]:
     match root_value:
+        case AnyValue():
+            return AnyValue(AnySource.from_another), None
+        case SyntheticModuleValue(module_path=module_path):
+            module = ".".join(module_path)
+            attribute_value = ctx.resolve_name_from_typeshed(module, ctx.attr)
+            if attribute_value is UNINITIALIZED_VALUE:
+                return _get_attribute_from_value(TypedValue(types.ModuleType), ctx)
+            return attribute_value, None
         case MultiValuedValue(vals=vals):
             if not vals:
                 return AnyValue(AnySource.inference), None
@@ -278,6 +289,8 @@ def _get_attribute_from_value(
             | ParamSpecKwargsValue()
             | TypeAliasValue()
             | NewTypeValue()
+            | PartialCallValue()
+            | PartialValue()
         ):
             return _get_attribute_from_value(
                 gradualize(root_value.get_fallback_value()), ctx
@@ -288,12 +301,36 @@ def _get_attribute_from_value(
             attr == ctx.attr
         ):
             return val, None
-        case PredicateValue():
+        case PredicateValue() | TypeFormValue():
             return _get_attribute_from_value(TypedValue(object), ctx)
-        case _:
+        case TypeVarValue():
+            if (
+                root_value.typevar_param.bound is not None
+                or root_value.typevar_param.constraints
+            ):
+                return _get_attribute_from_value(
+                    gradualize(root_value.get_fallback_value()), ctx
+                )
+            else:
+                return _get_attribute_from_value(TypedValue(object), ctx)
+        case TypeVarTupleBindingValue() | TypeVarTupleValue():
+            # TODO: Not sure these should be part of GradualType at all
+            return _get_attribute_from_value(TypedValue(object), ctx)
+
+        # TODO
+        case (
+            KnownValue()
+            | SyntheticClassObjectValue()
+            | TypedValue()
+            | SubclassValue()
+            | UnboundMethodValue()
+        ):
             return _get_attribute(ctx), None
+        case _:
+            assert_never(root_value)
 
 
+# TODO: Remove this and replace with the switch in _get_attribute_from_value.
 def _get_attribute(ctx: AttrContext) -> Value:
     lookup_root_value = (
         ctx.root_value if ctx.lookup_root_value is None else ctx.lookup_root_value
