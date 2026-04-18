@@ -1,5 +1,4 @@
 # static analysis: ignore
-from typing import Dict, Union
 
 import pytest
 
@@ -14,15 +13,15 @@ from .value import (
     CustomCheckExtension,
     GenericValue,
     KnownValue,
-    SelfParam,
     TypeVarMap,
     assert_is_value,
+    get_self_param,
 )
 
-_global_dict: Dict[Union[int, str], bytes] = {}
+_global_dict: dict[int | str, bytes] = {}
 EXPECTED_ASCII_TYPEVARS = TypeVarMap(
     typevars={
-        SelfParam: AnnotatedValue(
+        get_self_param(str): AnnotatedValue(
             KnownValue("ascii"), [CustomCheckExtension(LiteralOnly())]
         )
     }
