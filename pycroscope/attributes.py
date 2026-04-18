@@ -202,15 +202,7 @@ def _get_type_object_attribute(
 
 
 def get_attribute(ctx: AttrContext) -> Value:
-    """Get the value of an attribute.
-
-    This is the main entry point for attribute retrieval. It handles all the
-    special cases for different types of root values and falls back to
-    TypeObject lookup for normal classes.
-
-    """
-    root_value = gradualize(ctx.root_value)
-    value, _ = _get_attribute_from_value(root_value, ctx)
+    value, _ = get_attribute_with_error(ctx)
     return value
 
 
