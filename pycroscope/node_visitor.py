@@ -907,8 +907,10 @@ class BaseNodeVisitor(ast.NodeVisitor):
             code_descriptions = []
             for code in cls.error_code_enum:
                 enabled_string = "on" if cls.is_enabled_by_default(code) else "off"
+                from typing import reveal_type
+
                 code_descriptions.append(
-                    f"  - {code.name}: {cls.get_description_for_error_code(code)}"
+                    f"  - {reveal_type(code).name}: {cls.get_description_for_error_code(code)}"
                     f" (default: {enabled_string})"
                 )
 
