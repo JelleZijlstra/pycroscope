@@ -101,7 +101,6 @@ from .value import (
     TypeVarValue,
     UnboundMethodValue,
     Value,
-    _has_nested_self_typevar,
     _iter_typevar_map_items,
     _typevar_map_from_varlike_pairs,
     default_value_for_type_param,
@@ -112,7 +111,6 @@ from .value import (
     match_typevar_arguments,
     replace_fallback,
     replace_known_sequence_value,
-    shield_nested_self_typevars,
     stringify_object,
     substitute_typevartuple_binding,
     tuple_members_from_value,
@@ -2772,25 +2770,17 @@ def _bind_attribute_signature(
         self_annotation_value = receiver_value
     signature = ctx.signature_from_value(value)
     if isinstance(signature, BoundMethodSignature):
-        shielded_signature, restore_typevars = _shield_nested_self_in_signature(
-            signature.signature
-        )
-        signature = replace(signature, signature=shielded_signature)
         bound = signature.get_signature(
             ctx=ctx, self_annotation_value=self_annotation_value, preserve_impl=True
         )
         if bound is None and self_annotation_value == receiver_value:
             bound = signature.get_signature(ctx=ctx, preserve_impl=True)
         if bound is not None:
-            result: Value = CallableValue(bound)
-            if restore_typevars:
-                result = result.substitute_typevars(restore_typevars)
-            return result
+            return CallableValue(bound)
         return value
     if isinstance(signature, (Signature, OverloadedSignature)):
         if self_annotation_value is None:
             self_annotation_value = receiver_value
-        signature, restore_typevars = _shield_nested_self_in_signature(signature)
         bound = signature.bind_self(
             self_value=receiver_value,
             self_annotation_value=self_annotation_value,
@@ -2802,43 +2792,8 @@ def _bind_attribute_signature(
                 self_value=receiver_value, preserve_impl=True, ctx=ctx
             )
         if bound is not None:
-            result = CallableValue(bound)
-            if restore_typevars:
-                result = result.substitute_typevars(restore_typevars)
-            return result
+            return CallableValue(bound)
     return value
-
-
-def _shield_nested_self_in_signature(
-    signature: Signature | OverloadedSignature,
-) -> tuple[Signature | OverloadedSignature, TypeVarMap]:
-    if isinstance(signature, OverloadedSignature):
-        restore_typevars = TypeVarMap()
-        shielded_signatures = []
-        for inner_sig in signature.signatures:
-            shielded_sig, inner_restore = _shield_nested_self_in_signature(inner_sig)
-            assert isinstance(shielded_sig, Signature)
-            shielded_signatures.append(shielded_sig)
-            restore_typevars = restore_typevars.merge(inner_restore)
-        return OverloadedSignature(shielded_signatures), restore_typevars
-
-    restore_typevars = TypeVarMap()
-    parameters = {}
-    for name, parameter in signature.parameters.items():
-        annotation = parameter.annotation
-        inner_restore = TypeVarMap()
-        if _has_nested_self_typevar(annotation):
-            annotation, inner_restore = shield_nested_self_typevars(annotation)
-        parameters[name] = replace(parameter, annotation=annotation)
-        restore_typevars = restore_typevars.merge(inner_restore)
-    return_value = signature.return_value
-    return_restore = TypeVarMap()
-    if _has_nested_self_typevar(return_value):
-        return_value, return_restore = shield_nested_self_typevars(return_value)
-    restore_typevars = restore_typevars.merge(return_restore)
-    return replace(signature, parameters=parameters, return_value=return_value), (
-        restore_typevars
-    )
 
 
 def _is_informative_runtime_attribute(attribute: SpecializedAttribute) -> bool:
@@ -3474,8 +3429,6 @@ def _descriptor_method_signature_any(
         return _descriptor_method_signature_any(descriptor.value, method_name, ctx)
     if not isinstance(descriptor, (KnownValue, TypedValue, SyntheticClassObjectValue)):
         return None
-    descriptor, restore_typevars = shield_nested_self_typevars(descriptor)
-    assert isinstance(descriptor, (KnownValue, TypedValue, SyntheticClassObjectValue))
     descriptor_tobj = _descriptor_type_object(descriptor, method_name, ctx)
     if descriptor_tobj is None:
         return None
@@ -3510,16 +3463,12 @@ def _descriptor_method_signature_any(
         if attribute is not None:
             method_value = attribute.value
     if direct_signature is not None:
-        if restore_typevars:
-            direct_signature = direct_signature.substitute_typevars(restore_typevars)
         return direct_signature
     if method_value is UNINITIALIZED_VALUE:
         return None
     signature = as_concrete_signature(ctx.signature_from_value(method_value), ctx)
     if signature is None:
         return None
-    if restore_typevars:
-        signature = signature.substitute_typevars(restore_typevars)
     return signature
 
 
@@ -3933,13 +3882,9 @@ def _substitute_receiver_self_typevar(
     Nested ``Self`` values may belong to surrounding type arguments such as
     ``Iterable[Self]`` and should not be rebound to the protocol receiver.
     """
-    shielded, restore_typevars = shield_nested_self_typevars(value)
-    substituted = shielded.substitute_typevars(
+    return value.substitute_typevars(
         TypeVarMap(typevars={get_self_param(receiver_type_key): receiver_value})
     )
-    if restore_typevars:
-        substituted = substituted.substitute_typevars(restore_typevars)
-    return substituted
 
 
 def _get_protocol_receiver_annotation(
