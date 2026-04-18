@@ -30,6 +30,7 @@ def wrap(cls):
     class NewWrapper(Wrapper):
         base = cls
 
+    NewWrapper.__module__ = cls.__module__
     return NewWrapper
 
 

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix bug where the constructors of two classes with the same name were mixed up.
 - Respect class-level runtime constructor signatures for some metaclass-driven and extension-backed classes, so keyword-only constructors like `repoguess.Params(...)` no longer fall back to a bogus `object.__init__` call shape.
 - Make the command-line runner inject `typing.reveal_type` into `builtins` before importing user modules, with a compatible fallback on older Python versions, so top-level runtime use of `reveal_type()` no longer fails during CLI analysis.
 - Weaken inferred constructor-return generics, so fresh values like `Box(1)` and nested `defaultdict(...)` calls can satisfy broader annotated generic targets without forcing explicit specialization.

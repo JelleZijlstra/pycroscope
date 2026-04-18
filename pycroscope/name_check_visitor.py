@@ -2163,7 +2163,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     _argspec_to_retval: dict[int, tuple[Value, MaybeSignature]]
     _pending_overload_blocks: dict[int, _PendingOverloadBlock]
-    _synthetic_classes_by_name: dict[str, SyntheticClassObjectValue]
     _function_decorator_kinds_by_node: dict[
         ast.FunctionDef | ast.AsyncFunctionDef, frozenset[FunctionDecorator]
     ]
@@ -2337,7 +2336,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # deterministic because we'll start depending on the order modules are checked.
         self._argspec_to_retval = {}
         self._pending_overload_blocks = {}
-        self._synthetic_classes_by_name = {}
         self._function_decorator_kinds_by_node = {}
         self._function_returns_self_by_node = {}
         self._type_alias_first_definition_by_scope = {}
@@ -2359,18 +2357,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     @property
     def current_class_type_params(self) -> Sequence[TypeParam] | None:
         return self.active_type_params.current_class_type_params()
-
-    def get_synthetic_class(self, typ: ClassKey) -> SyntheticClassObjectValue | None:
-        synthetic_class = self.checker.get_synthetic_class(typ)
-        if synthetic_class is not None:
-            return synthetic_class
-        if isinstance(typ, ClassOwner):
-            return self._synthetic_classes_by_name.get(str(typ))
-        return self._synthetic_classes_by_name.get(
-            f"{typ.__module__}.{typ.__qualname__}"
-        ) or self._synthetic_classes_by_name.get(
-            self._get_synthetic_class_fq_name_from_name(typ.__name__)
-        )
 
     def make_type_object(self, typ: ClassKey) -> TypeObject:
         return self.checker.make_type_object(typ)
@@ -2879,7 +2865,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         current_class = self.current_class
         if current_class is None:
             return None
-        synthetic_class = self.get_synthetic_class(current_class)
+        synthetic_class = self.checker.get_synthetic_class(current_class)
         if synthetic_class is None:
             return None
         return synthetic_class.get_type_object(self.checker)
@@ -4167,7 +4153,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     runtime_enum_fallback_class = (
                         self._make_enum_related_fallback_class(node, base_values)
                     )
-            synthetic_fq_name: str | None = None
             class_scope_object: ClassKey | None = class_obj
             dataclass_metadata_class: SyntheticClassObjectValue | None = None
             dataclass_check_type: TypeObject | None = None
@@ -4185,7 +4170,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if synthetic_typeddict is not None:
                 self._validate_typeddict_class_syntax(node)
             elif class_obj is None or is_namedtuple_synthetic:
-                synthetic_fq_name = self._get_synthetic_class_fq_name(node)
                 if runtime_enum_fallback_class is not None:
                     synthetic_class_type = TypedValue(runtime_enum_fallback_class)
                     class_scope_object = runtime_enum_fallback_class
@@ -4204,7 +4188,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 tobj.set_dataclass_info(dataclass_semantics)
                 tobj.set_dataclass_transform_info(dataclass_transform_info)
                 self._apply_synthetic_method_symbol_flags(tobj, node)
-                self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
                 dataclass_metadata_class = synthetic_class
                 if self._is_checking():
                     # Bind the class name while checking its body so references
@@ -4448,8 +4431,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     value = synthetic_class
                 if dataclass_semantics is not None:
                     dataclass_check_type = synthetic_class.get_type_object(self.checker)
-                if synthetic_fq_name is not None:
-                    self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
             elif (
                 dataclass_metadata_class is not None
                 and class_scope_values is not None
@@ -6462,8 +6443,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return True
 
     def _get_local_object(self, name: str, node: ast.AST) -> Value:
+        value = None
         if self.scopes.scope_type() == ScopeType.module_scope:
-            return self.scopes.get(name, node, self.state, can_assign_ctx=self)
+            value = self.scopes.get(name, node, self.state, can_assign_ctx=self)
         elif (
             self.scopes.scope_type() == ScopeType.class_scope
             and self.current_class is not None
@@ -6471,7 +6453,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             runtime_obj = self.current_class.__dict__.get(name)
             if isinstance(runtime_obj, type):
-                return KnownValue(runtime_obj)
+                value = KnownValue(runtime_obj)
+        if value is not None:
+            if isinstance(value, KnownValue):
+                mod = safe_getattr(value.val, "__module__", None)
+                if (
+                    mod is not None
+                    and self.module is not None
+                    and mod != self.module.__name__
+                ):
+                    return AnyValue(AnySource.inference)
+            return value
         return AnyValue(AnySource.inference)
 
     def _get_current_class_object(self, node: ast.ClassDef) -> type | None:
@@ -6507,7 +6499,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         if self.current_function_name is None and self.module is not None:
             module_runtime_class = safe_getattr(self.module, node.name, None)
-            if isinstance(module_runtime_class, type):
+            if (
+                isinstance(module_runtime_class, type)
+                and safe_getattr(module_runtime_class, "__module__", None)
+                == self.module.__name__
+            ):
                 self._record_class_examined(module_runtime_class)
                 return module_runtime_class
 
@@ -15738,7 +15734,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             type_object = self.current_tobj
             synthetic_class = (
-                self.get_synthetic_class(self.current_class)
+                self.checker.get_synthetic_class(self.current_class)
                 if self.current_class is not None
                 else None
             )
