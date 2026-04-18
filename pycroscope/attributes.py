@@ -293,6 +293,11 @@ def _get_attribute_from_value(
             attr == ctx.attr
         ):
             return val, None
+        case PredicateValue(predicate=HasAttr()):
+            # TODO: This fixes some tests for now: test_hasattr_on_class_object_preserves_name.
+            # A better solution would be to get better at understanding
+            # attributes on TypedValue(object).
+            return UNINITIALIZED_VALUE, None
         case PredicateValue() | TypeFormValue():
             return _get_attribute_from_value(TypedValue(object), ctx)
         case TypeVarValue():
@@ -317,16 +322,13 @@ def _get_attribute_from_value(
             | SubclassValue()
             | UnboundMethodValue()
         ):
-            return _get_attribute(ctx), None
+            return _get_attribute(root_value, ctx), None
         case _:
             assert_never(root_value)
 
 
 # TODO: Remove this and replace with the switch in _get_attribute_from_value.
-def _get_attribute(ctx: AttrContext) -> Value:
-    lookup_root_value = (
-        ctx.root_value if ctx.lookup_root_value is None else ctx.lookup_root_value
-    )
+def _get_attribute(lookup_root_value: Value, ctx: AttrContext) -> Value:
     if (
         isinstance(ctx.root_value, PartialValue)
         and ctx.root_value.operation is PartialValueOperation.PEP_695_ALIAS
