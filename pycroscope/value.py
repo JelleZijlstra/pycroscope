@@ -3079,11 +3079,6 @@ class ReferencingValue(Value):
 
 # Special TypeVar used to implement PEP 673 Self.
 SelfT = TypeVar("SelfT")
-SelfParam = TypeVarParam(SelfT, is_self=True)
-
-# TODO: this should not exist
-_NestedSelfT = TypeVar("_NestedSelfT")
-_NestedSelfParam = TypeVarParam(_NestedSelfT)
 
 
 @dataclass(frozen=True)
@@ -3256,21 +3251,6 @@ class TypeVarTupleBindingValue(Value):
         return ", ".join(parts) if parts else "tuple[()]"
 
 
-def _is_self_typevar(
-    typevar: TypeVarType, *, include_nested_placeholders: bool = False
-) -> bool:
-    return typevar is SelfT or (include_nested_placeholders and typevar is _NestedSelfT)
-
-
-def is_self_typevar_value(
-    value: Value, *, include_nested_placeholders: bool = False
-) -> bool:
-    return isinstance(value, TypeVarValue) and _is_self_typevar(
-        value.typevar_param.typevar,
-        include_nested_placeholders=include_nested_placeholders,
-    )
-
-
 def get_self_param(typ: ClassKey) -> TypeVarParam:
     bound = TypedValue(typ)
     if isinstance(typ, type):
@@ -3282,32 +3262,6 @@ def get_self_param(typ: ClassKey) -> TypeVarParam:
 
 def bound_self_type_from_class_key(typ: ClassKey) -> TypeVarValue:
     return TypeVarValue(get_self_param(typ))
-
-
-def shield_nested_self_typevars(value: Value) -> tuple[Value, TypeVarMap]:
-    """Protect nested ``Self`` values while specializing an outer receiver."""
-    first_self_typevar = next(
-        (
-            subval
-            for subval in value.walk_values()
-            if isinstance(subval, TypeVarValue) and subval.typevar_param.is_self
-        ),
-        None,
-    )
-    if first_self_typevar is None:
-        return value, TypeVarMap()
-    placeholder = TypeVarValue(
-        TypeVarParam(
-            _NestedSelfT,
-            bound=first_self_typevar.typevar_param.bound,
-            default=first_self_typevar.typevar_param.default,
-            constraints=first_self_typevar.typevar_param.constraints,
-            variance=first_self_typevar.typevar_param.variance,
-        )
-    )
-    return value.substitute_typevars(
-        TypeVarMap(typevars={SelfParam: placeholder})
-    ), TypeVarMap(typevars={_NestedSelfParam: first_self_typevar})
 
 
 def receiver_to_self_type(
