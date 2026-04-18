@@ -16,13 +16,10 @@ from typing import Any, ClassVar, get_origin
 import typing_extensions
 from typing_extensions import assert_never
 
-from pycroscope.predicates import HasAttr
-
 if sys.version_info >= (3, 14):
     from annotationlib import Format, get_annotations
 else:
     from inspect import get_annotations  # pragma: no cover
-
 from .annotated_types import EnumName
 from .annotations import (
     RuntimeAnnotationsContext,
@@ -32,6 +29,8 @@ from .annotations import (
 )
 from .input_sig import coerce_paramspec_specialization_to_input_sig
 from .options import Options, PyObjectSequenceOption
+from .predicates import HasAttr
+from .relations import intersect_multi
 from .safe import (
     is_async_fn,
     is_bound_classmethod,
@@ -49,22 +48,30 @@ from .type_object import (
     _class_key_from_value,
 )
 from .value import (
+    NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
     AnnotatedValue,
     AnySource,
     AnyValue,
     CallableValue,
     CanAssignContext,
+    CanAssignError,
     ClassKey,
     ClassOwner,
     ClassSymbol,
     CustomCheckExtension,
     GenericBases,
     GenericValue,
+    GradualType,
     IntersectionValue,
     KnownValue,
     KnownValueWithTypeVars,
     MultiValuedValue,
+    NewTypeValue,
+    OverlappingValue,
+    ParamSpecArgsValue,
+    ParamSpecKwargsValue,
+    PartialCallValue,
     PartialValue,
     PartialValueOperation,
     PredicateValue,
@@ -79,12 +86,15 @@ from .value import (
     TypedDictValue,
     TypedValue,
     TypeFormValue,
+    TypeVarTupleBindingValue,
+    TypeVarTupleValue,
     TypeVarValue,
     UnboundMethodValue,
     Value,
     _iter_typevar_map_items,
     _typevar_map_from_varlike_pairs,
     annotate_value,
+    gradualize,
     replace_fallback,
     set_self,
     unite_values,
@@ -192,6 +202,128 @@ def _get_type_object_attribute(
 
 
 def get_attribute(ctx: AttrContext) -> Value:
+    value, _ = get_attribute_with_error(ctx)
+    return value
+
+
+def get_attribute_with_error(ctx: AttrContext) -> tuple[Value, CanAssignError | None]:
+    """Get the value of an attribute.
+
+    This is the main entry point for attribute retrieval. It handles all the
+    special cases for different types of root values and falls back to
+    TypeObject lookup for normal classes.
+
+    May also return an error describing the issue if the attribute does not exist.
+
+    """
+    root_value = gradualize(ctx.root_value)
+    return _get_attribute_from_value(root_value, ctx)
+
+
+def _get_attribute_from_value(
+    root_value: GradualType, ctx: AttrContext
+) -> tuple[Value, CanAssignError | None]:
+    match root_value:
+        case AnyValue():
+            return AnyValue(AnySource.from_another), None
+        case SyntheticModuleValue(module_path=module_path):
+            module = ".".join(module_path)
+            attribute_value = ctx.resolve_name_from_typeshed(module, ctx.attr)
+            if attribute_value is UNINITIALIZED_VALUE:
+                return _get_attribute_from_value(TypedValue(types.ModuleType), ctx)
+            return attribute_value, None
+        case MultiValuedValue(vals=vals):
+            if not vals:
+                return AnyValue(AnySource.inference), None
+            results = [_get_attribute_from_value(gradualize(val), ctx) for val in vals]
+            values, errors = zip(*results)
+            unified_value = unite_values(*values)
+            if any(errors):
+                error = CanAssignError(
+                    f"Some members of union are missing attribute '{ctx.attr}'",
+                    children=[err for err in errors if err is not None],
+                )
+            else:
+                error = None
+            return unified_value, error
+        case IntersectionValue(vals=vals):
+            if not vals:
+                return AnyValue(AnySource.inference), None
+            results = [_get_attribute_from_value(gradualize(val), ctx) for val in vals]
+            filtered_results = [
+                (value, error)
+                for value, error in results
+                if value is not UNINITIALIZED_VALUE
+                and value is not NO_RETURN_VALUE
+                and error is None
+            ]
+            if not filtered_results:
+                error = CanAssignError(
+                    f"All members of intersection are missing attribute '{ctx.attr}'",
+                    children=[err for _, err in results if err is not None],
+                )
+                return UNINITIALIZED_VALUE, error
+            values, errors = zip(*filtered_results)
+            intersected_value = intersect_multi(values, ctx.get_can_assign_context())
+            if any(errors):
+                error = CanAssignError(
+                    f"Error getting attribute '{ctx.attr}'",
+                    children=[err for err in errors if err is not None],
+                )
+            else:
+                error = None
+            return intersected_value, error
+        case (
+            AnnotatedValue()
+            | OverlappingValue()
+            | TypeAliasValue()
+            | ParamSpecArgsValue()
+            | ParamSpecKwargsValue()
+            | TypeAliasValue()
+            | NewTypeValue()
+            | PartialCallValue()
+            | PartialValue()
+        ):
+            return _get_attribute_from_value(
+                gradualize(root_value.get_fallback_value()), ctx
+            )
+        case SuperValue():
+            return _get_attribute_from_super_value(root_value, ctx)
+        case PredicateValue(predicate=HasAttr(attr=attr, value=val)) if (
+            attr == ctx.attr
+        ):
+            return val, None
+        case PredicateValue() | TypeFormValue():
+            return _get_attribute_from_value(TypedValue(object), ctx)
+        case TypeVarValue():
+            if (
+                root_value.typevar_param.bound is not None
+                or root_value.typevar_param.constraints
+            ):
+                return _get_attribute_from_value(
+                    gradualize(root_value.get_fallback_value()), ctx
+                )
+            else:
+                return _get_attribute_from_value(TypedValue(object), ctx)
+        case TypeVarTupleBindingValue() | TypeVarTupleValue():
+            # TODO: Not sure these should be part of GradualType at all
+            return _get_attribute_from_value(TypedValue(object), ctx)
+
+        # TODO
+        case (
+            KnownValue()
+            | SyntheticClassObjectValue()
+            | TypedValue()
+            | SubclassValue()
+            | UnboundMethodValue()
+        ):
+            return _get_attribute(ctx), None
+        case _:
+            assert_never(root_value)
+
+
+# TODO: Remove this and replace with the switch in _get_attribute_from_value.
+def _get_attribute(ctx: AttrContext) -> Value:
     lookup_root_value = (
         ctx.root_value if ctx.lookup_root_value is None else ctx.lookup_root_value
     )
@@ -248,7 +380,7 @@ def get_attribute(ctx: AttrContext) -> Value:
         ctx = replace(ctx, lookup_root_value=lookup_root_value)
     super_value = _extract_super_value(lookup_root_value)
     if super_value is not None:
-        attribute_value = _get_attribute_from_super_value(super_value, ctx)
+        attribute_value, _ = _get_attribute_from_super_value(super_value, ctx)
         if (
             (
                 isinstance(attribute_value, AnyValue)
@@ -462,13 +594,19 @@ def _super_thisclass_key(value: Value) -> ClassKey | None:
     return None
 
 
-def _get_attribute_from_super_value(super_value: SuperValue, ctx: AttrContext) -> Value:
+def _ca_error(value: Value, ctx: AttrContext) -> CanAssignError:
+    return CanAssignError(f"{value} has no attribute '{ctx.attr}'")
+
+
+def _get_attribute_from_super_value(
+    super_value: SuperValue, ctx: AttrContext
+) -> tuple[Value, CanAssignError | None]:
     if super_value.selfobj is None:
-        return AnyValue(AnySource.inference)
+        return AnyValue(AnySource.inference), None
     receiver_value, is_class_access = _super_receiver_type_value(super_value.selfobj)
     thisclass_key = _super_thisclass_key(super_value.thisclass)
     if receiver_value is None or thisclass_key is None:
-        return AnyValue(AnySource.inference)
+        return AnyValue(AnySource.inference), None
 
     receiver_tobj = receiver_value.get_type_object(ctx.get_can_assign_context())
     policy = AttributePolicy(
@@ -480,8 +618,8 @@ def _get_attribute_from_super_value(super_value: SuperValue, ctx: AttrContext) -
     )
     attr = receiver_tobj.get_attribute(ctx.attr, policy)
     if attr is None:
-        return UNINITIALIZED_VALUE
-    return attr.value
+        return UNINITIALIZED_VALUE, _ca_error(receiver_value, ctx)
+    return attr.value, attr.error
 
 
 def _get_attribute_from_type_alias(value: TypeAliasValue, ctx: AttrContext) -> Value:
