@@ -13,7 +13,7 @@ from collections.abc import Iterable, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from itertools import zip_longest
-from typing import TypeAlias, TypeVar, cast
+from typing import TypeAlias, TypeVar
 
 from typing_extensions import Protocol
 
@@ -45,6 +45,7 @@ from .value import (
     ClassSymbol,
     DeprecatedExtension,
     FunctionDecorator,
+    FunctionOwner,
     GenericValue,
     InferenceVarValue,
     KnownValue,
@@ -59,7 +60,6 @@ from .value import (
     TypeParam,
     TypeVarParam,
     TypeVarTupleValue,
-    TypeVarType,
     TypeVarValue,
     Value,
     annotate_value,
@@ -239,6 +239,7 @@ class FunctionResult:
 class Context(ErrorContext, CanAssignContext, Protocol):
     options: Options
     current_class_type_params: Sequence[TypeParam] | None
+    module: types.ModuleType | None
 
     def visit_expression(self, node: ast.AST, /) -> Value:
         raise NotImplementedError
@@ -576,9 +577,17 @@ def compute_parameters(
                     error_code=ErrorCode.missing_parameter_annotation,
                 )
             if isinstance(node, ast.Lambda):
+                module = (
+                    ctx.module.__name__
+                    if ctx.module is not None
+                    else "<unknown module>"
+                )
+                qualname = "<lambda>"
+                owner = FunctionOwner(module, qualname, node)
                 value = InferenceVarValue(
                     TypeVarParam(
-                        cast(TypeVarType, TypeVar(f"T{tv_index}")),
+                        TypeVar(f"T{tv_index}"),
+                        owner=owner,
                         bound=AnyValue(AnySource.inference),
                     )
                 )
