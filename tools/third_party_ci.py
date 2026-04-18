@@ -37,7 +37,6 @@ THIRD_PARTY_CHECKS: Final[tuple[ThirdPartyCheck, ...]] = (
         name="taxonomy",
         repo_url="https://github.com/JelleZijlstra/taxonomy.git",
         targets=("taxonomy/",),
-        expected_to_fail=True,
     ),
 )
 
