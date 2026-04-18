@@ -125,7 +125,6 @@ from .value import (
     receiver_to_self_type,
     replace_fallback,
     replace_known_sequence_value,
-    shield_nested_self_typevars,
     stringify_object,
     unannotate,
     unannotate_value,
@@ -2279,11 +2278,7 @@ class Signature:
             self_annotation = params[0].annotation
         else:
             return None
-        restore_typevars = TypeVarMap()
         if self_annotation_value is not None:
-            self_annotation_value, restore_typevars = shield_nested_self_typevars(
-                self_annotation_value
-            )
             tv_map = relations.get_tv_map(
                 self_annotation, self_annotation_value, Relation.ASSIGNABLE, ctx
             )
@@ -2325,8 +2320,6 @@ class Signature:
                 else (Composite(self_value) if self_value is not None else None)
             ),
         )
-        if restore_typevars:
-            signature = signature.substitute_typevars(restore_typevars)
         solved_typevars = {
             typevar
             for typevar, value in _iter_typevar_map_items(tv_map)

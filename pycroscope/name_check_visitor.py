@@ -330,7 +330,6 @@ from .value import (
     get_typevar_variance,
     is_async_iterable,
     is_iterable,
-    is_self_typevar_value,
     is_type_alias_partial_operation,
     is_union,
     iter_type_params_in_value,
@@ -17040,9 +17039,13 @@ def _value_contains_self(value: Value | None) -> bool:
     if value is None:
         return False
     for subvalue in value.walk_values():
-        if _is_self_type_value(subvalue):
+        if is_self_typevar_value(subvalue):
             return True
     return False
+
+
+def is_self_typevar_value(value: Value) -> bool:
+    return isinstance(value, TypeVarValue) and value.typevar_param.is_self
 
 
 def _base_expression_contains_self(value: Value) -> bool:
@@ -17066,14 +17069,10 @@ def _base_expression_contains_self(value: Value) -> bool:
     return False
 
 
-def _is_self_type_value(value: Value) -> bool:
-    return is_self_typevar_value(value, include_nested_placeholders=True)
-
-
 def _is_self_expression_value(value: Value) -> bool:
     if isinstance(value, AnnotatedValue):
         return _is_self_expression_value(value.value)
-    if is_self_typevar_value(value, include_nested_placeholders=True):
+    if is_self_typevar_value(value):
         return True
     if isinstance(value, KnownValueWithTypeVars):
         return is_typing_name(value.val, "Self")
@@ -17107,10 +17106,7 @@ def _value_carries_self_binding(value: Value) -> bool:
         param.is_self for param, _ in value.typevars.iter_typevars()
     ):
         return True
-    return any(
-        is_self_typevar_value(subval, include_nested_placeholders=True)
-        for subval in value.walk_values()
-    )
+    return any(is_self_typevar_value(subval) for subval in value.walk_values())
 
 
 def _is_dataclass_classvar_final(expr: AnnotationExpr) -> bool:
