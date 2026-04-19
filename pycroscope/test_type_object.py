@@ -37,7 +37,6 @@ from .value import (
     TypedValue,
     TypeVarParam,
     TypeVarTupleBindingValue,
-    TypeVarTupleParam,
     TypeVarTupleValue,
     TypeVarValue,
     UnboundMethodValue,
@@ -570,16 +569,17 @@ class Array(Generic[*Shape]):
     assert len(mro_value.args) == 1
     assert isinstance(mro_value.args[0], TypeVarTupleValue)
     assert mro_value.args[0].typevar is Shape
+    (shape_param,) = array_object.get_declared_type_params()
     substitutions = array_object.get_substitutions_for_base(
         Array, [TypedValue(int), TypedValue(str)]
     )
-    assert substitutions.get_typevartuple(TypeVarTupleParam(Shape)) == (
+    assert substitutions.get_typevartuple(shape_param) == (
         (False, TypedValue(int)),
         (False, TypedValue(str)),
     )
-    assert substitutions.get_value(
-        TypeVarTupleParam(Shape)
-    ) == TypeVarTupleBindingValue(((False, TypedValue(int)), (False, TypedValue(str))))
+    assert substitutions.get_value(shape_param) == TypeVarTupleBindingValue(
+        ((False, TypedValue(int)), (False, TypedValue(str)))
+    )
 
 
 def test_variadic_runtime_type_object_preserves_packed_base_substitutions() -> None:
@@ -608,17 +608,18 @@ class Child(Base[*Shape], Generic[*Shape]):
 
     checker = Checker()
     child_object = checker.make_type_object(Child)
+    (shape_param,) = checker.make_type_object(Base).get_declared_type_params()
 
     substitutions = child_object.get_substitutions_for_base(
         Base, [TypedValue(int), TypedValue(str)]
     )
-    assert substitutions.get_typevartuple(TypeVarTupleParam(Shape)) == (
+    assert substitutions.get_typevartuple(shape_param) == (
         (False, TypedValue(int)),
         (False, TypedValue(str)),
     )
-    assert substitutions.get_value(
-        TypeVarTupleParam(Shape)
-    ) == TypeVarTupleBindingValue(((False, TypedValue(int)), (False, TypedValue(str))))
+    assert substitutions.get_value(shape_param) == TypeVarTupleBindingValue(
+        ((False, TypedValue(int)), (False, TypedValue(str)))
+    )
 
 
 def test_synthetic_type_object_tracks_declared_type_params_and_specialized_mro() -> (

@@ -42,7 +42,7 @@ from collections.abc import (
     Sequence,
 )
 from contextlib import AbstractContextManager
-from dataclasses import InitVar, dataclass, field
+from dataclasses import InitVar, dataclass, field, replace
 from itertools import chain
 from types import FunctionType, ModuleType
 from typing import Any, Optional, TypeGuard, TypeVar, Union
@@ -1029,6 +1029,11 @@ class PartialCallValue(Value):
     runtime_value: Value
     node: ast.AST = field(compare=False, hash=False)
 
+    def __hash__(self) -> int:
+        return hash(
+            (self.callee, tuple(sorted(self.arguments.items())), self.runtime_value)
+        )
+
     def __str__(self) -> str:
         return f"{self.runtime_value} (call with arguments {self.arguments})"
 
@@ -1259,6 +1264,14 @@ class ParamSpecParam:
     def __str__(self) -> str:
         return _type_param_to_string("**", self.param_spec.__name__, self.owner)
 
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, ParamSpecParam):
+            return NotImplemented
+        return self.param_spec == other.param_spec
+
+    def __hash__(self) -> int:
+        return hash(self.param_spec)
+
 
 @dataclass(frozen=True)
 class TypeVarTupleParam:
@@ -1274,8 +1287,28 @@ class TypeVarTupleParam:
     def __str__(self) -> str:
         return _type_param_to_string("*", self.typevar_tuple.__name__, self.owner)
 
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, TypeVarTupleParam):
+            return NotImplemented
+        return self.typevar_tuple == other.typevar_tuple
+
+    def __hash__(self) -> int:
+        return hash(self.typevar_tuple)
+
 
 TypeParam = TypeVarParam | ParamSpecParam | TypeVarTupleParam
+
+
+def with_type_param_owner(
+    type_param: TypeParam, owner: TypeParamOwner | None
+) -> TypeParam:
+    if owner is None or type_param.owner is not None:
+        return type_param
+    if isinstance(type_param, TypeVarParam):
+        return replace(type_param, owner=owner)
+    if isinstance(type_param, ParamSpecParam):
+        return replace(type_param, owner=owner)
+    return replace(type_param, owner=owner)
 
 
 def _value_from_runtime_type_param_component(component: object) -> Value:

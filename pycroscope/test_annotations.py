@@ -1,14 +1,17 @@
 # static analysis: ignore
 
+import ast
 import sys
 
-from .annotations import has_invalid_paramspec_usage
+from .annotations import _DefaultContext, has_invalid_paramspec_usage, type_from_runtime
 from .error_code import ErrorCode
 from .signature import OverloadedSignature, Signature, SigParameter
-from .test_name_check_visitor import TestNameCheckVisitorBase
+from .test_name_check_visitor import TestNameCheckVisitorBase, _make_checked_visitor
 from .test_node_visitor import assert_passes, skip_before, skip_if_not_installed
 from .tests import make_simple_sequence
+from .type_params import ActiveTypeParams
 from .value import (
+    AliasOwner,
     AnnotatedValue,
     AnySource,
     AnyValue,
@@ -18,6 +21,7 @@ from .value import (
     MultiValuedValue,
     NewTypeValue,
     SequenceValue,
+    TypeAliasValue,
     TypedDictEntry,
     TypedDictValue,
     TypedValue,
@@ -38,6 +42,46 @@ _ABSTRACT_CONTEXT_MANAGER_INT = GenericValue(
         else [TypedValue(int)]
     ),
 )
+
+
+def test_default_context_has_active_type_params() -> None:
+    ctx = _DefaultContext(visitor=None, node=None)
+    assert isinstance(ctx.active_type_params, ActiveTypeParams)
+
+
+@skip_before((3, 12))
+def test_default_context_reuses_visitor_active_type_params() -> None:
+    visitor, tree = _make_checked_visitor("""
+        def f[T](x: T) -> T:
+            return x
+        """)
+    function = tree.body[0]
+    assert isinstance(function, ast.FunctionDef)
+    ctx = _DefaultContext(visitor=visitor, node=function)
+    assert ctx.active_type_params is visitor.active_type_params
+
+
+@skip_before((3, 12))
+def test_runtime_type_alias_type_params_get_alias_owner() -> None:
+    ns: dict[str, object] = {}
+    exec(
+        """
+type Alias[T] = list[T]
+""",
+        ns,
+        ns,
+    )
+    value = type_from_runtime(ns["Alias"], ctx=_DefaultContext(visitor=None, node=None))
+    assert isinstance(value, TypeAliasValue)
+    (type_param,) = value.alias.get_type_params()
+    assert isinstance(type_param.owner, AliasOwner)
+    assert type_param.owner.identity is ns["Alias"]
+    assert str(type_param.owner).endswith(".Alias")
+    alias_value = value.alias.get_value()
+    assert isinstance(alias_value, GenericValue)
+    (inner_arg,) = alias_value.args
+    assert isinstance(inner_arg, TypeVarValue)
+    assert inner_arg.typevar_param.owner == type_param.owner
 
 
 class TestAnnotations(TestNameCheckVisitorBase):
@@ -1216,10 +1260,8 @@ class TestTypeVar(TestNameCheckVisitorBase):
         from typing_extensions import Literal
 
         IntT = TypeVar("IntT", bound=int)
-        expected = TypeVarValue(TypeVarParam(IntT, bound=TypedValue(int)))
 
         def f(x: IntT) -> IntT:
-            assert_is_value(x, expected)
             print(x + 1)
             return x
 

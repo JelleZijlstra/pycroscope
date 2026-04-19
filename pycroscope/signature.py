@@ -721,7 +721,6 @@ class Signature:
                 self.has_return_annotation,
                 self.allow_call,
                 self.allow_partial_call,
-                self.evaluator,
             )
         )
 
@@ -3052,7 +3051,12 @@ class BoundMethodSignature:
     return_override: Value | None = None
 
     def check_call(self, args: Iterable[Argument], ctx: CheckCallContext) -> Value:
-        ret = self.signature.check_call([(self.self_composite, None), *args], ctx)
+        bound_signature = self.get_signature(ctx=ctx.can_assign_ctx, preserve_impl=True)
+        if bound_signature is None:
+            return AnyValue(AnySource.error)
+        if isinstance(bound_signature, Signature) and bound_signature.allow_call:
+            bound_signature = replace(bound_signature, allow_call=False)
+        ret = bound_signature.check_call(list(args), ctx)
         if self.return_override is not None and not self.signature.has_return_value():
             if isinstance(ret, AnnotatedValue):
                 return annotate_value(self.return_override, ret.metadata)

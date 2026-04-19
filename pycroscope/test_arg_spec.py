@@ -1,7 +1,7 @@
 # static analysis: ignore
 import functools
 from dataclasses import dataclass
-from typing import List, NewType
+from typing import Generic, List, NewType
 
 import pytest
 from typing_extensions import ParamSpec, Self, TypeVar, TypeVarTuple
@@ -14,10 +14,11 @@ from .test_name_check_visitor import (
     ConfiguredNameCheckVisitor,
     TestNameCheckVisitorBase,
 )
-from .test_node_visitor import assert_passes
+from .test_node_visitor import assert_passes, skip_before
 from .value import (
     AnySource,
     AnyValue,
+    FunctionOwner,
     GenericValue,
     KnownValue,
     NewTypeValue,
@@ -68,6 +69,41 @@ def test_get_type_parameters_ignores_non_iterable_runtime_type_params() -> None:
         __type_params__ = property(lambda self: ())
 
     assert checker.arg_spec_cache.get_type_parameters(Weird) == []
+
+
+def test_runtime_class_type_params_get_class_owner() -> None:
+    checker = Checker()
+
+    class Box(Generic[T]):
+        pass
+
+    (type_param,) = checker.arg_spec_cache.get_type_parameters(Box)
+    assert type_param.owner is Box
+
+
+@skip_before((3, 12))
+def test_runtime_generic_method_annotations_use_scoped_type_param_owners() -> None:
+    checker = Checker()
+    ns: dict[str, object] = {}
+    exec(
+        """
+class Box[T]:
+    def f[U](self, x: T, y: U) -> tuple[T, U]:
+        raise NotImplementedError
+""",
+        ns,
+        ns,
+    )
+    Box = ns["Box"]
+    sig = checker.arg_spec_cache.get_argspec(Box.f)
+    assert isinstance(sig, Signature)
+    x_annotation = sig.parameters["x"].annotation
+    y_annotation = sig.parameters["y"].annotation
+    assert isinstance(x_annotation, TypeVarValue)
+    assert x_annotation.typevar_param.owner is Box
+    assert isinstance(y_annotation, TypeVarValue)
+    assert isinstance(y_annotation.typevar_param.owner, FunctionOwner)
+    assert y_annotation.typevar_param.owner.identity is Box.f
 
 
 def test_match_typevar_arguments_preserves_suffix_after_default_before_typevartuple() -> (

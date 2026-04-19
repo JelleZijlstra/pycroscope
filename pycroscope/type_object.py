@@ -31,7 +31,13 @@ import pycroscope
 if TYPE_CHECKING:
     from .relations import Relation
 
-from .annotations import make_type_param, type_from_runtime, type_from_value
+from .annotations import (
+    RuntimeAnnotationsContext,
+    add_runtime_type_param_scope,
+    make_type_param,
+    type_from_runtime,
+    type_from_value,
+)
 from .input_sig import AnySig, FullSignature, InputSigValue
 from .options import PyObjectSequenceOption
 from .relations import (
@@ -2768,21 +2774,44 @@ def _bind_attribute_signature(
     ctx: CanAssignContext,
     self_annotation_value: Value | None = None,
 ) -> Value:
+    def _disable_runtime_call(
+        signature: Signature | OverloadedSignature,
+    ) -> Signature | OverloadedSignature:
+        if isinstance(signature, Signature):
+            if not signature.allow_call:
+                return signature
+            return replace(signature, allow_call=False)
+        return OverloadedSignature(
+            [
+                replace(sig, allow_call=False) if sig.allow_call else sig
+                for sig in signature.signatures
+            ]
+        )
+
     if self_annotation_value is None:
         self_annotation_value = receiver_value
     signature = ctx.signature_from_value(value)
     if isinstance(signature, BoundMethodSignature):
+        shielded_signature, restore_typevars = _shield_nested_self_in_signature(
+            signature.signature
+        )
+        signature = replace(signature, signature=shielded_signature)
         bound = signature.get_signature(
             ctx=ctx, self_annotation_value=self_annotation_value, preserve_impl=True
         )
         if bound is None and self_annotation_value == receiver_value:
             bound = signature.get_signature(ctx=ctx, preserve_impl=True)
         if bound is not None:
-            return CallableValue(bound)
+            bound = _disable_runtime_call(bound)
+            result: Value = CallableValue(bound)
+            if restore_typevars:
+                result = result.substitute_typevars(restore_typevars)
+            return result
         return value
     if isinstance(signature, (Signature, OverloadedSignature)):
         if self_annotation_value is None:
             self_annotation_value = receiver_value
+        signature, restore_typevars = _shield_nested_self_in_signature(signature)
         bound = signature.bind_self(
             self_value=receiver_value,
             self_annotation_value=self_annotation_value,
@@ -2794,8 +2823,46 @@ def _bind_attribute_signature(
                 self_value=receiver_value, preserve_impl=True, ctx=ctx
             )
         if bound is not None:
-            return CallableValue(bound)
+            bound = _disable_runtime_call(bound)
+            result = CallableValue(bound)
+            if restore_typevars:
+                result = result.substitute_typevars(restore_typevars)
+            return result
     return value
+
+
+def _shield_nested_self_in_signature(
+    signature: Signature | OverloadedSignature,
+) -> tuple[Signature | OverloadedSignature, TypeVarMap]:
+    if isinstance(signature, OverloadedSignature):
+        restore_typevars = TypeVarMap()
+        shielded_signatures = []
+        for inner_sig in signature.signatures:
+            shielded_sig, inner_restore = _shield_nested_self_in_signature(inner_sig)
+            assert isinstance(shielded_sig, Signature)
+            shielded_signatures.append(shielded_sig)
+            restore_typevars = restore_typevars.merge(inner_restore)
+        return OverloadedSignature(shielded_signatures), restore_typevars
+
+    restore_typevars = TypeVarMap()
+    parameters: dict[str, SigParameter] = {}
+    for name, param in signature.parameters.items():
+        annotated_type = param.annotation
+        if (
+            isinstance(annotated_type, TypeVarValue)
+            and annotated_type.typevar_param.is_self
+        ):
+            replacement = type_param_to_value(
+                replace(annotated_type.typevar_param, typevar=object(), is_self=False)
+            )
+            assert isinstance(replacement, TypeVarValue)
+            restore_typevars = restore_typevars.with_typevar(
+                replacement.typevar_param, annotated_type
+            )
+            parameters[name] = replace(param, annotation=replacement)
+        else:
+            parameters[name] = param
+    return replace(signature, parameters=parameters), restore_typevars
 
 
 def _is_informative_runtime_attribute(attribute: SpecializedAttribute) -> bool:
@@ -4150,15 +4217,13 @@ def _compute_type_params_from_runtime(
         runtime_type_params_iter = iter(runtime_type_params)
     except TypeError:
         return []
+    ctx = pycroscope.arg_spec.AnnotationsContext(self_key=typ)
+    add_runtime_type_param_scope(ctx, typ, typ)
     type_params: list[TypeParam] = []
     for type_param in runtime_type_params_iter:
         try:
             assert checker._arg_spec_cache is not None
-            type_params.append(
-                make_type_param(
-                    type_param, ctx=pycroscope.arg_spec.AnnotationsContext(self_key=typ)
-                )
-            )
+            type_params.append(make_type_param(type_param, ctx=ctx))
         except TypeError:
             continue
     return type_params
@@ -4185,10 +4250,9 @@ def _extract_runtime_direct_bases(
             raw_bases = iter(typ.__bases__)
         except Exception:
             return []
-    bases = [
-        type_from_runtime(base, visitor=checker, suppress_errors=True)
-        for base in raw_bases
-    ]
+    ctx = RuntimeAnnotationsContext(owner=typ, self_key=typ, new_type_param_owner=typ)
+    with ctx.suppress_errors():
+        bases = [type_from_runtime(base, ctx=ctx) for base in raw_bases]
     if is_namedtuple_class(typ):
         bases = [_replace_tuple(base, typ, checker) for base in bases]
     return _replace_invalid_bases(bases)

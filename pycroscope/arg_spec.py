@@ -28,6 +28,7 @@ from .analysis_lib import is_positional_only_arg_name, override
 from .annotations import (
     Context,
     RuntimeEvaluator,
+    add_runtime_type_param_scope,
     annotation_expr_from_runtime,
     make_type_param,
     type_from_runtime,
@@ -67,6 +68,7 @@ from .signature import (
     make_bound_method,
 )
 from .stacked_scopes import Composite, uniq_chain
+from .type_params import ActiveTypeParams
 from .typeshed import TypeshedFinder
 from .value import (
     UNINITIALIZED_VALUE,
@@ -77,6 +79,7 @@ from .value import (
     ClassKey,
     ClassOwner,
     Extension,
+    FunctionOwner,
     GenericBases,
     GenericValue,
     KnownValue,
@@ -107,6 +110,7 @@ from .value import (
     iter_type_params_in_value,
     make_coro_type,
     type_param_to_value,
+    with_type_param_owner,
 )
 
 _GET_OVERLOADS = []
@@ -245,19 +249,28 @@ def _get_callable_owner(callable_obj: object | None) -> type | None:
     if not isinstance(callable_obj, FunctionType):
         return None
     module = inspect.getmodule(callable_obj)
-    if module is None:
-        return None
     qualname_parts = callable_obj.__qualname__.split(".")
     if len(qualname_parts) < 2:
         return None
-    owner: object = module
+    if module is None:
+        globals_dict = safe_getattr(callable_obj, "__globals__", None)
+        if not isinstance(globals_dict, Mapping):
+            return None
+        owner: object = globals_dict
+    else:
+        owner = module
     for part in qualname_parts[:-1]:
         if part == "<locals>":
             return None
-        try:
-            owner = getattr(owner, part)
-        except AttributeError:
-            return None
+        if isinstance(owner, Mapping):
+            owner = owner.get(part)
+            if owner is None:
+                return None
+        else:
+            try:
+                owner = getattr(owner, part)
+            except AttributeError:
+                return None
     try:
         member = inspect.getattr_static(owner, qualname_parts[-1])
     except AttributeError:
@@ -275,7 +288,33 @@ def _make_annotations_context(
 ) -> AnnotationsContext:
     if owner is None:
         owner = _get_callable_owner(callable_obj)
-    return AnnotationsContext(globals=globals, self_key=owner)
+    active_type_params = ActiveTypeParams()
+    ctx = AnnotationsContext(
+        globals=globals, self_key=owner, active_type_params=active_type_params
+    )
+    if owner is not None:
+        add_runtime_type_param_scope(ctx, owner, owner)
+    function_owner = _function_owner_from_callable(callable_obj)
+    if function_owner is not None:
+        add_runtime_type_param_scope(
+            ctx, safe_getattr(callable_obj, "__func__", callable_obj), function_owner
+        )
+    return ctx
+
+
+def _function_owner_from_callable(callable_obj: object | None) -> FunctionOwner | None:
+    if callable_obj is None:
+        return None
+    function_object = safe_getattr(callable_obj, "__func__", callable_obj)
+    if not isinstance(function_object, FunctionType):
+        return None
+    module = safe_getattr(function_object, "__module__", "<unknown>") or "<unknown>"
+    qualname = safe_getattr(
+        function_object,
+        "__qualname__",
+        safe_getattr(function_object, "__name__", "<function>"),
+    )
+    return FunctionOwner(module, qualname, function_object)
 
 
 class IgnoredCallees(PyObjectSequenceOption[object]):
@@ -687,7 +726,12 @@ class ArgSpecCache:
             and seen_paramspec_args.param_spec is typ.param_spec
         ):
             kind = ParameterKind.PARAM_SPEC
-            typ = InputSigValue(ParamSpecParam(typ.param_spec))
+            ctx = _make_annotations_context(
+                func_globals, function_object, owner=owner_for_self
+            )
+            type_param = make_type_param(typ.param_spec, ctx=ctx)
+            assert isinstance(type_param, ParamSpecParam)
+            typ = InputSigValue(type_param)
         return (
             SigParameter(parameter.name, kind, default=default, annotation=typ),
             make_everything_pos_only,
@@ -1228,7 +1272,7 @@ class ArgSpecCache:
         for field in fields:
             annotation = type_from_runtime(
                 get_namedtuple_field_annotation(obj, field),
-                ctx=AnnotationsContext(self_key=obj),
+                ctx=_make_annotations_context(owner=obj),
             )
             field_annotations[field] = annotation
             default: Value | None
@@ -1252,7 +1296,9 @@ class ArgSpecCache:
             return_type = GenericValue(
                 obj,
                 [
-                    type_from_runtime(type_param, ctx=AnnotationsContext(self_key=obj))
+                    type_from_runtime(
+                        type_param, ctx=_make_annotations_context(owner=obj)
+                    )
                     for type_param in class_type_params
                 ],
             )
@@ -1362,12 +1408,12 @@ class ArgSpecCache:
             runtime_type_params_iter = iter(runtime_type_params)
         except TypeError:
             return []
+        ctx = AnnotationsContext(self_key=typ)
+        add_runtime_type_param_scope(ctx, typ, typ)
         type_params: list[TypeParam] = []
         for type_param in runtime_type_params_iter:
             try:
-                type_params.append(
-                    make_type_param(type_param, ctx=AnnotationsContext(self_key=typ))
-                )
+                type_params.append(make_type_param(type_param, ctx=ctx))
             except TypeError:
                 continue
         self.type_params_cache[typ] = tuple(type_params)
@@ -1639,7 +1685,7 @@ class ArgSpecCache:
             return TypedValue(float)
         elif base is complex:
             return TypedValue(complex)
-        return type_from_runtime(base, ctx=AnnotationsContext(self_key=owner))
+        return type_from_runtime(base, ctx=_make_annotations_context(owner=owner))
 
     def _extract_bases(
         self, typ: ClassKey, bases: Sequence[Value] | None
@@ -1653,9 +1699,23 @@ class ArgSpecCache:
             key=lambda base: not isinstance(base, TypedValue)
             or base.typ is not Generic,
         )
-        my_typevars = tuple(
+        raw_typevars = tuple(
             uniq_chain(tuple(iter_type_params_in_value(base)) for base in bases)
         )
+        my_typevars = raw_typevars
+        if not isinstance(typ, ClassOwner):
+            my_typevars = tuple(
+                with_type_param_owner(type_param, typ) for type_param in raw_typevars
+            )
+            owner_rebinding = TypeVarMap()
+            for raw_type_param, owned_type_param in zip(raw_typevars, my_typevars):
+                if raw_type_param is owned_type_param:
+                    continue
+                owner_rebinding = owner_rebinding.with_value(
+                    raw_type_param, type_param_to_value(owned_type_param)
+                )
+            if owner_rebinding:
+                bases = [base.substitute_typevars(owner_rebinding) for base in bases]
         self.type_params_cache[typ] = my_typevars
         generic_bases = {}
         self_typevars = TypeVarMap()

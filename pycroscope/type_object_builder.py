@@ -418,7 +418,9 @@ def _runtime_member_value(raw_value: object, owner: type) -> Value:
     if not isinstance(runtime_params, tuple) or not runtime_params:
         return value
 
-    ctx = RuntimeAnnotationsContext(owner=owner, self_key=owner)
+    ctx = RuntimeAnnotationsContext(
+        owner=owner, self_key=owner, new_type_param_owner=owner
+    )
     with ctx.suppress_errors():
         type_params = tuple(make_type_param(param, ctx) for param in runtime_params)
         type_arguments = tuple(type_from_runtime(arg, ctx=ctx) for arg in args)

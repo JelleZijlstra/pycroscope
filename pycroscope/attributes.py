@@ -484,6 +484,8 @@ def _get_attribute_from_known(
     obj = value.val
     if safe_isinstance(obj, type):
         ctx.record_attr_read(obj)
+        if ctx.attr in {"__name__", "__qualname__", "__module__", "__doc__"}:
+            return KnownValue(getattr(obj, ctx.attr))
     else:
         ctx.record_attr_read(type(obj))
 

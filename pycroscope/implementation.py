@@ -16,7 +16,12 @@ import typing_extensions
 import pycroscope
 
 from . import runtime
-from .annotations import annotation_expr_from_value, is_typevarlike, type_from_value
+from .annotations import (
+    annotation_expr_from_value,
+    is_typevarlike,
+    make_type_param_from_value,
+    type_from_value,
+)
 from .error_code import ErrorCode
 from .extensions import assert_type, reveal_locals, reveal_type
 from .format_strings import parse_format_string
@@ -31,7 +36,6 @@ from .relations import (
     intersect_values,
     is_assignable,
     is_assignable_with_reason,
-    is_equivalent,
     is_equivalent_with_reason,
 )
 from .safe import (
@@ -89,6 +93,7 @@ from .value import (
     MultiValuedValue,
     NewTypeValue,
     ParameterTypeGuardExtension,
+    PartialCallValue,
     PartialValue,
     PartialValueOperation,
     PredicateValue,
@@ -2246,9 +2251,50 @@ def _assert_type_impl(ctx: CallContext) -> Value:
 def _subclasses_impl(ctx: CallContext) -> Value:
     """Overridden because typeshed types make it (T) => List[T] instead."""
     self_obj = ctx.vars["self"]
+    self_composite = ctx.composite_for_arg("self")
+    if self_composite is not None:
+        self_obj = self_composite.value
     if isinstance(self_obj, KnownValue) and isinstance(self_obj.val, type):
         return KnownValue(self_obj.val.__subclasses__())
+    class_key = _exact_class_key_from_value(self_obj)
+    if class_key is not None:
+        subclasses = _synthetic_direct_subclasses(class_key, ctx)
+        if subclasses is not None:
+            return SequenceValue(list, [(False, subclass) for subclass in subclasses])
     return GenericValue(list, [TypedValue(type)])
+
+
+def _exact_class_key_from_value(value: Value) -> ClassKey | None:
+    value = replace_fallback(value)
+    if isinstance(value, KnownValue) and isinstance(value.val, type):
+        return value.val
+    if isinstance(value, SyntheticClassObjectValue):
+        if value.class_key is not None:
+            return value.class_key
+        if isinstance(value.class_type, TypedValue):
+            return value.class_type.typ
+    return None
+
+
+def _synthetic_direct_subclasses(
+    class_key: ClassKey, ctx: CallContext
+) -> tuple[Value, ...] | None:
+    synthetic_classes = ctx.visitor.checker.synthetic_classes
+    subclasses: list[Value] = []
+    for candidate_key, synthetic_class in synthetic_classes.items():
+        if candidate_key == class_key:
+            continue
+        direct_bases = ctx.visitor.checker.make_type_object(
+            candidate_key
+        ).get_direct_bases()
+        if any(
+            isinstance(base, TypedValue) and base.typ == class_key
+            for base in direct_bases
+        ):
+            subclasses.append(synthetic_class)
+    if not subclasses:
+        return None
+    return tuple(subclasses)
 
 
 def _type_impl(ctx: CallContext) -> Value:
@@ -2515,6 +2561,34 @@ def _newtype_contains_any(value: Value) -> bool:
 
 
 def _newtype_contains_typevar(value: Value) -> bool:
+    if isinstance(value, PartialCallValue):
+
+        def _is_type_param_constructor(obj: object) -> bool:
+            module = safe_getattr(obj, "__module__", None)
+            name = safe_getattr(obj, "__name__", None)
+            return module in {"typing", "typing_extensions"} and name in {
+                "TypeVar",
+                "ParamSpec",
+                "TypeVarTuple",
+            }
+
+        runtime_value = replace_fallback(value.runtime_value)
+        if isinstance(value.callee, KnownValue) and _is_type_param_constructor(
+            value.callee.val
+        ):
+            return True
+        if isinstance(runtime_value, TypedValue) and _is_type_param_constructor(
+            runtime_value.typ
+        ):
+            return True
+        return _newtype_contains_typevar(value.callee) or any(
+            _newtype_contains_typevar(argument) for argument in value.arguments.values()
+        )
+    if isinstance(value, PartialValue):
+        return _newtype_contains_typevar(value.root) or any(
+            _newtype_contains_typevar(member) for member in value.members
+        )
+
     value = replace_fallback(value)
     if isinstance(value, AnyValue):
         return value.source is AnySource.generic_argument
@@ -2665,6 +2739,7 @@ def _newtype_impl(ctx: CallContext) -> Value:
     if (
         _newtype_runtime_has_type_parameters(ctx.vars["tp"])
         or _newtype_runtime_is_union(ctx.vars["tp"])
+        or _newtype_contains_typevar(ctx.vars["tp"])
         or _newtype_contains_typevar(supertype)
     ):
         ctx.show_error(
@@ -2835,61 +2910,7 @@ def _check_assignment_name_match(ctx: CallContext, name_arg: str, callee: str) -
 
 def _typevar_impl(ctx: CallContext) -> Value:
     _check_assignment_name_match(ctx, "name", "TypeVar")
-    if ctx.vars["bound"] is NO_ARG_SENTINEL:
-        bound = None
-    else:
-        bound = _type_from_typeform_arg(ctx.vars["bound"], ctx, "bound")
-    if (
-        isinstance(ctx.vars["constraints"], SequenceValue)
-        and ctx.vars["constraints"].members
-    ):
-        constraints = [
-            _type_from_typeform_arg(constraint, ctx, "constraints")
-            for constraint in ctx.vars["constraints"].get_member_sequence() or ()
-        ]
-    else:
-        constraints = None
-    if bound is not None and constraints is not None:
-        ctx.show_error(
-            "TypeVar cannot have both bound and constraints",
-            ErrorCode.incompatible_call,
-            node=ctx.node,
-        )
-    default_arg = ctx.vars.get("default", NO_ARG_SENTINEL)
-    if default_arg is NO_ARG_SENTINEL:
-        default = None
-    else:
-        default = _type_from_typeform_arg(default_arg, ctx, "default")
-
-    if bound is not None and default is not None:
-        if not is_assignable(bound, default, ctx.visitor):
-            ctx.show_error(
-                "TypeVar default must be assignable to its bound",
-                ErrorCode.incompatible_call,
-                arg="default",
-            )
-    if constraints is not None and default is not None:
-        if isinstance(default, TypeVarValue) and default.typevar_param.constraints:
-            default_constraints = default.typevar_param.constraints
-            default_matches_constraints = all(
-                any(
-                    is_equivalent(constraint, default_constraint, ctx.visitor)
-                    for constraint in constraints
-                )
-                for default_constraint in default_constraints
-            )
-        else:
-            default_matches_constraints = any(
-                is_equivalent(constraint, default, ctx.visitor)
-                for constraint in constraints
-            )
-        if not default_matches_constraints:
-            ctx.show_error(
-                "TypeVar default must be one of its constraints",
-                ErrorCode.incompatible_call,
-                arg="default",
-            )
-
+    _validate_type_param_partial_call(ctx)
     return ctx.inferred_return_value
 
 
@@ -2901,7 +2922,7 @@ def _paramspec_impl(ctx: CallContext) -> Value:
             ErrorCode.incompatible_call,
             arg="bound",
         )
-    # TODO: check variance and default
+    _validate_type_param_partial_call(ctx)
     return ctx.inferred_return_value
 
 
@@ -2913,8 +2934,21 @@ def _typevartuple_impl(ctx: CallContext) -> Value:
             ErrorCode.incompatible_call,
             arg="bound",
         )
-    # TODO: check variance and default
+    _validate_type_param_partial_call(ctx)
     return ctx.inferred_return_value
+
+
+def _validate_type_param_partial_call(ctx: CallContext) -> None:
+    make_type_param_from_value(
+        PartialCallValue(
+            callee=KnownValue(ctx.sig.callable),
+            arguments=ctx.vars,
+            runtime_value=ctx.inferred_return_value,
+            node=ctx.node if ctx.node is not None else ctx.visitor.tree,
+        ),
+        visitor=ctx.visitor,
+        node=ctx.ast_for_arg("default") if "default" in ctx.vars else ctx.node,
+    )
 
 
 def _sentinel_impl(ctx: CallContext) -> Value:
@@ -3599,22 +3633,112 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
             pass
         else:
             typevar_params = [
-                name_param,
-                constraints_param,
-                bound_param,
-                covariant_param,
-                contravariant_param,
+                SigParameter(
+                    "name",
+                    ParameterKind.POSITIONAL_OR_KEYWORD,
+                    annotation=TypedValue(str),
+                ),
+                SigParameter(
+                    "constraints",
+                    ParameterKind.VAR_POSITIONAL,
+                    annotation=AnyValue(AnySource.explicit),
+                ),
+                SigParameter(
+                    "bound",
+                    ParameterKind.KEYWORD_ONLY,
+                    default=NO_ARG_SENTINEL,
+                    annotation=AnyValue(AnySource.explicit),
+                ),
+                SigParameter(
+                    "covariant",
+                    ParameterKind.KEYWORD_ONLY,
+                    default=KnownValue(False),
+                    annotation=TypedValue(bool),
+                ),
+                SigParameter(
+                    "contravariant",
+                    ParameterKind.KEYWORD_ONLY,
+                    default=KnownValue(False),
+                    annotation=TypedValue(bool),
+                ),
             ]
             if sys.version_info >= (3, 11) or mod is typing_extensions:
                 typevar_params.append(infer_variance_param)
             if sys.version_info >= (3, 12) or mod is typing_extensions:
-                typevar_params.append(default_param)
+                typevar_params.append(
+                    SigParameter(
+                        "default",
+                        ParameterKind.KEYWORD_ONLY,
+                        default=NO_ARG_SENTINEL,
+                        annotation=AnyValue(AnySource.explicit),
+                    )
+                )
             sig = Signature.make(
                 typevar_params,
                 return_annotation=TypedValue(typevar_class),
                 callable=typevar_class,
                 impl=_typevar_impl,
-                allow_call=True,
+                allow_call=False,
+                allow_partial_call=True,
+            )
+            signatures.append(sig)
+        try:
+            paramspec_class = getattr(mod, "ParamSpec")
+        except AttributeError:
+            pass
+        else:
+            paramspec_params = [
+                SigParameter(
+                    "name",
+                    ParameterKind.POSITIONAL_OR_KEYWORD,
+                    annotation=TypedValue(str),
+                )
+            ]
+            if sys.version_info >= (3, 13) or mod is typing_extensions:
+                paramspec_params.append(
+                    SigParameter(
+                        "default",
+                        ParameterKind.KEYWORD_ONLY,
+                        default=NO_ARG_SENTINEL,
+                        annotation=AnyValue(AnySource.explicit),
+                    )
+                )
+            sig = Signature.make(
+                paramspec_params,
+                return_annotation=TypedValue(paramspec_class),
+                callable=paramspec_class,
+                impl=_paramspec_impl,
+                allow_call=False,
+                allow_partial_call=True,
+            )
+            signatures.append(sig)
+        try:
+            typevartuple_class = getattr(mod, "TypeVarTuple")
+        except AttributeError:
+            pass
+        else:
+            typevartuple_params = [
+                SigParameter(
+                    "name",
+                    ParameterKind.POSITIONAL_OR_KEYWORD,
+                    annotation=TypedValue(str),
+                )
+            ]
+            if sys.version_info >= (3, 13) or mod is typing_extensions:
+                typevartuple_params.append(
+                    SigParameter(
+                        "default",
+                        ParameterKind.KEYWORD_ONLY,
+                        default=NO_ARG_SENTINEL,
+                        annotation=AnyValue(AnySource.explicit),
+                    )
+                )
+            sig = Signature.make(
+                typevartuple_params,
+                return_annotation=TypedValue(typevartuple_class),
+                callable=typevartuple_class,
+                impl=_typevartuple_impl,
+                allow_call=False,
                 allow_partial_call=True,
             )
             signatures.append(sig)

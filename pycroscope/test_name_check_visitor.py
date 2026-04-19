@@ -30,21 +30,25 @@ from .value import (
     NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
     UNRESOLVED_VALUE,
+    AliasOwner,
     AnnotatedValue,
     AnySource,
     AnyValue,
     AsyncTaskIncompleteValue,
     CallableValue,
     DictIncompleteValue,
+    FunctionOwner,
     GenericValue,
     KnownValue,
     KVPair,
     MultiValuedValue,
     NewTypeValue,
+    PartialCallValue,
     ReferencingValue,
     SequenceValue,
     SubclassValue,
     SyntheticClassObjectValue,
+    TypeAliasValue,
     TypedDictEntry,
     TypedDictValue,
     TypedValue,
@@ -244,6 +248,24 @@ def _make_module(code_str: str) -> types.ModuleType:
     return make_module(code_str, extra_scope)
 
 
+def _make_checked_visitor(
+    code_str: str,
+) -> tuple[ConfiguredNameCheckVisitor, ast.Module]:
+    code_str = textwrap.dedent(code_str)
+    tree = ast.parse(code_str)
+    module = _make_module(code_str)
+    settings = {code: code not in DISABLED_IN_TESTS for code in ErrorCode}
+    kwargs = ConfiguredNameCheckVisitor.prepare_constructor_kwargs(
+        {"settings": settings}
+    )
+    visitor = ConfiguredNameCheckVisitor(
+        module.__name__, code_str, tree, module=module, verbosity=0, **kwargs
+    )
+    assert visitor.check_for_test() == []
+    assert visitor.perform_final_checks(kwargs) == []
+    return visitor, tree
+
+
 # ===================================================
 # Tests for specific functionality.
 # ===================================================
@@ -256,6 +278,126 @@ def test_annotation():
         "<test input>", "int()", tree, module=ast, annotate=True, checker=checker
     ).check()
     assert TypedValue(int) == tree.inferred_value
+
+
+@skip_before((3, 12))
+def test_pep695_function_type_params_get_function_owner() -> None:
+    visitor, tree = _make_checked_visitor("""
+        def f[T](x: T) -> T:
+            return x
+        """)
+    function_node = next(
+        stmt
+        for stmt in tree.body
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+    )
+    runtime_function = visitor.module.f
+    with visitor.compute_function_info(
+        function_node, potential_function=runtime_function
+    ) as info:
+        assert len(info.type_params) == 1
+        owner = info.type_params[0].owner
+        assert isinstance(owner, FunctionOwner)
+        assert owner.identity is runtime_function
+        assert str(owner).endswith(".f")
+
+
+def test_legacy_function_type_params_get_function_owner() -> None:
+    visitor, tree = _make_checked_visitor("""
+        from typing import TypeVar
+
+        T = TypeVar("T")
+
+        def f(x: T) -> T:
+            return x
+        """)
+    function_node = next(
+        stmt
+        for stmt in tree.body
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+    )
+    runtime_function = visitor.module.f
+    with visitor.compute_function_info(
+        function_node, potential_function=runtime_function
+    ) as info:
+        assert len(info.type_params) == 1
+        owner = info.type_params[0].owner
+        assert isinstance(owner, FunctionOwner)
+        assert owner.identity is runtime_function
+        assert str(owner).endswith(".f")
+        x_param = next(param for param in info.params if param.param.name == "x")
+        assert isinstance(x_param.param.annotation, TypeVarValue)
+        assert x_param.param.annotation.typevar_param.owner == owner
+
+
+@skip_before((3, 12))
+def test_pep695_class_type_params_get_class_owner() -> None:
+    visitor, _ = _make_checked_visitor("""
+        class Box[T]:
+            pass
+        """)
+    (type_param,) = visitor.checker.make_type_object(
+        visitor.module.Box
+    ).get_declared_type_params()
+    assert type_param.owner is visitor.module.Box
+
+
+def test_legacy_type_alias_type_params_get_alias_owner() -> None:
+    visitor, tree = _make_checked_visitor("""
+        from typing import TypeVar
+
+        T = TypeVar("T")
+        Alias = list[T]
+        """)
+    alias_node = next(
+        stmt
+        for stmt in tree.body
+        if isinstance(stmt, ast.Assign)
+        and len(stmt.targets) == 1
+        and isinstance(stmt.targets[0], ast.Name)
+        and stmt.targets[0].id == "Alias"
+    )
+    alias_value = visitor.scopes.module_scope().get_declared_type("Alias")
+    assert isinstance(alias_value, TypeAliasValue)
+    (type_param,) = alias_value.alias.get_type_params()
+    assert isinstance(type_param.owner, AliasOwner)
+    assert str(type_param.owner).endswith(".Alias")
+
+
+def test_direct_type_parameter_constructors_stay_deferred_until_bound() -> None:
+    visitor, tree = _make_checked_visitor("""
+        from typing_extensions import ParamSpec, TypeVar, TypeVarTuple
+
+        T = TypeVar("T")
+        P = ParamSpec("P")
+        Ts = TypeVarTuple("Ts")
+        """)
+    for name in ("T", "P", "Ts"):
+        node = ast.Name(name, ast.Load())
+        value, _ = visitor.resolve_name(node)
+        assert isinstance(value, PartialCallValue)
+
+
+def test_legacy_class_type_param_defaults_rebind_nested_owners() -> None:
+    visitor, _ = _make_checked_visitor("""
+        from typing import Generic
+        from typing_extensions import TypeVar
+
+        T = TypeVar("T")
+        U = TypeVar("U", default=list[T])
+
+        class Box(Generic[T, U]):
+            pass
+        """)
+    t_param, u_param = visitor.checker.make_type_object(
+        visitor.module.Box
+    ).get_declared_type_params()
+    assert t_param.owner is visitor.module.Box
+    assert u_param.owner is visitor.module.Box
+    assert isinstance(u_param.default, GenericValue)
+    (default_arg,) = u_param.default.args
+    assert isinstance(default_arg, TypeVarValue)
+    assert default_arg.typevar_param.owner is visitor.module.Box
 
 
 class TestImportFailureHandling(TestNameCheckVisitorBase):
