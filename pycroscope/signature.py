@@ -122,7 +122,6 @@ from .value import (
     intersect_bounds_maps,
     iter_type_params_in_value,
     make_inference_typevar_map,
-    receiver_to_self_type,
     replace_fallback,
     replace_known_sequence_value,
     stringify_object,
@@ -3032,6 +3031,18 @@ def keep_inferable_typevars_from_params(
         inferable_typevars=inferable_from_params,
         use_default_inferable_typevars=False,
     )
+
+
+# TODO: This probably shouldn't exist, but removing it still breaks a few tests.
+def receiver_to_self_type(self_value: Value) -> Value:
+    if isinstance(self_value, KnownValue):
+        replaced = replace_known_sequence_value(self_value)
+        if not isinstance(replaced, KnownValue):
+            return replaced
+        return TypedValue(
+            replaced.val if isinstance(replaced.val, type) else type(replaced.val)
+        )
+    return self_value
 
 
 @dataclass(frozen=True)

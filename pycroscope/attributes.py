@@ -1344,7 +1344,11 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
         # Runtime class-object lookup still produces values with unspecialized
         # Self for importable classes. TypeObject.get_attribute() handles many
         # Self-sensitive cases above, but not all runtime MRO fallbacks.
-        result = set_self(result, ctx.get_self_value(), provider)
+        if safe_isinstance(obj, type):
+            self_value = TypedValue(obj)
+        else:
+            self_value = ctx.get_self_value()
+        result = set_self(result, self_value, provider)
     if isinstance(obj, (types.ModuleType, type)):
         ctx.record_usage(obj, result)
     else:
