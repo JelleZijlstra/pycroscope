@@ -756,7 +756,11 @@ class _AttrContext(CheckerAttrContext):
         self, *, on_class: bool, receiver: Value
     ) -> AttributePolicy:
         return AttributePolicy(
-            on_class=on_class, receiver=receiver, visitor=self.visitor, node=self.node
+            on_class=on_class,
+            receiver=receiver,
+            visitor=self.visitor,
+            node=self.node,
+            receiver_composite=self.root_composite,
         )
 
     def should_ignore_none_attributes(self) -> bool:

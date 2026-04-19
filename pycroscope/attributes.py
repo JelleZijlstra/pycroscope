@@ -25,7 +25,6 @@ from .annotations import (
     RuntimeAnnotationsContext,
     annotation_expr_from_annotations,
     type_from_runtime,
-    type_from_value,
 )
 from .input_sig import coerce_paramspec_specialization_to_input_sig
 from .options import Options, PyObjectSequenceOption
@@ -41,12 +40,7 @@ from .safe import (
 )
 from .signature import MaybeSignature
 from .stacked_scopes import Composite
-from .type_object import (
-    AttributePolicy,
-    TypeObject,
-    TypeObjectAttribute,
-    _class_key_from_value,
-)
+from .type_object import AttributePolicy, TypeObject, TypeObjectAttribute
 from .value import (
     NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
@@ -97,6 +91,7 @@ from .value import (
     gradualize,
     replace_fallback,
     set_self,
+    stringify_object,
     unite_values,
 )
 
@@ -182,7 +177,9 @@ class AttrContext:
     def get_type_object_attribute_policy(
         self, *, on_class: bool, receiver: Value
     ) -> AttributePolicy:
-        return AttributePolicy(on_class=on_class, receiver=receiver)
+        return AttributePolicy(
+            on_class=on_class, receiver=receiver, receiver_composite=self.root_composite
+        )
 
 
 def _get_type_object_attribute(
@@ -226,6 +223,23 @@ def _get_attribute_from_value(
     match root_value:
         case AnyValue():
             return AnyValue(AnySource.from_another), None
+        case UnboundMethodValue():
+            return _get_attribute_from_unbound(root_value, ctx)
+        case SubclassValue(typ=inner_typ):
+            match inner_typ:
+                case TypedValue():
+                    return _get_attribute_from_subclass(
+                        inner_typ.typ, ctx.root_value, ctx
+                    )
+                case TypeVarValue():
+                    fallback_type = gradualize(
+                        inner_typ.get_fallback_value().get_type_value(
+                            ctx.get_can_assign_context()
+                        )
+                    )
+                    return _get_attribute_from_value(fallback_type, ctx)
+                case _:
+                    assert_never(inner_typ)
         case SyntheticModuleValue(module_path=module_path):
             module = ".".join(module_path)
             attribute_value = ctx.resolve_name_from_typeshed(module, ctx.attr)
@@ -325,13 +339,7 @@ def _get_attribute_from_value(
             return _get_attribute_from_value(TypedValue(object), ctx)
 
         # TODO
-        case (
-            KnownValue()
-            | SyntheticClassObjectValue()
-            | TypedValue()
-            | SubclassValue()
-            | UnboundMethodValue()
-        ):
+        case KnownValue() | SyntheticClassObjectValue() | TypedValue():
             return _get_attribute(root_value, ctx), None
         case _:
             assert_never(root_value)
@@ -366,74 +374,10 @@ def _get_attribute_from_generic_alias(
 
 
 # TODO: Remove this and replace with the switch in _get_attribute_from_value.
-def _get_attribute(lookup_root_value: Value, ctx: AttrContext) -> Value:
-    if (
-        isinstance(ctx.root_value, PartialValue)
-        and ctx.root_value.operation is PartialValueOperation.PEP_695_ALIAS
-    ):
-        assert isinstance(ctx.root_value.root, TypeAliasValue)
-        attribute_value = _get_attribute_from_type_alias(ctx.root_value.root, ctx)
-        if attribute_value is not UNINITIALIZED_VALUE:
-            return attribute_value
-        if ctx.lookup_root_value is None:
-            lookup_root_value = ctx.root_value.runtime_value
-    if (
-        isinstance(lookup_root_value, TypeVarValue)
-        and lookup_root_value.typevar_param.bound is not None
-    ):
-        class_key = _class_key_from_value(lookup_root_value.typevar_param.bound)
-        if class_key is not None:
-            can_assign_ctx = ctx.get_can_assign_context()
-            type_object = can_assign_ctx.make_type_object(class_key)
-            attribute = _get_type_object_attribute(
-                type_object,
-                ctx.attr,
-                ctx,
-                on_class=False,
-                receiver_value=lookup_root_value,
-            )
-            if attribute is not None and (
-                attribute.symbol.is_classmethod
-                or _contains_self_typevar(attribute.value)
-            ):
-                return attribute.value
-    if (
-        isinstance(ctx.root_value, SubclassValue)
-        and isinstance(ctx.root_value.typ, TypeVarValue)
-        and ctx.root_value.typ.typevar_param.bound is not None
-    ):
-        class_key = _class_key_from_value(ctx.root_value.typ.typevar_param.bound)
-        if class_key is not None:
-            tobj = ctx.get_can_assign_context().make_type_object(class_key)
-            attr = tobj.get_attribute(
-                ctx.attr,
-                ctx.get_type_object_attribute_policy(
-                    on_class=True, receiver=ctx.root_value.typ
-                ),
-            )
-            if attr is not None:
-                return attr.value
-
-    original_lookup_root_value = lookup_root_value
-    lookup_root_value = _maybe_specialize_class_partial_root(lookup_root_value, ctx)
-    if lookup_root_value != original_lookup_root_value:
-        ctx = replace(ctx, lookup_root_value=lookup_root_value)
-    super_value = _extract_super_value(lookup_root_value)
-    if super_value is not None:
-        attribute_value, _ = _get_attribute_from_super_value(super_value, ctx)
-        if (
-            (
-                isinstance(attribute_value, AnyValue)
-                or attribute_value is UNINITIALIZED_VALUE
-            )
-            and isinstance(ctx.root_value, PredicateValue)
-            and isinstance(ctx.root_value.predicate, HasAttr)
-            and ctx.root_value.predicate.attr == ctx.attr
-        ):
-            return ctx.root_value.predicate.value
-        return attribute_value
-    root_value = replace_fallback(lookup_root_value)
-    attribute_value: Value = UNINITIALIZED_VALUE
+def _get_attribute(
+    root_value: TypeVarValue | KnownValue | TypedValue | SyntheticClassObjectValue,
+    ctx: AttrContext,
+) -> Value:
     if isinstance(root_value, KnownValue):
         if is_typing_name(type(root_value.val), "TypeAliasType"):
             attribute_value = _get_attribute_from_runtime_type_alias(
@@ -463,124 +407,18 @@ def _get_attribute(lookup_root_value: Value, ctx: AttrContext) -> Value:
             attribute_value = _get_attribute_from_synthetic_typed_value(root_value, ctx)
         else:
             attribute_value = _get_attribute_from_typed(root_value.typ, args, ctx)
-    elif isinstance(root_value, SubclassValue):
-        synthetic_name: ClassKey | None = None
-        if isinstance(root_value.typ, TypedValue):
-            if isinstance(root_value.typ.typ, ClassOwner):
-                synthetic_name = root_value.typ.typ
-            else:
-                attribute_value = _get_attribute_from_subclass(
-                    root_value.typ.typ, root_value, ctx
-                )
-        elif isinstance(root_value.typ, TypeVarValue):
-            if root_value.typ.typevar_param.bound is not None:
-                bound = replace_fallback(root_value.typ.typevar_param.bound)
-                if isinstance(bound, TypedValue) and isinstance(bound.typ, ClassOwner):
-                    synthetic_name = bound.typ
-        else:
-            assert_never(root_value.typ)
-        if synthetic_name is not None:
-            can_assign_ctx = ctx.get_can_assign_context()
-            tobj = can_assign_ctx.make_type_object(synthetic_name)
-            attribute = _get_type_object_attribute(
-                tobj, ctx.attr, ctx, on_class=True, receiver_value=root_value.typ
-            )
-            if attribute is None:
-                return UNINITIALIZED_VALUE
-            return attribute.value
-    elif isinstance(root_value, UnboundMethodValue):
-        attribute_value = _get_attribute_from_unbound(root_value, ctx)
-    elif isinstance(root_value, AnyValue):
+    elif isinstance(root_value, TypeVarValue):
         attribute_value = AnyValue(AnySource.from_another)
-    elif isinstance(root_value, MultiValuedValue):
-        raise TypeError("caller should unwrap MultiValuedValue")
-    elif isinstance(root_value, IntersectionValue):
-        raise TypeError("caller should unwrap IntersectionValue")
-    elif isinstance(root_value, SyntheticModuleValue):
-        module = ".".join(root_value.module_path)
-        attribute_value = ctx.resolve_name_from_typeshed(module, ctx.attr)
-    elif isinstance(root_value, TypeFormValue):
-        attribute_value = _get_attribute_from_typed(object, (), ctx)
-    elif isinstance(root_value, PredicateValue):
-        if isinstance(root_value.predicate, HasAttr):
-            if root_value.predicate.attr == ctx.attr:
-                attribute_value = root_value.predicate.value
-            else:
-                attribute_value = UNINITIALIZED_VALUE
-        else:
-            attribute_value = _get_attribute_from_typed(object, (), ctx)
     elif isinstance(root_value, SyntheticClassObjectValue):
         if isinstance(root_value.class_type, TypedDictValue):
-            attribute_value = _get_attribute_from_subclass(dict, root_value, ctx)
+            attribute_value, _ = _get_attribute_from_subclass(dict, root_value, ctx)
         else:
             attribute_value = _get_attribute_from_synthetic_class(
                 root_value.class_type.typ, ctx.root_composite.value, ctx
             )
     else:
         assert_never(root_value)
-    if (
-        (
-            isinstance(attribute_value, AnyValue)
-            or attribute_value is UNINITIALIZED_VALUE
-        )
-        and isinstance(ctx.root_value, PredicateValue)
-        and isinstance(ctx.root_value.predicate, HasAttr)
-        and ctx.root_value.predicate.attr == ctx.attr
-    ):
-        return ctx.root_value.predicate.value
     return attribute_value
-
-
-def _maybe_specialize_class_partial_root(root_value: Value, ctx: AttrContext) -> Value:
-    if not (
-        isinstance(root_value, PartialValue)
-        and root_value.operation is PartialValueOperation.SUBSCRIPT
-    ):
-        return root_value
-    root = replace_fallback(root_value.root)
-    can_assign_ctx = ctx.get_can_assign_context()
-    class_key: ClassKey | None = None
-    if isinstance(root, SyntheticClassObjectValue) and isinstance(
-        root.class_type, TypedValue
-    ):
-        class_key = root.class_type.typ
-    elif isinstance(root, KnownValue) and isinstance(root.val, type):
-        class_key = root.val
-    if class_key is None:
-        return root_value
-    specialized_args = tuple(
-        _specialized_class_partial_member_to_type(member, can_assign_ctx)
-        for member in root_value.members
-    )
-    if isinstance(root, SyntheticClassObjectValue) and isinstance(
-        root.class_type, TypedValue
-    ):
-        return SyntheticClassObjectValue(
-            root.name, GenericValue(root.class_type.typ, specialized_args)
-        )
-    assert isinstance(root, KnownValue) and isinstance(root.val, type)
-    synthetic_class = ctx.get_synthetic_class(root.val)
-    if synthetic_class is not None and isinstance(
-        synthetic_class.class_type, TypedValue
-    ):
-        return SyntheticClassObjectValue(
-            synthetic_class.name,
-            GenericValue(synthetic_class.class_type.typ, specialized_args),
-        )
-    generic_bases = ctx.get_generic_bases(root.val, specialized_args)
-    typevars = generic_bases.get(root.val)
-    if typevars is None:
-        return root_value
-    return KnownValueWithTypeVars(root.val, typevars)
-
-
-def _specialized_class_partial_member_to_type(
-    member: Value, ctx: CanAssignContext
-) -> Value:
-    converted = type_from_value(member, visitor=ctx, suppress_errors=True)
-    if converted != AnyValue(AnySource.error):
-        return converted
-    return member
 
 
 def _get_namedtuple_member_from_sequence_value(
@@ -601,14 +439,6 @@ def _get_namedtuple_member_from_sequence_value(
         # TypeObject returns the declared field type; this path preserves the
         # exact value stored in a synthetic namedtuple SequenceValue.
         return member
-    return None
-
-
-def _extract_super_value(value: Value) -> SuperValue | None:
-    if isinstance(value, SuperValue):
-        return value
-    if isinstance(value, AnnotatedValue):
-        return _extract_super_value(value.value)
     return None
 
 
@@ -662,22 +492,6 @@ def _get_attribute_from_super_value(
     return attr.value, attr.error
 
 
-def _get_attribute_from_type_alias(value: TypeAliasValue, ctx: AttrContext) -> Value:
-    type_params = tuple(
-        param.typevar_param.typevar if isinstance(param, TypeVarValue) else param
-        for param in value.alias.get_type_params()
-    )
-    if ctx.attr == "__value__":
-        return value.get_value()
-    if ctx.attr == "__type_params__":
-        return KnownValue(type_params)
-    if ctx.attr == "__name__":
-        return KnownValue(value.name)
-    if ctx.attr == "__module__":
-        return KnownValue(value.module)
-    return UNINITIALIZED_VALUE
-
-
 def _get_attribute_from_runtime_type_alias(
     value: RuntimeTypeAliasType, ctx: AttrContext
 ) -> Value:
@@ -700,28 +514,33 @@ def may_have_dynamic_attributes(typ: type) -> bool:
 
 
 def _get_attribute_from_subclass(
-    typ: type, self_value: Value, ctx: AttrContext
-) -> Value:
+    typ: ClassKey, self_value: Value, ctx: AttrContext
+) -> tuple[Value, CanAssignError | None]:
     ctx.record_attr_read(typ)
 
+    can_assign_ctx = ctx.get_can_assign_context()
+    tobj = can_assign_ctx.make_type_object(typ)
     # TypeObject.get_attribute() is still less precise for these type[T]
     # metadata attributes.
     if ctx.attr == "__class__":
-        return KnownValue(type(typ))
+        match tobj.get_metaclass():
+            case TypedValue() as metaclass:
+                return SubclassValue(metaclass), None
+            case AnyValue():
+                return SubclassValue(TypedValue(type)), None
+            case metaclass:
+                assert_never(metaclass)
     if ctx.attr == "__bases__":
-        return GenericValue(tuple, [SubclassValue(TypedValue(object))])
-    can_assign_ctx = ctx.get_can_assign_context()
+        return GenericValue(tuple, [SubclassValue(TypedValue(object))]), None
     attribute = _get_type_object_attribute(
-        can_assign_ctx.make_type_object(typ),
-        ctx.attr,
-        ctx,
-        on_class=True,
-        receiver_value=self_value,
+        tobj, ctx.attr, ctx, on_class=True, receiver_value=self_value
     )
     if attribute is None:
-        return UNINITIALIZED_VALUE
+        return UNINITIALIZED_VALUE, CanAssignError(
+            f"Class {stringify_object(typ)} has no attribute '{ctx.attr}'"
+        )
     ctx.record_usage(typ, attribute.value)
-    return attribute.value
+    return attribute.value, attribute.error
 
 
 _TCAA = Callable[[object], bool]
@@ -898,12 +717,6 @@ def _maybe_use_resolved_typed_instance_attribute(
     ctx: AttrContext,
 ) -> Value | None:
     symbol = attribute.symbol
-    if symbol.is_method and not symbol.is_classmethod:
-        # TypeObject may return a symbolic callable here, but callers of
-        # attributes.py still rely on UnboundMethodValue for receiver binding.
-        legacy_method_value = _unwrap_value_from_typed(attribute.raw_value, typ, ctx)
-        if isinstance(legacy_method_value, UnboundMethodValue):
-            return legacy_method_value
     if attribute.is_property:
         if ctx.attr in {"name", "value", "_value_"} and safe_issubclass(typ, Enum):
             return None
@@ -1037,17 +850,13 @@ def _get_attribute_from_typed(
         on_class=False,
         receiver_value=ctx.root_composite.value,
     )
-    # Adding "if attribute is None: return UNINITIALIZED_VALUE" here breaks two tests:
-    # pycroscope/test_attributes.py::TestAttributes::test_attrs
-    # (missing attrs support in type_object.py?)
-    # TestImportFailureHandling::test_explicit_type_alias_uses_runtime_attribute_semantics
-    # (some weirdness about how we represent type aliases?)
-    if attribute is not None:
-        resolved_instance = _maybe_use_resolved_typed_instance_attribute(
-            attribute, resolved_value=attribute.value, typ=typ, ctx=ctx
-        )
-        if resolved_instance is not None:
-            return resolved_instance
+    if attribute is None:
+        return UNINITIALIZED_VALUE
+    resolved_instance = _maybe_use_resolved_typed_instance_attribute(
+        attribute, resolved_value=attribute.value, typ=typ, ctx=ctx
+    )
+    if resolved_instance is not None:
+        return resolved_instance
     result, provider, should_unwrap = _get_attribute_from_mro(typ, ctx, on_class=False)
     result = _substitute_typevars(typ, generic_args, result, provider, ctx)
     if should_unwrap:
@@ -1344,7 +1153,11 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
         # Runtime class-object lookup still produces values with unspecialized
         # Self for importable classes. TypeObject.get_attribute() handles many
         # Self-sensitive cases above, but not all runtime MRO fallbacks.
-        result = set_self(result, ctx.get_self_value(), provider)
+        if safe_isinstance(obj, type):
+            self_value = TypedValue(obj)
+        else:
+            self_value = ctx.get_self_value()
+        result = set_self(result, self_value, provider)
     if isinstance(obj, (types.ModuleType, type)):
         ctx.record_usage(obj, result)
     else:
@@ -1354,16 +1167,18 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
 
 def _get_attribute_from_unbound(
     root_value: UnboundMethodValue, ctx: AttrContext
-) -> Value:
+) -> tuple[Value, CanAssignError | None]:
     if root_value.secondary_attr_name is not None:
-        return AnyValue(AnySource.inference)
+        return AnyValue(AnySource.inference), None
     method = root_value.get_method()
     if method is None:
-        return AnyValue(AnySource.inference)
+        return AnyValue(AnySource.inference), None
     try:
         getattr(method, ctx.attr)
     except AttributeError:
-        return UNINITIALIZED_VALUE
+        return UNINITIALIZED_VALUE, CanAssignError(
+            f"{method} has no attribute '{ctx.attr}'"
+        )
     result = UnboundMethodValue(
         root_value.attr_name,
         root_value.composite,
@@ -1371,7 +1186,7 @@ def _get_attribute_from_unbound(
         owner=root_value.owner,
     )
     ctx.record_usage(type(method), result)
-    return result
+    return result, None
 
 
 def _get_triple_from_annotations(

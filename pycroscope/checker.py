@@ -110,7 +110,6 @@ from .value import (
     replace_fallback,
     type_param_to_value,
     typevartuple_value_to_members,
-    unite_values,
 )
 
 _SyntheticGenericBases = dict[ClassKey, TypeVarMap]
@@ -2777,26 +2776,11 @@ class Checker:
     def get_attribute_from_value(
         self, root_value: Value, attribute: str, *, prefer_typeshed: bool = False
     ) -> Value:
-        lookup_root_value: Value | None = None
-        if isinstance(root_value, TypeVarValue):
-            lookup_root_value = root_value.get_fallback_value()
-        elif isinstance(root_value, SubclassValue) and isinstance(
-            root_value.typ, TypeVarValue
-        ):
-            lookup_root_value = SubclassValue.make(root_value.typ.get_fallback_value())
-        if is_union(root_value):
-            results = [
-                self.get_attribute_from_value(
-                    subval, attribute, prefer_typeshed=prefer_typeshed
-                )
-                for subval in flatten_values(root_value)
-            ]
-            return unite_values(*results)
         ctx = CheckerAttrContext(
             Composite(root_value),
-            lookup_root_value,
-            attribute,
-            self.options,
+            lookup_root_value=None,
+            attr=attribute,
+            options=self.options,
             prefer_typeshed=prefer_typeshed,
             checker=self,
         )
