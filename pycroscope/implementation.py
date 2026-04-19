@@ -2251,50 +2251,9 @@ def _assert_type_impl(ctx: CallContext) -> Value:
 def _subclasses_impl(ctx: CallContext) -> Value:
     """Overridden because typeshed types make it (T) => List[T] instead."""
     self_obj = ctx.vars["self"]
-    self_composite = ctx.composite_for_arg("self")
-    if self_composite is not None:
-        self_obj = self_composite.value
     if isinstance(self_obj, KnownValue) and isinstance(self_obj.val, type):
         return KnownValue(self_obj.val.__subclasses__())
-    class_key = _exact_class_key_from_value(self_obj)
-    if class_key is not None:
-        subclasses = _synthetic_direct_subclasses(class_key, ctx)
-        if subclasses is not None:
-            return SequenceValue(list, [(False, subclass) for subclass in subclasses])
     return GenericValue(list, [TypedValue(type)])
-
-
-def _exact_class_key_from_value(value: Value) -> ClassKey | None:
-    value = replace_fallback(value)
-    if isinstance(value, KnownValue) and isinstance(value.val, type):
-        return value.val
-    if isinstance(value, SyntheticClassObjectValue):
-        if value.class_key is not None:
-            return value.class_key
-        if isinstance(value.class_type, TypedValue):
-            return value.class_type.typ
-    return None
-
-
-def _synthetic_direct_subclasses(
-    class_key: ClassKey, ctx: CallContext
-) -> tuple[Value, ...] | None:
-    synthetic_classes = ctx.visitor.checker.synthetic_classes
-    subclasses: list[Value] = []
-    for candidate_key, synthetic_class in synthetic_classes.items():
-        if candidate_key == class_key:
-            continue
-        direct_bases = ctx.visitor.checker.make_type_object(
-            candidate_key
-        ).get_direct_bases()
-        if any(
-            isinstance(base, TypedValue) and base.typ == class_key
-            for base in direct_bases
-        ):
-            subclasses.append(synthetic_class)
-    if not subclasses:
-        return None
-    return tuple(subclasses)
 
 
 def _type_impl(ctx: CallContext) -> Value:

@@ -2097,8 +2097,22 @@ def _paramspec_value_from_concatenate_members(
 def _callable_params_from_normalized_args(
     normalized_args: Sequence[tuple[bool, Value]],
 ) -> list[SigParameter]:
+    def normalize_many_annotation(annotation: Value) -> Value:
+        if (
+            isinstance(annotation, TypeVarTupleBindingValue)
+            and len(annotation.binding) == 1
+            and annotation.binding[0][0]
+            and isinstance(annotation.binding[0][1], TypeVarTupleValue)
+        ):
+            return annotation.binding[0][1]
+        return annotation
+
     if any(is_many for is_many, _ in normalized_args) and all(
-        isinstance(annotation, TypeVarTupleValue) if is_many else True
+        (
+            isinstance(normalize_many_annotation(annotation), TypeVarTupleValue)
+            if is_many
+            else True
+        )
         for is_many, annotation in normalized_args
     ):
         return [
@@ -2106,10 +2120,10 @@ def _callable_params_from_normalized_args(
                 f"@{i}",
                 kind=(
                     ParameterKind.PARAM_SPEC
-                    if isinstance(annotation, InputSigValue)
+                    if isinstance(normalize_many_annotation(annotation), InputSigValue)
                     else ParameterKind.POSITIONAL_ONLY
                 ),
-                annotation=annotation,
+                annotation=normalize_many_annotation(annotation),
             )
             for i, (_is_many, annotation) in enumerate(normalized_args)
         ]
@@ -2312,6 +2326,9 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
         return value.get_fallback_value()
     elif isinstance(value, PartialCallValue):
         type_param = make_type_param_from_value(value, ctx=ctx)
+        if type_param is None:
+            ctx.show_error(f"Unrecognized annotation {value}")
+            return AnyValue(AnySource.error)
         if isinstance(type_param, TypeVarParam):
             return TypeVarValue(type_param)
         if isinstance(type_param, TypeVarTupleParam):

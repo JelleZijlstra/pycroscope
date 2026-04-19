@@ -567,6 +567,39 @@ if asynq is not None:
     SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL.append(KnownValue(asynq.asynq))
 
 
+def _callable_from_signature(sig: MaybeSignature) -> object | None:
+    if isinstance(sig, Signature):
+        if isinstance(sig.callable, types.FunctionType) and sig.callable.__name__ in {
+            "__init__",
+            "__new__",
+            "__get__",
+            "__set__",
+            "__delete__",
+            "__call__",
+        }:
+            return None
+        return sig.callable
+    if isinstance(sig, BoundMethodSignature):
+        return _callable_from_signature(sig.signature)
+    if isinstance(sig, OverloadedSignature):
+        callables = {
+            subsig.callable for subsig in sig.signatures if subsig.callable is not None
+        }
+        if len(callables) == 1:
+            return next(iter(callables))
+    return None
+
+
+def _has_bound_receiver(sig: MaybeSignature) -> bool:
+    if isinstance(sig, Signature):
+        return sig.bound_receiver_param_name is not None
+    if isinstance(sig, BoundMethodSignature):
+        return True
+    if isinstance(sig, OverloadedSignature):
+        return all(_has_bound_receiver(subsig) for subsig in sig.signatures)
+    return False
+
+
 class _AsyncGeneratorDetector(ast.NodeVisitor):
     """Detect whether an async function body contains a yield."""
 
@@ -1786,6 +1819,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     """Path (relative to this class's file) to a pyproject.toml config file."""
 
     _argspec_to_retval: dict[int, tuple[Value, MaybeSignature]]
+    _callable_to_retval: dict[int, tuple[Value, object]]
     _pending_overload_blocks: dict[int, _PendingOverloadBlock]
     _function_decorator_kinds_by_node: dict[
         ast.FunctionDef | ast.AsyncFunctionDef, frozenset[FunctionDecorator]
@@ -1958,6 +1992,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # infer types. Previously, we cached this globally, but that makes things non-
         # deterministic because we'll start depending on the order modules are checked.
         self._argspec_to_retval = {}
+        self._callable_to_retval = {}
         self._pending_overload_blocks = {}
         self._function_decorator_kinds_by_node = {}
         self._function_returns_self_by_node = {}
@@ -1973,7 +2008,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def get_local_return_value(self, sig: MaybeSignature) -> Value | None:
         val, saved_sig = self._argspec_to_retval.get(id(sig), (None, None))
         if sig is not saved_sig:
-            return None
+            callable_obj = _callable_from_signature(sig)
+            if callable_obj is None:
+                return None
+            val, saved_callable = self._callable_to_retval.get(
+                id(callable_obj), (None, None)
+            )
+            if callable_obj is not saved_callable:
+                return None
         return val
 
     @property
@@ -2176,6 +2218,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # This is intentionally unsafe.
         self.tree = None  # static analysis: ignore[incompatible_assignment]
         self._argspec_to_retval.clear()
+        self._callable_to_retval.clear()
         end_time = time.time()
         message = f"{self.filename} took {end_time - start_time:.2f} s"
         self.logger.log(logging.INFO, message)
@@ -4364,10 +4407,28 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return all(
                 self._is_typeddict_generic_base(subval) for subval in base_value.vals
             )
+        if (
+            isinstance(base_value, PartialValue)
+            and base_value.operation is PartialValueOperation.SUBSCRIPT
+        ):
+            return self._is_typeddict_generic_base_root(base_value.root)
+        if isinstance(base_value, TypeAliasValue):
+            return self._is_typeddict_generic_base(base_value.get_value())
+        if isinstance(base_value, GenericValue):
+            return is_typing_name(base_value.typ, "Generic") and bool(base_value.args)
         if isinstance(base_value, KnownValue):
             origin = safe_getattr(base_value.val, "__origin__", None)
             return origin is not None and is_typing_name(origin, "Generic")
         return False
+
+    def _is_typeddict_generic_base_root(self, base_value: Value) -> bool:
+        if isinstance(base_value, TypeAliasValue):
+            return self._is_typeddict_generic_base_root(base_value.get_value())
+        if isinstance(base_value, GenericValue):
+            return is_typing_name(base_value.typ, "Generic")
+        return isinstance(base_value, KnownValue) and is_typing_name(
+            base_value.val, "Generic"
+        )
 
     def _is_namedtuple_generic_base(self, base_value: Value) -> bool:
         if isinstance(base_value, MultiValuedValue):
@@ -8351,6 +8412,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _set_argspec_to_retval(
         self, val: Value, info: FunctionInfo, result: FunctionResult
     ) -> None:
+        def is_safe_decorator(decorator: Value) -> bool:
+            if decorator in SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL:
+                return True
+            return isinstance(decorator, KnownValue) and AsynqDecorators.contains(
+                decorator.val, self.options
+            )
+
         if isinstance(info.node, ast.Lambda) or info.node.returns is not None:
             return
         if info.async_kind == AsyncFunctionKind.async_proxy:
@@ -8362,7 +8430,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if len(info.decorators) != 1:
                 return  # With decorators we don't know what it will return
             unapplied_decorator, _, _ = next(iter(info.decorators))
-            if unapplied_decorator not in SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL:
+            if not is_safe_decorator(unapplied_decorator):
                 return  # With decorators we don't know what it will return
         return_value = result.return_value
 
@@ -8390,6 +8458,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if sig is None or sig.has_return_value():
             return
         self._argspec_to_retval[id(sig)] = (return_value, sig)
+        callable_obj = _callable_from_signature(sig)
+        if callable_obj is not None:
+            self._callable_to_retval[id(callable_obj)] = (return_value, callable_obj)
 
     def _get_potential_function(self, node: FunctionDefNode) -> object | None:
         scope_type = self.scopes.scope_type()
@@ -8520,6 +8591,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             scope = self.scopes.current_scope()
             assert isinstance(scope, FunctionScope)
 
+            def value_for_param_scope(param: SigParameter) -> Value:
+                if param.kind is not ParameterKind.VAR_POSITIONAL:
+                    return param.annotation
+                annotation = param.annotation
+                if isinstance(annotation, TypeVarTupleBindingValue):
+                    return SequenceValue(tuple, list(annotation.binding))
+                if isinstance(annotation, TypeVarTupleValue):
+                    return SequenceValue(tuple, [(True, annotation)])
+                return param.annotation
+
             for info in infos:
                 scope.set_declared_type(
                     info.param.name, info.param.annotation, False, info.node
@@ -8534,7 +8615,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                 self.scopes.set(
                     info.param.name,
-                    info.param.annotation,
+                    value_for_param_scope(info.param),
                     info.node,
                     VisitorState.check_names,
                 )
@@ -8972,7 +9053,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                 return True
             return self.check_deprecation(node, value.value)
-        if isinstance(value, InputSigValue):
+        if isinstance(
+            value,
+            (
+                InputSigValue,
+                PartialCallValue,
+                TypeVarTupleBindingValue,
+                TypeVarTupleValue,
+                TypeVarValue,
+                ParamSpecArgsValue,
+                ParamSpecKwargsValue,
+            ),
+        ):
             return False
         value = replace_fallback(value)
         if isinstance(value, UnboundMethodValue):
@@ -11715,6 +11807,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if has_unpack:
             return
 
+    def _implicit_type_form_error(self, node: ast.expr, value: Value) -> str | None:
+        if _contains_unpack_annotation_syntax(node):
+            return f"{value} is not a TypeForm"
+        for subnode in ast.walk(node):
+            if not isinstance(subnode, (ast.Name, ast.Attribute)):
+                continue
+            type_param = _type_param_value_from_value(
+                self.composite_from_node(subnode).value, self
+            )
+            if type_param is not None and type_param.owner is None:
+                return f"{value} is not a TypeForm"
+        return None
+
     def is_in_typeddict_definition(self) -> bool:
         return (
             is_instance_of_typing_name(self.current_class, "_TypedDictMeta")
@@ -12068,10 +12173,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                                 specialized_converter_input_type
                             )
 
-                    if not (is_current_class_dataclass and field_options is not None):
-                        can_assign = has_relation(
-                            expected_type, value, Relation.ASSIGNABLE, self
+                    implicit_type_form_error = None
+                    if isinstance(expected_type, TypeFormValue):
+                        implicit_type_form_error = self._implicit_type_form_error(
+                            node.value, value
                         )
+                    if not (is_current_class_dataclass and field_options is not None):
+                        can_assign: CanAssign | CanAssignError
+                        if implicit_type_form_error is not None:
+                            can_assign = CanAssignError(implicit_type_form_error)
+                        else:
+                            can_assign = has_relation(
+                                expected_type, value, Relation.ASSIGNABLE, self
+                            )
                         if isinstance(can_assign, CanAssignError):
                             self._show_error_if_checking(
                                 node,
@@ -13532,14 +13646,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         else:
                             with self.catch_errors():
                                 getitem = self._get_dunder(
-                                    node.value, stripped_root.value, "__getitem__"
+                                    node.value, stripped_root, "__getitem__"
                                 )
                             if getitem is not UNINITIALIZED_VALUE:
+                                resolved_getitem = replace_fallback(getitem)
+                                if (
+                                    isinstance(resolved_getitem, KnownValue)
+                                    and safe_getattr(
+                                        resolved_getitem.val, "__self__", None
+                                    )
+                                    is not None
+                                ) or isinstance(getitem, UnboundMethodValue):
+                                    call_args = [index_composite]
+                                else:
+                                    call_args = [stripped_root, index_composite]
                                 return_value = self.check_call(
-                                    node.value,
-                                    getitem,
-                                    [stripped_root, index_composite],
-                                    allow_call=True,
+                                    node.value, getitem, call_args, allow_call=True
                                 )
                             else:
                                 # If there was no __getitem__, try __class_getitem__ in 3.7+
@@ -13799,8 +13921,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return None
 
     def _get_dunder(
-        self, node: ast.AST | None, callee_val: Value, method_name: str
+        self, node: ast.AST | None, callee: Composite | Value, method_name: str
     ) -> Value:
+        callee_composite = (
+            callee if isinstance(callee, Composite) else Composite(callee)
+        )
+        callee_val = callee_composite.value
         synthetic_lookup_val = callee_val
         resolved_self_value = callee_val
         if (
@@ -13854,7 +13980,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     return method_object
 
         method_object = self.get_attribute(
-            Composite(fallback_lookup_val),
+            Composite(
+                fallback_lookup_val, callee_composite.varname, callee_composite.node
+            ),
             method_name,
             node,
             ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
@@ -13964,7 +14092,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 stripped_value, callee_composite.varname, callee_composite.node
             )
         )
-        method_object = self._get_dunder(node, stripped_callee.value, method_name)
+        method_object = self._get_dunder(node, stripped_callee, method_name)
         if method_object is UNINITIALIZED_VALUE:
             return AnyValue(AnySource.error), False
         with override(self, "caught_errors", None):
@@ -13972,11 +14100,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         resolved_method = replace_fallback(method_object)
         call_args: list[Composite]
         if (
-            isinstance(resolved_method, KnownValue)
-            and safe_getattr(resolved_method.val, "__self__", None) is not None
-        ) or (
-            isinstance(stripped_callee.value, KnownValueWithTypeVars)
-            and not isinstance(method_object, UnboundMethodValue)
+            (
+                isinstance(resolved_method, KnownValue)
+                and safe_getattr(resolved_method.val, "__self__", None) is not None
+            )
+            or (
+                isinstance(stripped_callee.value, KnownValueWithTypeVars)
+                and not isinstance(method_object, UnboundMethodValue)
+            )
+            or isinstance(method_object, UnboundMethodValue)
+            or (
+                isinstance(method_object, CallableValue)
+                and _has_bound_receiver(method_object.signature)
+            )
         ):
             call_args = list(args)
         else:
@@ -14722,6 +14858,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         """
         resolved_self_value = self_value
+        is_special_lookup = (
+            self_value is not None and attr.startswith("__") and attr.endswith("__")
+        )
         if (
             isinstance(root_composite.value, PartialValue)
             and root_composite.value.operation is PartialValueOperation.SUBSCRIPT
@@ -14757,7 +14896,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             if static_member is not UNINITIALIZED_VALUE:
                 return static_member
-        if self._is_instance_member_accessed_through_class(root_composite, attr, node):
+        if not is_special_lookup and self._is_instance_member_accessed_through_class(
+            root_composite, attr, node
+        ):
             if node is not None:
                 self._show_error_if_checking(
                     node,

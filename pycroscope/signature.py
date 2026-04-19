@@ -721,6 +721,7 @@ class Signature:
                 self.has_return_annotation,
                 self.allow_call,
                 self.allow_partial_call,
+                self.evaluator,
             )
         )
 
@@ -2061,7 +2062,29 @@ class Signature:
                 else:
                     params.append((name, param.substitute_typevars(typevars)))
             else:
-                params.append((name, param.substitute_typevars(typevars)))
+                substituted = param.substitute_typevars(typevars)
+                if (
+                    substituted.name.startswith("@")
+                    and substituted.kind is ParameterKind.POSITIONAL_ONLY
+                    and isinstance(substituted.annotation, TypeVarTupleBindingValue)
+                    and not any(
+                        is_many for is_many, _ in substituted.annotation.binding
+                    )
+                ):
+                    for member in substituted.annotation.binding:
+                        expanded_name = f"@expanded{len(params)}"
+                        params.append(
+                            (
+                                expanded_name,
+                                replace(
+                                    substituted,
+                                    name=expanded_name,
+                                    annotation=member[1],
+                                ),
+                            )
+                        )
+                else:
+                    params.append((name, substituted))
         params_dict = dict(params)
         return_value = self.return_value.substitute_typevars(typevars)
         bound_receiver_composite = (
@@ -3051,12 +3074,7 @@ class BoundMethodSignature:
     return_override: Value | None = None
 
     def check_call(self, args: Iterable[Argument], ctx: CheckCallContext) -> Value:
-        bound_signature = self.get_signature(ctx=ctx.can_assign_ctx, preserve_impl=True)
-        if bound_signature is None:
-            return AnyValue(AnySource.error)
-        if isinstance(bound_signature, Signature) and bound_signature.allow_call:
-            bound_signature = replace(bound_signature, allow_call=False)
-        ret = bound_signature.check_call(list(args), ctx)
+        ret = self.signature.check_call([(self.self_composite, None), *args], ctx)
         if self.return_override is not None and not self.signature.has_return_value():
             if isinstance(ret, AnnotatedValue):
                 return annotate_value(self.return_override, ret.metadata)
@@ -3229,10 +3247,23 @@ def _typevartuple_param_index(params: Sequence[SigParameter]) -> int | None:
     indices = [
         i
         for i, param in enumerate(params)
-        if isinstance(param.annotation, TypeVarTupleValue)
+        if _callable_typevartuple_marker(param.annotation) is not None
     ]
     if len(indices) == 1:
         return indices[0]
+    return None
+
+
+def _callable_typevartuple_marker(annotation: Value) -> TypeVarTupleValue | None:
+    if isinstance(annotation, TypeVarTupleValue):
+        return annotation
+    if (
+        isinstance(annotation, TypeVarTupleBindingValue)
+        and len(annotation.binding) == 1
+        and annotation.binding[0][0]
+        and isinstance(annotation.binding[0][1], TypeVarTupleValue)
+    ):
+        return annotation.binding[0][1]
     return None
 
 
@@ -3445,8 +3476,8 @@ def _try_typevartuple_callable_relation(
             )
         captured_bounds_maps.append(tv_map)
 
-    marker_annotation = marker_param.annotation
-    assert isinstance(marker_annotation, TypeVarTupleValue), marker_annotation
+    marker_annotation = _callable_typevartuple_marker(marker_param.annotation)
+    assert marker_annotation is not None, marker_param.annotation
     captured_members = [
         (False, _widen_typevartuple_inferred_value(param.get_annotation()))
         for param in middle

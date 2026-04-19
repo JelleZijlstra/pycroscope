@@ -263,6 +263,26 @@ def _strip_signature_deprecation(signature: MaybeSignature) -> MaybeSignature:
     )
 
 
+def _apply_return_override(
+    signature: MaybeSignature, return_override: Value | None
+) -> MaybeSignature:
+    if return_override is None:
+        return signature
+
+    def transform(sig: Signature) -> Signature:
+        if sig.has_return_value():
+            return sig
+        return dataclass_replace(sig, return_value=return_override)
+
+    updated = _map_maybe_signature(signature, transform)
+    if (
+        isinstance(updated, BoundMethodSignature)
+        and not updated.signature.has_return_value()
+    ):
+        return dataclass_replace(updated, return_override=return_override)
+    return updated
+
+
 # TODO: Ideally we should set self_param correctly from the beginning instead
 # of patching it in later
 def _set_missing_signature_self_param(
@@ -1236,6 +1256,35 @@ class Checker:
             return GenericValue(typ, _apply_type_parameter_defaults(type_params))
         return TypedValue(typ)
 
+    def _direct_python_constructor_method_lacks_receiver(
+        self, typ: type, method_name: str
+    ) -> bool:
+        method_object = typ.__dict__.get(method_name)
+        if isinstance(method_object, (staticmethod, classmethod)):
+            method_object = method_object.__func__
+        if not isinstance(method_object, types.FunctionType):
+            return False
+        method_sig = self.arg_spec_cache.get_argspec(method_object)
+        concrete = as_concrete_signature(method_sig, self)
+        if concrete is None:
+            return False
+        signatures = (
+            concrete.signatures
+            if isinstance(concrete, OverloadedSignature)
+            else [concrete]
+        )
+        return all(
+            not sig.parameters
+            or next(iter(sig.parameters.values())).kind
+            not in {
+                ParameterKind.ELLIPSIS,
+                ParameterKind.VAR_POSITIONAL,
+                ParameterKind.POSITIONAL_ONLY,
+                ParameterKind.POSITIONAL_OR_KEYWORD,
+            }
+            for sig in signatures
+        )
+
     def _get_runtime_constructor_method_signature(
         self,
         typ: type,
@@ -1370,6 +1419,11 @@ class Checker:
             bound_self_value=instance_type,
             self_annotation_value=instance_type,
         )
+
+        if self._direct_python_constructor_method_lacks_receiver(
+            typ, "__new__"
+        ) or self._direct_python_constructor_method_lacks_receiver(typ, "__init__"):
+            return _make_incompatible_constructor_signature(instance_type)
 
         if has_direct_new and not has_direct_init:
             init_sig = None
@@ -2364,74 +2418,75 @@ class Checker:
                     if value.typevars is not None:
                         primary_sig = primary_sig.substitute_typevars(value.typevars)
                     return primary_sig
-            receiver_for_symbolic: Value | None = None
-            composite_root = replace_fallback(value.composite.value)
-            if isinstance(composite_root, SubclassValue) and isinstance(
-                composite_root.typ, TypedValue
+            composite_root = value.composite.value
+            if (
+                isinstance(composite_root, TypeVarValue)
+                and composite_root.typevar_param.is_self
             ):
-                receiver_for_symbolic = composite_root.typ
-            elif isinstance(composite_root, TypedValue):
-                receiver_for_symbolic = composite_root
-            if receiver_for_symbolic is not None and value.secondary_attr_name is None:
-                static_attr = receiver_for_symbolic.get_type_object(self).get_attribute(
-                    value.attr_name,
-                    AttributePolicy(
-                        receiver=receiver_for_symbolic, prefer_symbolic=True
-                    ),
-                )
-                if static_attr is not None and not isinstance(
-                    static_attr.value, UnboundMethodValue
-                ):
-                    symbolic_sig = self.signature_from_value(static_attr.value)
-                    if symbolic_sig is not None:
-                        if value.typevars is not None:
-                            symbolic_sig = symbolic_sig.substitute_typevars(
-                                value.typevars
+                upper_bound = composite_root.get_upper_bound_value()
+                if isinstance(upper_bound, TypedValue):
+                    static_attr = upper_bound.get_type_object(self).get_attribute(
+                        value.attr_name,
+                        AttributePolicy(receiver=composite_root, prefer_symbolic=True),
+                    )
+                    if static_attr is not None and not isinstance(
+                        static_attr.value, UnboundMethodValue
+                    ):
+                        symbolic_sig = self.signature_from_value(static_attr.value)
+                        if symbolic_sig is not None:
+                            symbolic_sig = _apply_return_override(
+                                symbolic_sig, get_return_override(symbolic_sig)
                             )
-                        if isinstance(symbolic_sig, Signature):
-                            if symbolic_sig.bound_receiver_param_name is not None:
-                                if (
-                                    symbolic_sig.bound_receiver_composite is None
-                                    or symbolic_sig.bound_receiver_composite.varname
-                                    is None
-                                ):
-                                    return dataclass_replace(
-                                        symbolic_sig,
-                                        bound_receiver_composite=value.composite,
-                                    )
-                                return symbolic_sig
-                        elif isinstance(symbolic_sig, OverloadedSignature):
-                            if all(
-                                subsig.bound_receiver_param_name is not None
-                                for subsig in symbolic_sig.signatures
-                            ):
-                                if all(
-                                    subsig.bound_receiver_composite is not None
-                                    and subsig.bound_receiver_composite.varname
-                                    is not None
-                                    for subsig in symbolic_sig.signatures
-                                ):
-                                    return symbolic_sig
-                                return OverloadedSignature(
-                                    [
-                                        dataclass_replace(
-                                            subsig,
+                            if symbolic_sig is not None and value.typevars is not None:
+                                symbolic_sig = symbolic_sig.substitute_typevars(
+                                    value.typevars
+                                )
+                            if symbolic_sig is None:
+                                return None
+                            if isinstance(symbolic_sig, Signature):
+                                if symbolic_sig.bound_receiver_param_name is not None:
+                                    if (
+                                        symbolic_sig.bound_receiver_composite is None
+                                        or symbolic_sig.bound_receiver_composite.varname
+                                        is None
+                                    ):
+                                        return dataclass_replace(
+                                            symbolic_sig,
                                             bound_receiver_composite=value.composite,
                                         )
+                                    return symbolic_sig
+                            elif isinstance(symbolic_sig, OverloadedSignature):
+                                if all(
+                                    subsig.bound_receiver_param_name is not None
+                                    for subsig in symbolic_sig.signatures
+                                ):
+                                    if all(
+                                        subsig.bound_receiver_composite is not None
+                                        and subsig.bound_receiver_composite.varname
+                                        is not None
                                         for subsig in symbolic_sig.signatures
-                                    ]
+                                    ):
+                                        return symbolic_sig
+                                    return OverloadedSignature(
+                                        [
+                                            dataclass_replace(
+                                                subsig,
+                                                bound_receiver_composite=value.composite,
+                                            )
+                                            for subsig in symbolic_sig.signatures
+                                        ]
+                                    )
+                            if isinstance(symbolic_sig, BoundMethodSignature):
+                                return dataclass_replace(
+                                    symbolic_sig, self_composite=value.composite
                                 )
-                        if isinstance(symbolic_sig, BoundMethodSignature):
-                            return dataclass_replace(
-                                symbolic_sig, self_composite=value.composite
+                            return_override = get_return_override(symbolic_sig)
+                            bound_symbolic = make_bound_method(
+                                symbolic_sig, value.composite, return_override, ctx=self
                             )
-                        return_override = get_return_override(symbolic_sig)
-                        bound_symbolic = make_bound_method(
-                            symbolic_sig, value.composite, return_override, ctx=self
-                        )
-                        if bound_symbolic is not None:
-                            return bound_symbolic
-                        return symbolic_sig
+                            if bound_symbolic is not None:
+                                return bound_symbolic
+                            return symbolic_sig
             method = value.get_method()
             if method is not None:
                 sig: MaybeSignature = None

@@ -219,6 +219,12 @@ def _iter_base_type_values(
         if isinstance(root, SequenceValue) and root.typ is tuple:
             yield SequenceValue(tuple, [(False, member) for member in members])
             return
+        if isinstance(root, (TypedValue, GenericValue)) and root.typ is tuple:
+            if len(members) == 2 and members[1] == KnownValue(Ellipsis):
+                yield GenericValue(tuple, [members[0]])
+            else:
+                yield SequenceValue(tuple, [(False, member) for member in members])
+            return
         if isinstance(root, (TypedValue, GenericValue)):
             yield GenericValue(root.typ, members)
         return

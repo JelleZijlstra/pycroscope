@@ -21,7 +21,7 @@ from typing_extensions import Sentinel, assert_never
 
 import pycroscope
 from pycroscope.find_unused import used
-from pycroscope.safe import safe_equals, safe_isinstance
+from pycroscope.safe import is_typing_name, safe_equals, safe_isinstance
 from pycroscope.typevar import resolve_bounds_map
 from pycroscope.value import (
     NO_RETURN_VALUE,
@@ -53,6 +53,7 @@ from pycroscope.value import (
     ParamSpecParam,
     PartialCallValue,
     PartialValue,
+    PartialValueOperation,
     PredicateValue,
     SequenceValue,
     SimpleType,
@@ -972,6 +973,18 @@ def _has_relation(
             generic_args = right_tobj.get_generic_args_for_base(
                 left.typ, right.args if isinstance(right, GenericValue) else ()
             )
+            if generic_args is None:
+                fallback_bases = ctx.get_generic_bases(
+                    right.typ, right.args if isinstance(right, GenericValue) else ()
+                )
+                fallback_tv_map = fallback_bases.get(left.typ)
+                if fallback_tv_map is not None:
+                    generic_args = [
+                        fallback_tv_map.get_value(
+                            type_param, default_value_for_type_param(type_param)
+                        )
+                        for type_param in ctx.get_type_parameters(left.typ)
+                    ]
             if generic_args is not None:
                 comparison_left = left
                 left_tobj = left.get_type_object(ctx)
@@ -1339,12 +1352,24 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
         # Annotated metadata is ignored for implicit TypeForm extraction.
         return _extract_type_form(value.value, ctx)
     elif isinstance(value, (PartialValue, PartialCallValue)):
-        from pycroscope.annotations import type_from_value
+        from pycroscope.annotations import make_type_param_from_value, type_from_value
+
+        if (
+            isinstance(value, PartialValue)
+            and value.operation is PartialValueOperation.SUBSCRIPT
+            and isinstance(value.root, KnownValue)
+            and is_typing_name(value.root.val, "Unpack")
+        ):
+            return CanAssignError(f"{value} is not a TypeForm")
+        if isinstance(value, PartialCallValue):
+            type_param = make_type_param_from_value(value, visitor=ctx)
+            if type_param is not None and type_param.owner is None:
+                return CanAssignError(f"{value} is not a TypeForm")
 
         extracted = type_from_value(value, visitor=ctx, suppress_errors=True)
         if extracted != AnyValue(AnySource.error):
             return _extract_type_form(extracted, ctx)
-        return _extract_type_form(value.get_fallback_value(), ctx)
+        return CanAssignError(f"{value} is not a TypeForm")
     elif isinstance(value, MultiValuedValue):
         vals: list[Value] = []
         for subval in value.vals:
@@ -1389,9 +1414,11 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
         if isinstance(type_form, AnyValue) and type_form.source is AnySource.error:
             return CanAssignError(f"{value} is not a TypeForm")
         extracted = gradualize(type_form)
-        if isinstance(extracted, (TypeVarValue, TypeVarTupleValue)) and (
-            isinstance(extracted, TypeVarTupleValue) or extracted.typevar_param.is_self
+        if isinstance(extracted, TypeVarValue) and (
+            extracted.typevar_param.owner is None or extracted.typevar_param.is_self
         ):
+            return CanAssignError(f"{value} is not a TypeForm")
+        if isinstance(extracted, TypeVarTupleValue):
             return CanAssignError(f"{value} is not a TypeForm")
         if isinstance(extracted, (ParamSpecArgsValue, ParamSpecKwargsValue)):
             return CanAssignError(f"{value} is not a TypeForm")
@@ -1404,10 +1431,14 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
         return AnyValue(AnySource.inference)
     elif isinstance(value, TypedValue):
         return CanAssignError(f"{value} is not a TypeForm")
-    elif isinstance(value, (AnyValue, TypeAliasValue)):
+    elif isinstance(value, AnyValue):
+        if value.source is AnySource.error:
+            return CanAssignError(f"{value} is not a TypeForm")
+        return value
+    elif isinstance(value, TypeAliasValue):
         return value
     elif isinstance(value, TypeVarValue):
-        if value.typevar_param.is_self:
+        if value.typevar_param.owner is None or value.typevar_param.is_self:
             return CanAssignError(f"{value} is not a TypeForm")
         return value
     elif isinstance(
