@@ -13,6 +13,8 @@ from .value import (
     CustomCheckExtension,
     GenericValue,
     KnownValue,
+    SubclassValue,
+    TypedValue,
     TypeVarMap,
     assert_is_value,
     get_self_param,
@@ -96,7 +98,7 @@ class TestAttributes(TestNameCheckVisitorBase):
             pass
 
         def capybara(cls: type[Base]) -> None:
-            assert_is_value(cls.__class__, KnownValue(type))
+            assert_is_value(cls.__class__, SubclassValue(TypedValue(type)))
             assert_type(cls.__bases__, tuple[type[object], ...])
 
     @assert_passes()

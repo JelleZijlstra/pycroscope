@@ -97,6 +97,7 @@ from .value import (
     gradualize,
     replace_fallback,
     set_self,
+    stringify_object,
     unite_values,
 )
 
@@ -228,6 +229,22 @@ def _get_attribute_from_value(
             return AnyValue(AnySource.from_another), None
         case UnboundMethodValue():
             return _get_attribute_from_unbound(root_value, ctx)
+        case SubclassValue(typ=inner_typ):
+            match inner_typ:
+                case TypedValue():
+                    return _get_attribute_from_subclass(
+                        inner_typ.typ, ctx.root_value, ctx
+                    )
+                case TypeVarValue():
+                    fallback_type = gradualize(
+                        inner_typ.get_fallback_value().get_type_value(
+                            ctx.get_can_assign_context()
+                        )
+                    )
+                    print("USE FALLBACK", fallback_type)
+                    return _get_attribute_from_value(fallback_type, ctx)
+                case _:
+                    assert_never(inner_typ)
         case SyntheticModuleValue(module_path=module_path):
             module = ".".join(module_path)
             attribute_value = ctx.resolve_name_from_typeshed(module, ctx.attr)
@@ -327,9 +344,7 @@ def _get_attribute_from_value(
             return _get_attribute_from_value(TypedValue(object), ctx)
 
         # TODO
-        case (
-            KnownValue() | SyntheticClassObjectValue() | TypedValue() | SubclassValue()
-        ):
+        case KnownValue() | SyntheticClassObjectValue() | TypedValue():
             return _get_attribute(root_value, ctx), None
         case _:
             assert_never(root_value)
@@ -467,7 +482,7 @@ def _get_attribute(lookup_root_value: Value, ctx: AttrContext) -> Value:
             if isinstance(root_value.typ.typ, ClassOwner):
                 synthetic_name = root_value.typ.typ
             else:
-                attribute_value = _get_attribute_from_subclass(
+                attribute_value, _ = _get_attribute_from_subclass(
                     root_value.typ.typ, root_value, ctx
                 )
         elif isinstance(root_value.typ, TypeVarValue):
@@ -509,7 +524,7 @@ def _get_attribute(lookup_root_value: Value, ctx: AttrContext) -> Value:
             attribute_value = _get_attribute_from_typed(object, (), ctx)
     elif isinstance(root_value, SyntheticClassObjectValue):
         if isinstance(root_value.class_type, TypedDictValue):
-            attribute_value = _get_attribute_from_subclass(dict, root_value, ctx)
+            attribute_value, _ = _get_attribute_from_subclass(dict, root_value, ctx)
         else:
             attribute_value = _get_attribute_from_synthetic_class(
                 root_value.class_type.typ, ctx.root_composite.value, ctx
@@ -698,28 +713,33 @@ def may_have_dynamic_attributes(typ: type) -> bool:
 
 
 def _get_attribute_from_subclass(
-    typ: type, self_value: Value, ctx: AttrContext
-) -> Value:
+    typ: ClassKey, self_value: Value, ctx: AttrContext
+) -> tuple[Value, CanAssignError | None]:
     ctx.record_attr_read(typ)
 
+    can_assign_ctx = ctx.get_can_assign_context()
+    tobj = can_assign_ctx.make_type_object(typ)
     # TypeObject.get_attribute() is still less precise for these type[T]
     # metadata attributes.
     if ctx.attr == "__class__":
-        return KnownValue(type(typ))
+        match tobj.get_metaclass():
+            case TypedValue() as metaclass:
+                return SubclassValue(metaclass), None
+            case AnyValue():
+                return SubclassValue(TypedValue(type)), None
+            case metaclass:
+                assert_never(metaclass)
     if ctx.attr == "__bases__":
-        return GenericValue(tuple, [SubclassValue(TypedValue(object))])
-    can_assign_ctx = ctx.get_can_assign_context()
+        return GenericValue(tuple, [SubclassValue(TypedValue(object))]), None
     attribute = _get_type_object_attribute(
-        can_assign_ctx.make_type_object(typ),
-        ctx.attr,
-        ctx,
-        on_class=True,
-        receiver_value=self_value,
+        tobj, ctx.attr, ctx, on_class=True, receiver_value=self_value
     )
     if attribute is None:
-        return UNINITIALIZED_VALUE
+        return UNINITIALIZED_VALUE, CanAssignError(
+            f"Class {stringify_object(typ)} has no attribute '{ctx.attr}'"
+        )
     ctx.record_usage(typ, attribute.value)
-    return attribute.value
+    return attribute.value, attribute.error
 
 
 _TCAA = Callable[[object], bool]
