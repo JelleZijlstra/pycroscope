@@ -1054,7 +1054,13 @@ def _has_relation(
                         )
                         if isinstance(can_assign, CanAssignError):
                             return _maybe_specify_error_for_generic(
-                                i, comparison_left, right, can_assign, relation, ctx
+                                i,
+                                comparison_left,
+                                right,
+                                can_assign,
+                                relation,
+                                variance,
+                                ctx,
                             )
                         bounds_maps.append(can_assign)
                     if not bounds_maps:
@@ -1471,6 +1477,7 @@ def _maybe_specify_error_for_generic(
     right: Value,
     error: CanAssignError,
     relation: Relation,
+    variance: Variance,
     ctx: CanAssignContext,
 ) -> CanAssignError:
     expected = left.get_arg(i)
@@ -1523,7 +1530,9 @@ def _maybe_specify_error_for_generic(
             if isinstance(can_assign, CanAssignError):
                 return CanAssignError(f"In element {i}", [can_assign])
 
-    return CanAssignError(f"In generic argument {i} to {left}", [error])
+    return CanAssignError(
+        f"In {variance.display_name()} generic parameter {i} to {left}", [error]
+    )
 
 
 @dataclass(frozen=True)

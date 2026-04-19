@@ -408,7 +408,7 @@ class TestPEP673(TestNameCheckVisitorBase):
     def test_generic_classmethod_preserves_type_arguments(self):
         from typing import Any, Generic, TypeVar
 
-        from typing_extensions import Self
+        from typing_extensions import Self, assert_type
 
         T = TypeVar("T")
 
@@ -426,6 +426,31 @@ class TestPEP673(TestNameCheckVisitorBase):
             assert_type(Box[int].make(), Box[int])
             assert_type(Box[type[int]].make(), Box[type[int]])
             assert_type(Box[int].get_class(), type[Box[int]])
+
+    @assert_passes()
+    def test_generic_classmethod_return_self(self):
+        from typing import Generic, TypeVar
+
+        from typing_extensions import Self
+
+        T = TypeVar("T")
+
+        class Query(Generic[T]):
+            def filter(self) -> "Query[T]":
+                raise NotImplementedError
+
+        class Model:
+            @classmethod
+            def select(cls) -> Query[Self]:
+                raise NotImplementedError
+
+        class Name(Model):
+            value: Self
+
+            @classmethod
+            def with_tag(cls, tag: str) -> Query["Name"]:
+                # Invalid because Query is invariant
+                return cls.select().filter()  # E: incompatible_return_value
 
     @assert_passes()
     def test_classmethod_self_attribute_assignment(self):
