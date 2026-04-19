@@ -854,17 +854,13 @@ def _get_attribute_from_typed(
         on_class=False,
         receiver_value=ctx.root_composite.value,
     )
-    # Adding "if attribute is None: return UNINITIALIZED_VALUE" here breaks two tests:
-    # pycroscope/test_attributes.py::TestAttributes::test_attrs
-    # (missing attrs support in type_object.py?)
-    # TestImportFailureHandling::test_explicit_type_alias_uses_runtime_attribute_semantics
-    # (some weirdness about how we represent type aliases?)
-    if attribute is not None:
-        resolved_instance = _maybe_use_resolved_typed_instance_attribute(
-            attribute, resolved_value=attribute.value, typ=typ, ctx=ctx
-        )
-        if resolved_instance is not None:
-            return resolved_instance
+    if attribute is None:
+        return UNINITIALIZED_VALUE
+    resolved_instance = _maybe_use_resolved_typed_instance_attribute(
+        attribute, resolved_value=attribute.value, typ=typ, ctx=ctx
+    )
+    if resolved_instance is not None:
+        return resolved_instance
     result, provider, should_unwrap = _get_attribute_from_mro(typ, ctx, on_class=False)
     result = _substitute_typevars(typ, generic_args, result, provider, ctx)
     if should_unwrap:

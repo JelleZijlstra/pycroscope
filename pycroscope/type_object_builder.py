@@ -227,6 +227,26 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
                 raw_value, typ, existing=existing
             )
 
+    try:
+        if hasattr(typ, "__attrs_attrs__"):
+            for attr_attr in typ.__attrs_attrs__:
+                if attr_attr.type is not None:
+                    anno = type_from_runtime(
+                        attr_attr.type,
+                        ctx=RuntimeAnnotationsContext(owner=typ, self_key=typ),
+                    )
+                else:
+                    anno = AnyValue(AnySource.unannotated)
+                existing = symbols.get(attr_attr.name)
+                if existing is not None:
+                    symbols[attr_attr.name] = replace(existing, annotation=anno)
+                else:
+                    symbols[attr_attr.name] = ClassSymbol(annotation=anno)
+    except Exception:
+        # Guard against silly objects throwing exceptions on hasattr()
+        # or similar shenanigans.
+        pass
+
 
 def _symbol_from_runtime_member(
     raw_value: object, owner: type, existing: ClassSymbol | None = None
