@@ -22,22 +22,22 @@ from .maybe_asynq import asynq
 T = TypeVar("T")
 
 
-def hasattr_static(object: object, name: str) -> bool:
+def hasattr_static(obj: object, name: str) -> bool:
     """Similar to ``inspect.getattr_static()``."""
     try:
-        inspect.getattr_static(object, name)
+        inspect.getattr_static(obj, name)
     except AttributeError:
         return False
     else:
         return True
 
 
-def safe_hasattr(item: object, member: str) -> bool:
+def safe_hasattr(obj: object, name: str, /) -> bool:
     """Safe version of ``hasattr()``."""
     try:
         # some sketchy implementation (like paste.registry) of
         # __getattr__ cause hasattr() to throw an error.
-        return hasattr(item, member)
+        return hasattr(obj, name)
     except Exception:
         return False
 

@@ -38,6 +38,7 @@ from .safe import (
     is_typing_name,
     is_union,
     safe_getattr,
+    safe_hasattr,
     safe_isinstance,
     safe_issubclass,
 )
@@ -661,7 +662,7 @@ def _record_attr_set(val: Value, name: str, ctx: CallContext) -> None:
 
 
 def _hasattr_impl(ctx: CallContext) -> Value:
-    obj = ctx.vars["object"]
+    obj = ctx.vars["obj"]
     name = ctx.vars["name"]
     if not isinstance(name, KnownValue) or not isinstance(name.val, str):
         return TypedValue(bool)
@@ -683,7 +684,7 @@ def _hasattr_impl(ctx: CallContext) -> Value:
     else:
         return_value = TypedValue(bool)
     pred = HasAttr(name.val, AnyValue(AnySource.inference))
-    metadata = [AddPredicateExtension("object", pred)]
+    metadata = [AddPredicateExtension("obj", pred)]
     return AnnotatedValue(return_value, metadata)
 
 
@@ -3063,7 +3064,7 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
         ),
         Signature.make(
             [
-                SigParameter("object", _POS_ONLY),
+                SigParameter("obj", _POS_ONLY),
                 SigParameter("name", _POS_ONLY, annotation=TypedValue(str)),
             ],
             impl=_hasattr_impl,
@@ -3072,7 +3073,16 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
         ),
         Signature.make(
             [
-                SigParameter("object", _POS_ONLY),
+                SigParameter("obj", _POS_ONLY),
+                SigParameter("name", _POS_ONLY, annotation=TypedValue(str)),
+            ],
+            impl=_hasattr_impl,
+            callable=safe_hasattr,
+            return_annotation=TypedValue(bool),
+        ),
+        Signature.make(
+            [
+                SigParameter("obj", _POS_ONLY),
                 SigParameter("name", _POS_ONLY, annotation=TypedValue(str)),
             ],
             impl=_hasattr_impl,

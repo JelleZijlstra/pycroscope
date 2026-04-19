@@ -3,7 +3,7 @@
 import inspect
 import sys
 import types
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import MISSING, replace
 from typing import get_args, get_origin
 
@@ -24,6 +24,7 @@ from .type_object import DataclassFieldRecord
 from .value import (
     AnySource,
     AnyValue,
+    ClassKey,
     ClassSymbol,
     DataclassFieldInfo,
     FunctionDecorator,
@@ -51,6 +52,20 @@ from .value import (
     match_typevar_arguments,
     replace_fallback,
 )
+
+CUSTOM_SYMBOLS: dict[ClassKey, dict[str, ClassSymbol]] = {
+    Callable: {
+        "__name__": ClassSymbol(
+            annotation=TypedValue(str), qualifiers=frozenset({Qualifier.ReadOnly})
+        ),
+        "__module__": ClassSymbol(
+            annotation=TypedValue(str), qualifiers=frozenset({Qualifier.ReadOnly})
+        ),
+        "__qualname__": ClassSymbol(
+            annotation=TypedValue(str), qualifiers=frozenset({Qualifier.ReadOnly})
+        ),
+    }
+}
 
 
 def _get_runtime_dataclass_fields(typ: type) -> tuple[DataclassFieldRecord, ...]:
@@ -246,6 +261,9 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
         # Guard against silly objects throwing exceptions on hasattr()
         # or similar shenanigans.
         pass
+
+    if typ in CUSTOM_SYMBOLS:
+        symbols.update(CUSTOM_SYMBOLS[typ])
 
 
 def _symbol_from_runtime_member(

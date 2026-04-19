@@ -1261,6 +1261,15 @@ class TestHasAttr(TestNameCheckVisitorBase):
             if hasattr(cls, "types"):  # E: value_always_true
                 assert_is_value(cls.types(), AnyValue(AnySource.unannotated))
 
+    @assert_passes()
+    def test_safe_hasattr(self):
+        from pycroscope.safe import safe_hasattr
+
+        def get_fully_qualified_name(obj: object) -> str | None:
+            if safe_hasattr(obj, "__module__") and safe_hasattr(obj, "__qualname__"):
+                return f"{obj.__module__}.{obj.__qualname__}"
+            return None
+
 
 class TestClassAttributeTransformer(TestNameCheckVisitorBase):
     @assert_passes()
@@ -1353,3 +1362,16 @@ class TestAttributeWrites(TestNameCheckVisitorBase):
             def method(self) -> None:
                 # TODO should be bool
                 assert_type(self.flag, Literal[False])
+
+
+class TestCallableAttributes(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_callable_attribute(self):
+        from typing import Callable
+
+        from typing_extensions import assert_type
+
+        def capybara(c: Callable[[int], str]) -> None:
+            assert_type(c.__name__, str)
+            assert_type(c.__module__, str)
+            assert_type(c.__qualname__, str)
