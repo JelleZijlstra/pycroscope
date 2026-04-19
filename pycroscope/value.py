@@ -3264,46 +3264,15 @@ def bound_self_type_from_class_key(typ: ClassKey) -> TypeVarValue:
     return TypeVarValue(get_self_param(typ))
 
 
-def receiver_to_self_type(
-    self_value: Value, ctx: CanAssignContext | None = None
-) -> Value:
-    if (
-        ctx is not None
-        and isinstance(self_value, KnownValueWithTypeVars)
-        and not isinstance(self_value.val, type)
-    ):
-        runtime_type = type(self_value.val)
-        type_params = ctx.get_type_parameters(runtime_type)
-        if type_params:
-            return GenericValue(
-                runtime_type,
-                [
-                    self_value.typevars.get_value(
-                        type_param, default_value_for_type_param(type_param)
-                    )
-                    for type_param in type_params
-                ],
-            )
-    if isinstance(self_value, KnownValue):
-        replaced = replace_known_sequence_value(self_value)
-        if not isinstance(replaced, KnownValue):
-            return replaced
-        return TypedValue(
-            replaced.val if isinstance(replaced.val, type) else type(replaced.val)
-        )
-    if isinstance(self_value, SubclassValue):
-        return self_value.typ
-    return self_value
-
-
 def set_self(value: Value, self_value: Value, class_key: ClassKey) -> Value:
-    self_type = receiver_to_self_type(self_value)
     self_param = get_self_param(class_key)
     if isinstance(value, KnownValueWithTypeVars):
-        merged_typevars = value.typevars.with_typevar(self_param, self_type)
+        merged_typevars = value.typevars.with_typevar(self_param, self_value)
         result: Value = KnownValueWithTypeVars(value.val, merged_typevars)
     else:
-        result = value.substitute_typevars(TypeVarMap(typevars={self_param: self_type}))
+        result = value.substitute_typevars(
+            TypeVarMap(typevars={self_param: self_value})
+        )
     return result
 
 

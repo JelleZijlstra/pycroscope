@@ -238,6 +238,7 @@ class AttributePolicy:
     This is used for super()."""
     visitor: "pycroscope.name_check_visitor.NameCheckVisitor | None" = None
     node: ast.AST | None = None
+    receiver_composite: Composite | None = None
 
     def get_receiver_instance(self, ctx: CanAssignContext) -> Value:
         if self.on_class:
@@ -3125,6 +3126,7 @@ def _apply_descriptor_protocol_to_method(
     # (e.g., use of secondary_attr_name), but UnboundMethodValue doesn't work
     # if there's no runtime method.
     receiver_class = policy.get_receiver_class(ctx)
+    receiver_instance = policy.get_receiver_instance(ctx)
     if (
         not policy.prefer_symbolic
         and _is_method_like(initializer)
@@ -3132,8 +3134,11 @@ def _apply_descriptor_protocol_to_method(
     ):
         bound_value = UnboundMethodValue(
             attr_name=merged_attribute.name,
-            # TODO: do we need to preserve a Composite from the caller?
-            composite=Composite(receiver_class),
+            composite=(
+                policy.receiver_composite
+                if policy.receiver_composite is not None
+                else Composite(receiver_class if policy.on_class else receiver_instance)
+            ),
             typevars=(
                 initializer.typevars
                 if isinstance(initializer, KnownValueWithTypeVars)
@@ -3147,9 +3152,8 @@ def _apply_descriptor_protocol_to_method(
         )
     else:
         # We bind the initializer to the receiver
-        receiver = policy.get_receiver_instance(ctx)
         bound_value = _bind_attribute_signature(
-            initializer, receiver_value=receiver, ctx=ctx
+            initializer, receiver_value=receiver_instance, ctx=ctx
         )
     return _make_resolved_attribute(
         merged_attribute,

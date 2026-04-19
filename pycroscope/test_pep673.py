@@ -408,7 +408,7 @@ class TestPEP673(TestNameCheckVisitorBase):
     def test_generic_classmethod_preserves_type_arguments(self):
         from typing import Any, Generic, TypeVar
 
-        from typing_extensions import Self, assert_type
+        from typing_extensions import Self
 
         T = TypeVar("T")
 
