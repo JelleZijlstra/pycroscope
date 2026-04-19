@@ -361,7 +361,7 @@ class TestAttributes(TestNameCheckVisitorBase):
 
             type X = Annotated[str, "hi"]
 
-            def capybara(x: X):
+            def capybara(x: str):
                 assert_type(x.isnumeric(), bool)
             """)
 

@@ -177,7 +177,9 @@ class AttrContext:
     def get_type_object_attribute_policy(
         self, *, on_class: bool, receiver: Value
     ) -> AttributePolicy:
-        return AttributePolicy(on_class=on_class, receiver=receiver)
+        return AttributePolicy(
+            on_class=on_class, receiver=receiver, receiver_composite=self.root_composite
+        )
 
 
 def _get_type_object_attribute(
@@ -715,12 +717,6 @@ def _maybe_use_resolved_typed_instance_attribute(
     ctx: AttrContext,
 ) -> Value | None:
     symbol = attribute.symbol
-    if symbol.is_method and not symbol.is_classmethod:
-        # TypeObject may return a symbolic callable here, but callers of
-        # attributes.py still rely on UnboundMethodValue for receiver binding.
-        legacy_method_value = _unwrap_value_from_typed(attribute.raw_value, typ, ctx)
-        if isinstance(legacy_method_value, UnboundMethodValue):
-            return legacy_method_value
     if attribute.is_property:
         if ctx.attr in {"name", "value", "_value_"} and safe_issubclass(typ, Enum):
             return None
