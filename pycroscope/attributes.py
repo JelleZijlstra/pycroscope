@@ -226,6 +226,8 @@ def _get_attribute_from_value(
     match root_value:
         case AnyValue():
             return AnyValue(AnySource.from_another), None
+        case UnboundMethodValue():
+            return _get_attribute_from_unbound(root_value, ctx)
         case SyntheticModuleValue(module_path=module_path):
             module = ".".join(module_path)
             attribute_value = ctx.resolve_name_from_typeshed(module, ctx.attr)
@@ -326,11 +328,7 @@ def _get_attribute_from_value(
 
         # TODO
         case (
-            KnownValue()
-            | SyntheticClassObjectValue()
-            | TypedValue()
-            | SubclassValue()
-            | UnboundMethodValue()
+            KnownValue() | SyntheticClassObjectValue() | TypedValue() | SubclassValue()
         ):
             return _get_attribute(root_value, ctx), None
         case _:
@@ -489,7 +487,7 @@ def _get_attribute(lookup_root_value: Value, ctx: AttrContext) -> Value:
                 return UNINITIALIZED_VALUE
             return attribute.value
     elif isinstance(root_value, UnboundMethodValue):
-        attribute_value = _get_attribute_from_unbound(root_value, ctx)
+        attribute_value, _ = _get_attribute_from_unbound(root_value, ctx)
     elif isinstance(root_value, AnyValue):
         attribute_value = AnyValue(AnySource.from_another)
     elif isinstance(root_value, MultiValuedValue):
@@ -1358,16 +1356,18 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
 
 def _get_attribute_from_unbound(
     root_value: UnboundMethodValue, ctx: AttrContext
-) -> Value:
+) -> tuple[Value, CanAssignError | None]:
     if root_value.secondary_attr_name is not None:
-        return AnyValue(AnySource.inference)
+        return AnyValue(AnySource.inference), None
     method = root_value.get_method()
     if method is None:
-        return AnyValue(AnySource.inference)
+        return AnyValue(AnySource.inference), None
     try:
         getattr(method, ctx.attr)
     except AttributeError:
-        return UNINITIALIZED_VALUE
+        return UNINITIALIZED_VALUE, CanAssignError(
+            f"{method} has no attribute '{ctx.attr}'"
+        )
     result = UnboundMethodValue(
         root_value.attr_name,
         root_value.composite,
@@ -1375,7 +1375,7 @@ def _get_attribute_from_unbound(
         owner=root_value.owner,
     )
     ctx.record_usage(type(method), result)
-    return result
+    return result, None
 
 
 def _get_triple_from_annotations(
