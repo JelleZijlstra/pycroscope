@@ -30,7 +30,6 @@ from .value import (
     NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
     UNRESOLVED_VALUE,
-    AliasOwner,
     AnnotatedValue,
     AnySource,
     AnyValue,
@@ -48,7 +47,6 @@ from .value import (
     SequenceValue,
     SubclassValue,
     SyntheticClassObjectValue,
-    TypeAliasValue,
     TypedDictEntry,
     TypedDictValue,
     TypedValue,
@@ -328,40 +326,6 @@ def test_legacy_function_type_params_get_function_owner() -> None:
         x_param = next(param for param in info.params if param.param.name == "x")
         assert isinstance(x_param.param.annotation, TypeVarValue)
         assert x_param.param.annotation.typevar_param.owner == owner
-
-
-@skip_before((3, 12))
-def test_pep695_class_type_params_get_class_owner() -> None:
-    visitor, _ = _make_checked_visitor("""
-        class Box[T]:
-            pass
-        """)
-    (type_param,) = visitor.checker.make_type_object(
-        visitor.module.Box
-    ).get_declared_type_params()
-    assert type_param.owner is visitor.module.Box
-
-
-def test_legacy_type_alias_type_params_get_alias_owner() -> None:
-    visitor, tree = _make_checked_visitor("""
-        from typing import TypeVar
-
-        T = TypeVar("T")
-        Alias = list[T]
-        """)
-    alias_node = next(
-        stmt
-        for stmt in tree.body
-        if isinstance(stmt, ast.Assign)
-        and len(stmt.targets) == 1
-        and isinstance(stmt.targets[0], ast.Name)
-        and stmt.targets[0].id == "Alias"
-    )
-    alias_value = visitor.scopes.module_scope().get_declared_type("Alias")
-    assert isinstance(alias_value, TypeAliasValue)
-    (type_param,) = alias_value.alias.get_type_params()
-    assert isinstance(type_param.owner, AliasOwner)
-    assert str(type_param.owner).endswith(".Alias")
 
 
 def test_direct_type_parameter_constructors_stay_deferred_until_bound() -> None:

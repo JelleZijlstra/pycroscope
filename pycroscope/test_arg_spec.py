@@ -1,7 +1,7 @@
 # static analysis: ignore
 import functools
 from dataclasses import dataclass
-from typing import Generic, List, NewType
+from typing import List, NewType
 
 import pytest
 from typing_extensions import ParamSpec, Self, TypeVar, TypeVarTuple
@@ -69,16 +69,6 @@ def test_get_type_parameters_ignores_non_iterable_runtime_type_params() -> None:
         __type_params__ = property(lambda self: ())
 
     assert checker.arg_spec_cache.get_type_parameters(Weird) == []
-
-
-def test_runtime_class_type_params_get_class_owner() -> None:
-    checker = Checker()
-
-    class Box(Generic[T]):
-        pass
-
-    (type_param,) = checker.arg_spec_cache.get_type_parameters(Box)
-    assert type_param.owner is Box
 
 
 @skip_before((3, 12))

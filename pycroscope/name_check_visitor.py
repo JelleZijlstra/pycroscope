@@ -567,39 +567,6 @@ if asynq is not None:
     SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL.append(KnownValue(asynq.asynq))
 
 
-def _callable_from_signature(sig: MaybeSignature) -> object | None:
-    if isinstance(sig, Signature):
-        if isinstance(sig.callable, types.FunctionType) and sig.callable.__name__ in {
-            "__init__",
-            "__new__",
-            "__get__",
-            "__set__",
-            "__delete__",
-            "__call__",
-        }:
-            return None
-        return sig.callable
-    if isinstance(sig, BoundMethodSignature):
-        return _callable_from_signature(sig.signature)
-    if isinstance(sig, OverloadedSignature):
-        callables = {
-            subsig.callable for subsig in sig.signatures if subsig.callable is not None
-        }
-        if len(callables) == 1:
-            return next(iter(callables))
-    return None
-
-
-def _has_bound_receiver(sig: MaybeSignature) -> bool:
-    if isinstance(sig, Signature):
-        return sig.bound_receiver_param_name is not None
-    if isinstance(sig, BoundMethodSignature):
-        return True
-    if isinstance(sig, OverloadedSignature):
-        return all(_has_bound_receiver(subsig) for subsig in sig.signatures)
-    return False
-
-
 class _AsyncGeneratorDetector(ast.NodeVisitor):
     """Detect whether an async function body contains a yield."""
 
@@ -1819,7 +1786,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     """Path (relative to this class's file) to a pyproject.toml config file."""
 
     _argspec_to_retval: dict[int, tuple[Value, MaybeSignature]]
-    _callable_to_retval: dict[int, tuple[Value, object]]
     _pending_overload_blocks: dict[int, _PendingOverloadBlock]
     _function_decorator_kinds_by_node: dict[
         ast.FunctionDef | ast.AsyncFunctionDef, frozenset[FunctionDecorator]
@@ -1992,7 +1958,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # infer types. Previously, we cached this globally, but that makes things non-
         # deterministic because we'll start depending on the order modules are checked.
         self._argspec_to_retval = {}
-        self._callable_to_retval = {}
         self._pending_overload_blocks = {}
         self._function_decorator_kinds_by_node = {}
         self._function_returns_self_by_node = {}
@@ -2008,14 +1973,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def get_local_return_value(self, sig: MaybeSignature) -> Value | None:
         val, saved_sig = self._argspec_to_retval.get(id(sig), (None, None))
         if sig is not saved_sig:
-            callable_obj = _callable_from_signature(sig)
-            if callable_obj is None:
-                return None
-            val, saved_callable = self._callable_to_retval.get(
-                id(callable_obj), (None, None)
-            )
-            if callable_obj is not saved_callable:
-                return None
+            return None
         return val
 
     @property
@@ -2218,7 +2176,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # This is intentionally unsafe.
         self.tree = None  # static analysis: ignore[incompatible_assignment]
         self._argspec_to_retval.clear()
-        self._callable_to_retval.clear()
         end_time = time.time()
         message = f"{self.filename} took {end_time - start_time:.2f} s"
         self.logger.log(logging.INFO, message)
@@ -8458,9 +8415,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if sig is None or sig.has_return_value():
             return
         self._argspec_to_retval[id(sig)] = (return_value, sig)
-        callable_obj = _callable_from_signature(sig)
-        if callable_obj is not None:
-            self._callable_to_retval[id(callable_obj)] = (return_value, callable_obj)
 
     def _get_potential_function(self, node: FunctionDefNode) -> object | None:
         scope_type = self.scopes.scope_type()
@@ -14109,10 +14063,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and not isinstance(method_object, UnboundMethodValue)
             )
             or isinstance(method_object, UnboundMethodValue)
-            or (
-                isinstance(method_object, CallableValue)
-                and _has_bound_receiver(method_object.signature)
-            )
         ):
             call_args = list(args)
         else:
