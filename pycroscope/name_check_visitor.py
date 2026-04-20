@@ -1791,6 +1791,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ast.FunctionDef | ast.AsyncFunctionDef, frozenset[FunctionDecorator]
     ]
     _function_returns_self_by_node: dict[ast.FunctionDef | ast.AsyncFunctionDef, bool]
+    _type_alias_first_definition_by_scope: dict[int, dict[str, ast.AST]]
     _type_alias_unguarded_refs_by_scope: dict[int, dict[str, set[str]]]
     _method_cache: dict[type[ast.AST], Callable[[Any], Value | None]]
     _name_node_to_statement: dict[ast.AST, ast.AST | None] | None
@@ -1961,6 +1962,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._pending_overload_blocks = {}
         self._function_decorator_kinds_by_node = {}
         self._function_returns_self_by_node = {}
+        self._type_alias_first_definition_by_scope = {}
         self._type_alias_unguarded_refs_by_scope = {}
         self._method_cache = {}
         self._statement_types = set()
@@ -5719,9 +5721,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if declared.typevar not in seen:
                     merged.append(declared)
         return merged
-
-    def _type_parameter_value_has_default(self, type_param: TypeParam) -> bool:
-        return type_param.default is not None
 
     def _walk_values_for_type_param_collection(
         self, value: Value
@@ -12402,11 +12401,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 legacy_allowed_identities.add(extracted.typevar)
         return type_param_values
 
-    def _bind_type_param_owner(
-        self, type_param: TypeParam, owner: ClassKey | FunctionOwner | AliasOwner
-    ) -> TypeParam:
-        return with_type_param_owner(type_param, owner)
-
     def _substitute_typevars_in_type_param(
         self, type_param: TypeParam, substitutions: TypeVarMap
     ) -> TypeParam:
@@ -12501,7 +12495,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         owner: ClassKey | FunctionOwner | AliasOwner,
     ) -> tuple[TypeParam, ...]:
         owner_bound = tuple(
-            self._bind_type_param_owner(type_param, owner) for type_param in type_params
+            with_type_param_owner(type_param, owner) for type_param in type_params
         )
         substitutions = TypeVarMap()
         replacements: dict[object, TypeParam] = {}
@@ -12519,13 +12513,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             for type_param in owner_bound
         )
 
-    def _current_scope_key(self) -> int:
-        return id(self.scopes.current_scope())
-
     def _record_type_alias_structure(
         self, name: str, alias_node: ast.AST, value_node: ast.AST
     ) -> None:
         scope_key = self._current_scope_key()
+        first_by_name = self._type_alias_first_definition_by_scope.setdefault(
+            scope_key, {}
+        )
+        first_by_name.setdefault(name, alias_node)
         refs_by_name = self._type_alias_unguarded_refs_by_scope.setdefault(
             scope_key, {}
         )
@@ -12535,7 +12530,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _type_alias_has_unguarded_cycle(self, name: str) -> bool:
         scope_refs = self._type_alias_unguarded_refs_by_scope.get(
-            self._current_scope_key(), {}
+            id(self.scopes.current_scope()), {}
         )
         if name not in scope_refs:
             return False
@@ -12881,7 +12876,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._record_type_alias_structure(name, node, value_node)
         type_params = tuple(
             (
-                self._bind_type_param_owner(type_param, alias_owner)
+                with_type_param_owner(type_param, alias_owner)
                 if type_param.owner is None
                 else type_param
             )
@@ -13021,7 +13016,24 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             else:
                 alias_obj = None
             type_param_values = []
+            disallow_in_function = self.scopes.scope_type() == ScopeType.function_scope
             if self._is_checking():
+                if disallow_in_function:
+                    self._show_error_if_checking(
+                        node,
+                        "Type alias statements are not allowed inside functions",
+                        error_code=ErrorCode.invalid_type_alias,
+                    )
+                first_by_name = self._type_alias_first_definition_by_scope.get(
+                    self._current_scope_key(), {}
+                )
+                first_definition = first_by_name.get(name)
+                if first_definition is not None and first_definition is not node:
+                    self._show_error_if_checking(
+                        node,
+                        f"Type alias {name} is already defined",
+                        error_code=ErrorCode.already_declared,
+                    )
                 if self._type_alias_has_unguarded_cycle(name):
                     self._show_error_if_checking(
                         node,
@@ -13814,8 +13826,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         minimum_required_len = sum(
             1
             for i, type_param in enumerate(type_parameters)
-            if i not in variadic_type_param_indexes
-            and not self._type_parameter_value_has_default(type_param)
+            if i not in variadic_type_param_indexes and type_param.default is None
         )
         if variadic_type_param_indexes:
             # A TypeVarTuple can absorb any number of type arguments.
