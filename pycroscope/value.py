@@ -1029,11 +1029,6 @@ class PartialCallValue(Value):
     runtime_value: Value
     node: ast.AST = field(compare=False, hash=False)
 
-    def __hash__(self) -> int:
-        return hash(
-            (self.callee, tuple(sorted(self.arguments.items())), self.runtime_value)
-        )
-
     def __str__(self) -> str:
         return f"{self.runtime_value} (call with arguments {self.arguments})"
 
