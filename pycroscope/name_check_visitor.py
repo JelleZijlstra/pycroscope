@@ -14230,7 +14230,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 use_fallback=True,
                 ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
             )
-            value = self._preserve_attribute_receiver_composite(value, root_composite)
             self._check_deprecated_property_getter(node, root_composite.value)
             self.check_deprecation(node, value)
             if self._should_use_varname_value(value):
@@ -14277,57 +14276,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if attr == "args":
             return ParamSpecArgsValue(type_param.param_spec)
         return ParamSpecKwargsValue(type_param.param_spec)
-
-    def _preserve_attribute_receiver_composite(
-        self, value: Value, root_composite: Composite
-    ) -> Value:
-        if root_composite.varname is None:
-            return value
-        if isinstance(value, CallableValue):
-            signature = self._signature_with_bound_receiver_composite(
-                value.signature, root_composite
-            )
-            if (
-                isinstance(signature, (Signature, OverloadedSignature))
-                and signature is not value.signature
-            ):
-                return CallableValue(signature, value.typ)
-        elif isinstance(value, AnnotatedValue):
-            inner = self._preserve_attribute_receiver_composite(
-                value.value, root_composite
-            )
-            if inner is not value.value:
-                return replace(value, value=inner)
-        return value
-
-    def _signature_with_bound_receiver_composite(
-        self, signature: MaybeSignature, root_composite: Composite
-    ) -> MaybeSignature:
-        if isinstance(signature, Signature):
-            if signature.bound_receiver_param_name is None:
-                return signature
-            if (
-                signature.bound_receiver_composite is not None
-                and signature.bound_receiver_composite.varname is not None
-            ):
-                return signature
-            return replace(signature, bound_receiver_composite=root_composite)
-        if isinstance(signature, OverloadedSignature):
-            new_signatures = [
-                self._signature_with_bound_receiver_composite(subsig, root_composite)
-                for subsig in signature.signatures
-            ]
-            if all(
-                new_signature is old_signature
-                for new_signature, old_signature in zip(
-                    new_signatures, signature.signatures
-                )
-            ):
-                return signature
-            return OverloadedSignature(
-                typing.cast("Sequence[Signature]", new_signatures)
-            )
-        return signature
 
     def _normalize_expected_attribute_type_for_assignment(self, value: Value) -> Value:
         # TODO: this should be unnecessary if we get better at

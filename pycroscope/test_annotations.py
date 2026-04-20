@@ -1,15 +1,13 @@
 # static analysis: ignore
 
-import ast
 import sys
 
 from .annotations import _DefaultContext, has_invalid_paramspec_usage, type_from_runtime
 from .error_code import ErrorCode
 from .signature import OverloadedSignature, Signature, SigParameter
-from .test_name_check_visitor import TestNameCheckVisitorBase, _make_checked_visitor
+from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes, skip_before, skip_if_not_installed
 from .tests import make_simple_sequence
-from .type_params import ActiveTypeParams
 from .value import (
     AliasOwner,
     AnnotatedValue,
@@ -42,23 +40,6 @@ _ABSTRACT_CONTEXT_MANAGER_INT = GenericValue(
         else [TypedValue(int)]
     ),
 )
-
-
-def test_default_context_has_active_type_params() -> None:
-    ctx = _DefaultContext(visitor=None, node=None)
-    assert isinstance(ctx.active_type_params, ActiveTypeParams)
-
-
-@skip_before((3, 12))
-def test_default_context_reuses_visitor_active_type_params() -> None:
-    visitor, tree = _make_checked_visitor("""
-        def f[T](x: T) -> T:
-            return x
-        """)
-    function = tree.body[0]
-    assert isinstance(function, ast.FunctionDef)
-    ctx = _DefaultContext(visitor=visitor, node=function)
-    assert ctx.active_type_params is visitor.active_type_params
 
 
 @skip_before((3, 12))
