@@ -66,7 +66,6 @@ from .value import (
     PartialValueOperation,
     PredicateValue,
     Qualifier,
-    SequenceValue,
     SimpleType,
     SubclassValue,
     SuperValue,
@@ -388,12 +387,6 @@ def _get_attribute(
             and root_value.signature.is_asynq
         ):
             return root_value.get_asynq_value()
-        if isinstance(root_value, SequenceValue):
-            exact_namedtuple_member = _get_namedtuple_member_from_sequence_value(
-                root_value, ctx
-            )
-            if exact_namedtuple_member is not None:
-                return exact_namedtuple_member
         if isinstance(root_value.typ, ClassOwner):
             attribute_value = _get_attribute_from_synthetic_typed_value(root_value, ctx)
         else:
@@ -410,27 +403,6 @@ def _get_attribute(
     else:
         assert_never(root_value)
     return attribute_value
-
-
-def _get_namedtuple_member_from_sequence_value(
-    root_value: SequenceValue, ctx: AttrContext
-) -> Value | None:
-    if not isinstance(root_value.typ, ClassOwner):
-        return None
-    type_object = ctx.get_can_assign_context().make_type_object(root_value.typ)
-    if not type_object.is_direct_namedtuple():
-        return None
-    fields = type_object.get_namedtuple_fields()
-    for i, namedtuple_field in enumerate(fields):
-        if namedtuple_field.name != ctx.attr or i >= len(root_value.members):
-            continue
-        is_many, member = root_value.members[i]
-        if is_many:
-            return None
-        # TypeObject returns the declared field type; this path preserves the
-        # exact value stored in a synthetic namedtuple SequenceValue.
-        return member
-    return None
 
 
 def _super_receiver_type_value(value: Value) -> tuple[TypedValue | None, bool]:
