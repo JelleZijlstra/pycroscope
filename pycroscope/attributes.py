@@ -5,7 +5,6 @@ Code for retrieving the value of attributes.
 """
 
 import enum
-import inspect
 import sys
 import types
 from collections.abc import Callable, Sequence
@@ -31,7 +30,6 @@ from .predicates import HasAttr
 from .relations import intersect_multi
 from .safe import (
     is_async_fn,
-    is_bound_classmethod,
     is_instance_of_typing_name,
     is_typing_name,
     safe_isinstance,
@@ -396,14 +394,10 @@ def _get_attribute(
             )
             if exact_namedtuple_member is not None:
                 return exact_namedtuple_member
-        if isinstance(root_value, GenericValue):
-            args = root_value.args
-        else:
-            args = ()
         if isinstance(root_value.typ, ClassOwner):
             attribute_value = _get_attribute_from_synthetic_typed_value(root_value, ctx)
         else:
-            attribute_value = _get_attribute_from_typed(root_value.typ, args, ctx)
+            attribute_value = _get_attribute_from_typed(root_value.typ, ctx)
     elif isinstance(root_value, TypeVarValue):
         attribute_value = AnyValue(AnySource.from_another)
     elif isinstance(root_value, SyntheticClassObjectValue):
@@ -706,31 +700,6 @@ def _get_direct_attribute_from_synthetic_class(
     return result
 
 
-def _maybe_use_resolved_typed_instance_attribute(
-    attribute: TypeObjectAttribute,
-    *,
-    resolved_value: Value,
-    typ: type,
-    ctx: AttrContext,
-) -> Value | None:
-    symbol = attribute.symbol
-    if (
-        symbol.is_instance_only
-        and not attribute.is_property
-        and not symbol.is_classmethod
-        and not symbol.is_classvar
-        and not symbol.is_initvar
-        and not symbol.is_method
-        and _contains_typevar(attribute.value)
-        and ctx.get_can_assign_context().make_type_object(typ).is_namedtuple_like()
-    ):
-        # TypeObject currently leaves inherited synthetic namedtuple fields
-        # under-specialized after import failure; the runtime fallback below
-        # substitutes the base arguments correctly.
-        return None
-    return resolved_value
-
-
 def _get_synthetic_declared_symbol(
     self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
 ) -> ClassSymbol | None:
@@ -823,13 +792,7 @@ def _contains_self_typevar(value: Value) -> bool:
     )
 
 
-def _contains_typevar(value: Value) -> bool:
-    return any(isinstance(subval, TypeVarValue) for subval in value.walk_values())
-
-
-def _get_attribute_from_typed(
-    typ: type, generic_args: Sequence[Value], ctx: AttrContext
-) -> Value:
+def _get_attribute_from_typed(typ: type, ctx: AttrContext) -> Value:
     ctx.record_attr_read(typ)
 
     # First check values that are special in Python
@@ -845,17 +808,7 @@ def _get_attribute_from_typed(
     )
     if attribute is None:
         return UNINITIALIZED_VALUE
-    resolved_instance = _maybe_use_resolved_typed_instance_attribute(
-        attribute, resolved_value=attribute.value, typ=typ, ctx=ctx
-    )
-    if resolved_instance is not None:
-        return resolved_instance
-    result, provider, should_unwrap = _get_attribute_from_mro(typ, ctx, on_class=False)
-    result = _substitute_typevars(typ, generic_args, result, provider, ctx)
-    if should_unwrap:
-        result = _unwrap_value_from_typed(result, typ, ctx)
-    ctx.record_usage(typ, result)
-    return result
+    return attribute.value
 
 
 def _get_runtime_class_attribute_from_synthetic_class(
@@ -936,87 +889,6 @@ def _normalize_class_key(value: object) -> ClassKey | None:
     if isinstance(value, (type, ClassOwner)):
         return value
     return None
-
-
-def _unwrap_value_from_typed(result: Value, typ: type, ctx: AttrContext) -> Value:
-    if not isinstance(result, KnownValue):
-        return result
-    typevars = result.typevars if isinstance(result, KnownValueWithTypeVars) else None
-    cls_val = result.val
-    if isinstance(cls_val, property):
-        can_assign_ctx = ctx.get_can_assign_context()
-        tobj = can_assign_ctx.make_type_object(typ)
-        attr = tobj.get_attribute(
-            ctx.attr,
-            ctx.get_type_object_attribute_policy(
-                on_class=False, receiver=ctx.lookup_root_value or ctx.root_value
-            ),
-        )
-        if attr is not None:
-            # The initial TypeObject result may be bypassed for enum and
-            # namedtuple precision; runtime property unwrapping still needs
-            # this resolved descriptor value.
-            return attr.value
-    elif is_bound_classmethod(cls_val):
-        return result
-    elif inspect.isfunction(cls_val):
-        # either a staticmethod or an unbound method
-        try:
-            descriptor = inspect.getattr_static(typ, ctx.attr)
-        except AttributeError:
-            # probably a super call; assume unbound method
-            if ctx.attr == "__new__":
-                # __new__ is implicitly a staticmethod
-                return result
-            return UnboundMethodValue(
-                ctx.attr, ctx.root_composite, typevars=typevars, owner=typ
-            )
-        if isinstance(descriptor, staticmethod) or ctx.attr == "__new__":
-            return result
-        else:
-            return UnboundMethodValue(
-                ctx.attr, ctx.root_composite, typevars=typevars, owner=typ
-            )
-    elif isinstance(cls_val, (types.MethodType, MethodDescriptorType, SlotWrapperType)):
-        # built-in method; e.g. scope_lib.tests.SimpleDatabox.get
-        return UnboundMethodValue(
-            ctx.attr, ctx.root_composite, typevars=typevars, owner=typ
-        )
-    elif _static_hasattr(cls_val, "binder_cls") and _static_hasattr(cls_val, "fn"):
-        # qcore/asynq-style decorators expose a binder type on the descriptor but
-        # still behave like methods when accessed through instances.
-        return UnboundMethodValue(
-            ctx.attr, ctx.root_composite, typevars=typevars, owner=typ
-        )
-    elif (
-        _static_hasattr(cls_val, "decorator")
-        and _static_hasattr(cls_val, "instance")
-        and not isinstance(cls_val.instance, type)
-    ):
-        # non-static method
-        return UnboundMethodValue(
-            ctx.attr, ctx.root_composite, typevars=typevars, owner=typ
-        )
-    elif is_async_fn(cls_val):
-        # static or class method
-        return result
-    elif _static_hasattr(cls_val, "func_code"):
-        # Cython function probably
-        return UnboundMethodValue(
-            ctx.attr, ctx.root_composite, typevars=typevars, owner=typ
-        )
-    transformed = ClassAttributeTransformer.transform_attribute(cls_val, ctx.options)
-    if transformed is not None:
-        return transformed
-    if _static_hasattr(cls_val, "__get__"):
-        typeshed_type = ctx.get_attribute_from_typeshed(typ, on_class=False)
-        if typeshed_type is not UNINITIALIZED_VALUE:
-            return typeshed_type
-        return AnyValue(AnySource.inference)
-    elif TreatClassAttributeAsAny.should_treat_as_any(cls_val, ctx.options):
-        return AnyValue(AnySource.error)
-    else:
-        return result
 
 
 _KAH = Callable[[object, str], Value | None]

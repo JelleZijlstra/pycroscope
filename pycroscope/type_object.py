@@ -2107,6 +2107,9 @@ class TypeObject:
             )
         return base
 
+    def __repr__(self) -> str:
+        return f"<TypeObject {self}>"
+
     def _get_protocol_members_for_display(self) -> list[str]:
         protocol_members = self.get_protocol_members()
         if not isinstance(self.typ, type):

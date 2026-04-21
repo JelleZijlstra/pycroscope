@@ -21,7 +21,12 @@ from .annotations import (
     type_from_runtime,
 )
 from .arg_spec import ArgSpecCache
-from .safe import is_namedtuple_class, safe_getattr, safe_isinstance, safe_issubclass
+from .safe import (
+    is_direct_namedtuple_class,
+    safe_getattr,
+    safe_isinstance,
+    safe_issubclass,
+)
 from .signature import CallContext, ParameterKind, Signature, SigParameter
 from .type_object import DataclassFieldRecord
 from .value import (
@@ -541,7 +546,7 @@ def _value_from_runtime_annotation(annotation: object, owner: type) -> Value | N
 
 
 def _runtime_namedtuple_field_names(typ: type) -> tuple[str, ...]:
-    if not is_namedtuple_class(typ):
+    if not is_direct_namedtuple_class(typ):
         return ()
     fields_obj = safe_getattr(typ, "_fields", None)
     if not isinstance(fields_obj, tuple):
