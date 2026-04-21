@@ -749,12 +749,6 @@ def _contains_self_typevar(value: Value) -> bool:
 
 def _get_attribute_from_typed(typ: ClassKey, ctx: AttrContext) -> Value:
     ctx.record_attr_read(typ)
-
-    # First check values that are special in Python
-    if ctx.attr == "__class__":
-        if isinstance(typ, type):
-            return KnownValue(typ)
-        return SubclassValue(TypedValue(type))
     can_assign_ctx = ctx.get_can_assign_context()
     attribute = _get_type_object_attribute(
         can_assign_ctx.make_type_object(typ),
