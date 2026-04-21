@@ -31,6 +31,7 @@ from .relations import intersect_multi
 from .safe import (
     is_async_fn,
     is_instance_of_typing_name,
+    safe_getattr,
     safe_isinstance,
     safe_issubclass,
 )
@@ -216,8 +217,8 @@ def _get_attribute_from_value(
     match root_value:
         case AnyValue():
             return AnyValue(AnySource.from_another), None
-        case KnownValue(val=val):
-            return _get_attribute_from_known(val, ctx), None
+        case KnownValue():
+            return _get_attribute_from_known_v2(root_value, ctx)
         case CallableValue() if ctx.attr == "asynq" and root_value.signature.is_asynq:
             return root_value.get_asynq_value(), None
         case TypedValue():
@@ -829,23 +830,74 @@ class KnownAttributeHook(PyObjectSequenceOption[_KAH]):
         return None
 
 
-def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
-    if is_instance_of_typing_name(obj, "TypeAliasType"):
-        attribute_value = _get_attribute_from_runtime_type_alias(obj, ctx)
-        if attribute_value is not UNINITIALIZED_VALUE:
-            return attribute_value
+def _get_attribute_from_known_v2(
+    value: KnownValue, ctx: AttrContext
+) -> tuple[Value, CanAssignError | None]:
+    obj = value.val
     if safe_isinstance(obj, type):
         ctx.record_attr_read(obj)
     else:
         ctx.record_attr_read(type(obj))
 
-    if isinstance(obj, (types.FunctionType, types.BuiltinFunctionType)):
-        if ctx.attr in {"__name__", "__qualname__", "__module__"}:
-            return TypedValue(str)
-        if ctx.attr == "__annotations__":
-            return GenericValue(dict, [TypedValue(str), AnyValue(AnySource.explicit)])
+    if obj is None and ctx.should_ignore_none_attributes():
+        # This usually indicates some context is set to None
+        # in the module and initialized later.
+        return AnyValue(AnySource.error), None
 
-    if (obj is None or obj is NoneType) and ctx.should_ignore_none_attributes():
+    hooked_value = KnownAttributeHook.get_attribute(obj, ctx.attr, ctx.options)
+    if hooked_value is not None:
+        return hooked_value, None
+
+    result, error = _get_attribute_from_known_inner(value, ctx)
+    if isinstance(obj, (types.ModuleType, type)):
+        ctx.record_usage(obj, result)
+    else:
+        ctx.record_usage(type(obj), result)
+    return result, error
+
+
+def _get_attribute_from_known_inner(
+    value: KnownValue, ctx: AttrContext
+) -> tuple[Value, CanAssignError | None]:
+    obj = value.val
+
+    # We have a few things we can return:
+    # - The raw runtime value from getattr()
+    # - For modules:
+    #   - The runtime annotation
+    #   - The annotation from stubs, though typeshed.py doesn't yet expose a way to get this
+    # - The value from TypeObject.get_attribute(), which can be better for methods.
+    # TODO: We need to think about how to prioritize between these.
+    # Plan is to write a more principled prioritization here, then remove the fallback
+    # to _get_attribute_from_known().
+
+    default = object()
+    runtime_obj = safe_getattr(obj, ctx.attr, default)
+    if runtime_obj is default:
+        runtime_value = None
+    else:
+        runtime_value = KnownValue(runtime_obj)
+        if not safe_isinstance(
+            runtime_obj,
+            (
+                types.FunctionType,
+                types.MethodType,
+                types.BuiltinFunctionType,
+                types.MethodWrapperType,
+            ),
+        ) and not safe_isinstance(obj, (type, types.FunctionType, types.ModuleType)):
+            return runtime_value, None
+
+    return _get_attribute_from_known(obj, ctx), None
+
+
+def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
+    if safe_isinstance(obj, type):
+        ctx.record_attr_read(obj)
+    else:
+        ctx.record_attr_read(type(obj))
+
+    if obj is None and ctx.should_ignore_none_attributes():
         # This usually indicates some context is set to None
         # in the module and initialized later.
         return AnyValue(AnySource.error)
@@ -853,6 +905,17 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
     hooked_value = KnownAttributeHook.get_attribute(obj, ctx.attr, ctx.options)
     if hooked_value is not None:
         return hooked_value
+
+    if is_instance_of_typing_name(obj, "TypeAliasType"):
+        attribute_value = _get_attribute_from_runtime_type_alias(obj, ctx)
+        if attribute_value is not UNINITIALIZED_VALUE:
+            return attribute_value
+
+    if isinstance(obj, (types.FunctionType, types.BuiltinFunctionType)):
+        if ctx.attr in {"__name__", "__qualname__", "__module__"}:
+            return TypedValue(str)
+        if ctx.attr == "__annotations__":
+            return GenericValue(dict, [TypedValue(str), AnyValue(AnySource.explicit)])
 
     if not safe_isinstance(obj, type):
         can_assign_ctx = ctx.get_can_assign_context()
