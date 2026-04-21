@@ -92,7 +92,6 @@ from .value import (
 # these don't appear to be in the standard types module
 SlotWrapperType = type(type.__init__)
 MethodDescriptorType = type(list.append)
-NoneType = type(None)
 _ENUM_INSTANCE_DESCRIPTOR_TYPES = tuple(
     descriptor_type
     for descriptor_type in (
@@ -874,7 +873,7 @@ def _get_attribute_from_known_inner(
     default = object()
     runtime_obj = safe_getattr(obj, ctx.attr, default)
     if runtime_obj is default:
-        runtime_value = None
+        pass
     else:
         runtime_value = KnownValue(runtime_obj)
         if not safe_isinstance(
