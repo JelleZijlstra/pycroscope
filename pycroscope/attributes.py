@@ -394,7 +394,7 @@ def _get_attribute(
         if isinstance(root_value.class_type, TypedDictValue):
             attribute_value, _ = _get_attribute_from_subclass(dict, root_value, ctx)
         else:
-            attribute_value = _get_attribute_from_synthetic_class(
+            attribute_value, _ = _get_attribute_from_subclass(
                 root_value.class_type.typ, ctx.root_composite.value, ctx
             )
     else:
@@ -600,22 +600,6 @@ def _unwrap_value_from_subclass(result: Value, ctx: AttrContext) -> Value:
         if transformed is not None:
             return transformed
         return KnownValue(cls_val)
-
-
-def _get_attribute_from_synthetic_class(
-    class_key: ClassKey, self_value: Value, ctx: AttrContext
-) -> Value:
-    can_assign_ctx = ctx.get_can_assign_context()
-    attribute = _get_type_object_attribute(
-        can_assign_ctx.make_type_object(class_key),
-        ctx.attr,
-        ctx,
-        on_class=True,
-        receiver_value=self_value,
-    )
-    if attribute is None:
-        return UNINITIALIZED_VALUE
-    return attribute.value
 
 
 def _get_direct_attribute_from_synthetic_class(
