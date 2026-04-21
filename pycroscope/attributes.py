@@ -31,7 +31,6 @@ from .relations import intersect_multi
 from .safe import (
     is_async_fn,
     is_instance_of_typing_name,
-    is_typing_name,
     safe_isinstance,
     safe_issubclass,
 )
@@ -217,6 +216,12 @@ def _get_attribute_from_value(
     match root_value:
         case AnyValue():
             return AnyValue(AnySource.from_another), None
+        case KnownValue(val=val):
+            return _get_attribute_from_known(val, ctx), None
+        case CallableValue() if ctx.attr == "asynq" and root_value.signature.is_asynq:
+            return root_value.get_asynq_value(), None
+        case TypedValue():
+            return _get_attribute_from_typed(root_value, ctx)
         case UnboundMethodValue():
             return _get_attribute_from_unbound(root_value, ctx)
         case SubclassValue(typ=inner_typ):
@@ -234,6 +239,10 @@ def _get_attribute_from_value(
                     return _get_attribute_from_value(fallback_type, ctx)
                 case _:
                     assert_never(inner_typ)
+        case SyntheticClassObjectValue(class_type=TypedDictValue()):
+            return _get_attribute_from_subclass(dict, ctx.root_value, ctx)
+        case SyntheticClassObjectValue(class_type=class_type):
+            return _get_attribute_from_subclass(class_type.typ, ctx.root_value, ctx)
         case SyntheticModuleValue(module_path=module_path):
             module = ".".join(module_path)
             attribute_value = ctx.resolve_name_from_typeshed(module, ctx.attr)
@@ -327,14 +336,10 @@ def _get_attribute_from_value(
                 # TODO: _get_attribute_from_value(TypedValue(object), ctx)
                 # This currently leads to false positives with iterating over enums.
                 # Might need to wait for better TypeVar handling to fix this.
-                return _get_attribute(root_value, ctx), None
+                return AnyValue(AnySource.inference), None
         case TypeVarTupleBindingValue() | TypeVarTupleValue():
             # TODO: Not sure these should be part of GradualType at all
             return _get_attribute_from_value(TypedValue(object), ctx)
-
-        # TODO
-        case KnownValue() | SyntheticClassObjectValue() | TypedValue():
-            return _get_attribute(root_value, ctx), None
         case _:
             assert_never(root_value)
 
@@ -365,41 +370,6 @@ def _get_attribute_from_generic_alias(
     if ctx.attr in _GENERIC_ALIAS_ATTR_EXCEPTIONS:
         return _get_attribute_from_value(TypedValue(types.GenericAlias), ctx)
     return _get_attribute_from_value(gradualize(root), ctx)
-
-
-# TODO: Remove this and replace with the switch in _get_attribute_from_value.
-def _get_attribute(
-    root_value: TypeVarValue | KnownValue | TypedValue | SyntheticClassObjectValue,
-    ctx: AttrContext,
-) -> Value:
-    if isinstance(root_value, KnownValue):
-        if is_typing_name(type(root_value.val), "TypeAliasType"):
-            attribute_value = _get_attribute_from_runtime_type_alias(
-                root_value.val, ctx
-            )
-            if attribute_value is not UNINITIALIZED_VALUE:
-                return attribute_value
-        attribute_value = _get_attribute_from_known(root_value.val, ctx)
-    elif isinstance(root_value, TypedValue):
-        if (
-            isinstance(root_value, CallableValue)
-            and ctx.attr == "asynq"
-            and root_value.signature.is_asynq
-        ):
-            return root_value.get_asynq_value()
-        attribute_value = _get_attribute_from_typed(root_value.typ, ctx)
-    elif isinstance(root_value, TypeVarValue):
-        attribute_value = AnyValue(AnySource.from_another)
-    elif isinstance(root_value, SyntheticClassObjectValue):
-        if isinstance(root_value.class_type, TypedDictValue):
-            attribute_value, _ = _get_attribute_from_subclass(dict, root_value, ctx)
-        else:
-            attribute_value, _ = _get_attribute_from_subclass(
-                root_value.class_type.typ, ctx.root_composite.value, ctx
-            )
-    else:
-        assert_never(root_value)
-    return attribute_value
 
 
 def _super_receiver_type_value(value: Value) -> tuple[TypedValue | None, bool]:
@@ -731,19 +701,21 @@ def _contains_self_typevar(value: Value) -> bool:
     )
 
 
-def _get_attribute_from_typed(typ: ClassKey, ctx: AttrContext) -> Value:
-    ctx.record_attr_read(typ)
+def _get_attribute_from_typed(
+    value: TypedValue, ctx: AttrContext
+) -> tuple[Value, CanAssignError | None]:
+    ctx.record_attr_read(value.typ)
     can_assign_ctx = ctx.get_can_assign_context()
     attribute = _get_type_object_attribute(
-        can_assign_ctx.make_type_object(typ),
+        can_assign_ctx.make_type_object(value.typ),
         ctx.attr,
         ctx,
         on_class=False,
         receiver_value=ctx.root_composite.value,
     )
     if attribute is None:
-        return UNINITIALIZED_VALUE
-    return attribute.value
+        return UNINITIALIZED_VALUE, _ca_error(value, ctx)
+    return attribute.value, attribute.error
 
 
 def _get_runtime_class_attribute_from_synthetic_class(
@@ -858,6 +830,10 @@ class KnownAttributeHook(PyObjectSequenceOption[_KAH]):
 
 
 def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
+    if is_instance_of_typing_name(obj, "TypeAliasType"):
+        attribute_value = _get_attribute_from_runtime_type_alias(obj, ctx)
+        if attribute_value is not UNINITIALIZED_VALUE:
+            return attribute_value
     if safe_isinstance(obj, type):
         ctx.record_attr_read(obj)
     else:
