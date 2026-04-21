@@ -387,10 +387,7 @@ def _get_attribute(
             and root_value.signature.is_asynq
         ):
             return root_value.get_asynq_value()
-        if isinstance(root_value.typ, ClassOwner):
-            attribute_value = _get_attribute_from_synthetic_typed_value(root_value, ctx)
-        else:
-            attribute_value = _get_attribute_from_typed(root_value.typ, ctx)
+        attribute_value = _get_attribute_from_typed(root_value.typ, ctx)
     elif isinstance(root_value, TypeVarValue):
         attribute_value = AnyValue(AnySource.from_another)
     elif isinstance(root_value, SyntheticClassObjectValue):
@@ -605,20 +602,6 @@ def _unwrap_value_from_subclass(result: Value, ctx: AttrContext) -> Value:
         return KnownValue(cls_val)
 
 
-def _get_attribute_from_synthetic_typed_value(
-    root_value: TypedValue, ctx: AttrContext
-) -> Value:
-    """Resolve a synthetic instance attribute via ``TypeObject.get_attribute()``."""
-    can_assign_ctx = ctx.get_can_assign_context()
-    type_object = can_assign_ctx.make_type_object(root_value.typ)
-    attribute = _get_type_object_attribute(
-        type_object, ctx.attr, ctx, on_class=False, receiver_value=root_value
-    )
-    if attribute is None:
-        return UNINITIALIZED_VALUE
-    return attribute.value
-
-
 def _get_attribute_from_synthetic_class(
     class_key: ClassKey, self_value: Value, ctx: AttrContext
 ) -> Value:
@@ -764,12 +747,14 @@ def _contains_self_typevar(value: Value) -> bool:
     )
 
 
-def _get_attribute_from_typed(typ: type, ctx: AttrContext) -> Value:
+def _get_attribute_from_typed(typ: ClassKey, ctx: AttrContext) -> Value:
     ctx.record_attr_read(typ)
 
     # First check values that are special in Python
     if ctx.attr == "__class__":
-        return KnownValue(typ)
+        if isinstance(typ, type):
+            return KnownValue(typ)
+        return SubclassValue(TypedValue(type))
     can_assign_ctx = ctx.get_can_assign_context()
     attribute = _get_type_object_attribute(
         can_assign_ctx.make_type_object(typ),
