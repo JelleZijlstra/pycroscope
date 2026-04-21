@@ -5,6 +5,7 @@ import sys
 import types
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import MISSING, replace
+from enum import Enum
 from typing import get_args, get_origin
 
 from typing_extensions import assert_never
@@ -12,6 +13,7 @@ from typing_extensions import assert_never
 if sys.version_info >= (3, 14):
     from annotationlib import Format, get_annotations
 
+from .annotated_types import EnumName
 from .annotations import (
     RuntimeAnnotationsContext,
     annotation_expr_from_runtime,
@@ -19,13 +21,17 @@ from .annotations import (
     type_from_runtime,
 )
 from .arg_spec import ArgSpecCache
-from .safe import is_namedtuple_class, safe_getattr, safe_isinstance
+from .safe import is_namedtuple_class, safe_getattr, safe_isinstance, safe_issubclass
+from .signature import CallContext, ParameterKind, Signature, SigParameter
 from .type_object import DataclassFieldRecord
 from .value import (
+    AnnotatedValue,
     AnySource,
     AnyValue,
+    CallableValue,
     ClassKey,
     ClassSymbol,
+    CustomCheckExtension,
     DataclassFieldInfo,
     FunctionDecorator,
     GenericValue,
@@ -53,6 +59,45 @@ from .value import (
     replace_fallback,
 )
 
+
+def _enum_name_impl(ctx: CallContext) -> Value:
+    self_val = ctx.vars.get("self")
+    if self_val is None:
+        return ctx.inferred_return_value
+    self_val = replace_fallback(self_val)
+    match self_val:
+        case KnownValue(val) if safe_isinstance(val, Enum):
+            return KnownValue(val.name)
+        case TypedValue(typ) if (
+            ctx.visitor.make_type_object(typ).is_enum()
+            and isinstance(typ, type)
+            and safe_issubclass(typ, Enum)
+        ):
+            return AnnotatedValue(
+                TypedValue(str), [CustomCheckExtension(EnumName(typ))]
+            )
+        case _:
+            return ctx.inferred_return_value
+
+
+def _enum_value_impl(ctx: CallContext) -> Value:
+    self_val = ctx.vars.get("self")
+    if self_val is None:
+        return ctx.inferred_return_value
+    self_val = replace_fallback(self_val)
+    match self_val:
+        case KnownValue(val) if safe_isinstance(val, Enum):
+            return KnownValue(val.value)
+        case TypedValue(typ):
+            tobj = ctx.visitor.make_type_object(typ)
+            enum_value_type = tobj.get_enum_value_type()
+            if enum_value_type is not None:
+                return enum_value_type
+            return ctx.inferred_return_value
+        case _:
+            return ctx.inferred_return_value
+
+
 CUSTOM_SYMBOLS: dict[ClassKey, dict[str, ClassSymbol]] = {
     Callable: {
         "__name__": ClassSymbol(
@@ -64,7 +109,53 @@ CUSTOM_SYMBOLS: dict[ClassKey, dict[str, ClassSymbol]] = {
         "__qualname__": ClassSymbol(
             annotation=TypedValue(str), qualifiers=frozenset({Qualifier.ReadOnly})
         ),
-    }
+    },
+    Enum: {
+        "name": ClassSymbol(
+            initializer=KnownValue(Enum.__dict__["name"]),
+            qualifiers=frozenset({Qualifier.ReadOnly}),
+            property_info=PropertyInfo(
+                fget=ClassSymbol(
+                    initializer=CallableValue(
+                        Signature.make(
+                            [SigParameter("self", ParameterKind.POSITIONAL_ONLY)],
+                            TypedValue(str),
+                            impl=_enum_name_impl,
+                        )
+                    )
+                )
+            ),
+        ),
+        "value": ClassSymbol(
+            initializer=KnownValue(Enum.__dict__["value"]),
+            qualifiers=frozenset({Qualifier.ReadOnly}),
+            property_info=PropertyInfo(
+                fget=ClassSymbol(
+                    initializer=CallableValue(
+                        Signature.make(
+                            [SigParameter("self", ParameterKind.POSITIONAL_ONLY)],
+                            AnyValue(AnySource.explicit),
+                            impl=_enum_value_impl,
+                        )
+                    )
+                )
+            ),
+        ),
+        "_value_": ClassSymbol(
+            annotation=AnyValue(AnySource.explicit),
+            property_info=PropertyInfo(
+                fget=ClassSymbol(
+                    initializer=CallableValue(
+                        Signature.make(
+                            [SigParameter("self", ParameterKind.POSITIONAL_ONLY)],
+                            AnyValue(AnySource.explicit),
+                            impl=_enum_value_impl,
+                        )
+                    )
+                )
+            ),
+        ),
+    },
 }
 
 

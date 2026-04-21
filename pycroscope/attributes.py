@@ -20,7 +20,6 @@ if sys.version_info >= (3, 14):
     from annotationlib import Format, get_annotations
 else:
     from inspect import get_annotations  # pragma: no cover
-from .annotated_types import EnumName
 from .annotations import (
     RuntimeAnnotationsContext,
     annotation_expr_from_annotations,
@@ -53,7 +52,6 @@ from .value import (
     ClassKey,
     ClassOwner,
     ClassSymbol,
-    CustomCheckExtension,
     GenericBases,
     GenericValue,
     GradualType,
@@ -87,7 +85,6 @@ from .value import (
     Value,
     _iter_typevar_map_items,
     _typevar_map_from_varlike_pairs,
-    annotate_value,
     gradualize,
     replace_fallback,
     set_self,
@@ -717,14 +714,10 @@ def _maybe_use_resolved_typed_instance_attribute(
     ctx: AttrContext,
 ) -> Value | None:
     symbol = attribute.symbol
-    if attribute.is_property:
-        if ctx.attr in {"name", "value", "_value_"} and safe_issubclass(typ, Enum):
-            return None
-        return resolved_value
-    if symbol.is_classmethod:
-        return resolved_value
     if (
         symbol.is_instance_only
+        and not attribute.is_property
+        and not symbol.is_classmethod
         and not symbol.is_classvar
         and not symbol.is_initvar
         and not symbol.is_method
@@ -862,15 +855,6 @@ def _get_attribute_from_typed(
     if should_unwrap:
         result = _unwrap_value_from_typed(result, typ, ctx)
     ctx.record_usage(typ, result)
-    assert safe_isinstance(provider, type), repr(provider)
-    if ctx.attr in {"value", "_value_"} and safe_issubclass(typ, Enum):
-        enum_value_type = (
-            ctx.get_can_assign_context().make_type_object(typ).get_enum_value_type()
-        )
-        if enum_value_type is not None:
-            return enum_value_type
-    if ctx.attr == "name" and safe_issubclass(typ, Enum) and result == TypedValue(str):
-        return annotate_value(result, [CustomCheckExtension(EnumName(typ))])
     return result
 
 
