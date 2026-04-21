@@ -2107,6 +2107,9 @@ class TypeObject:
             )
         return base
 
+    def __repr__(self) -> str:
+        return f"<TypeObject {self}>"
+
     def _get_protocol_members_for_display(self) -> list[str]:
         protocol_members = self.get_protocol_members()
         if not isinstance(self.typ, type):
@@ -2813,6 +2816,12 @@ def _is_informative_symbol(symbol: ClassSymbol) -> bool:
             val = val.__func__
         if isinstance(val, FunctionType) and safe_getattr(val, "__annotations__", None):
             return True  # it has annotations, so it is likely useful
+    if (
+        isinstance(symbol.initializer, CallableValue)
+        and isinstance(symbol.initializer.signature, Signature)
+        and symbol.initializer.signature.impl is not None
+    ):
+        return True  # it has an implementation, so it is likely useful
 
     return False
 

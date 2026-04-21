@@ -2792,6 +2792,7 @@ class CheckerAttrContext(AttrContext):
     checker: Checker = field(repr=False)
 
     def resolve_name_from_typeshed(self, module: str, name: str) -> Value:
+        # TODO: Change to resolve_name_if_present
         return self.checker.ts_finder.resolve_name(module, name)
 
     def get_attribute_from_typeshed(self, typ: type, *, on_class: bool) -> Value:

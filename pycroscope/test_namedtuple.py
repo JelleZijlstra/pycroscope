@@ -308,14 +308,31 @@ class TestNamedTuple(TestNameCheckVisitorBase):
     @assert_passes()
     def test_local_namedtuple(self):
         import collections
+        from typing import Any
 
-        from typing_extensions import Literal
+        from typing_extensions import assert_type
 
         def capybara():
             typ = collections.namedtuple("typ", "foo bar")
             t = typ(1, 2)
-            assert_type(t.foo, Literal[1])
-            assert_type(t.bar, Literal[2])
+            assert_type(t.foo, Any)
+            assert_type(t.bar, Any)
             print(t.baz)  # E: undefined_attribute
             typ(1, 2, 3)  # E: incompatible_call
+            typ(1)  # E: incompatible_call
+
+    @assert_passes()
+    def test_annotated_local_namedtuple(self):
+
+        from typing import NamedTuple
+
+        from typing_extensions import assert_type
+
+        def capybara():
+            typ = NamedTuple("typ", [("foo", int), ("bar", str)])
+            t = typ(1, "x")
+            assert_type(t.foo, int)
+            assert_type(t.bar, str)
+            print(t.baz)  # E: undefined_attribute
+            typ(1, "2", 3)  # E: incompatible_call
             typ(1)  # E: incompatible_call
