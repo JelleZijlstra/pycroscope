@@ -65,10 +65,6 @@ from .value import (
     unite_values,
 )
 
-# these don't appear to be in the standard types module
-SlotWrapperType = type(type.__init__)
-MethodDescriptorType = type(list.append)
-
 
 @dataclass
 class AttrContext:
@@ -80,7 +76,6 @@ class AttrContext:
     lookup_root_value: Value | None
     attr: str
     options: Options = field(repr=False)
-    prefer_typeshed: bool
 
     @property
     def root_value(self) -> Value:
@@ -114,9 +109,7 @@ class AttrContext:
     def clone_for_attribute_lookup(
         self, root_composite: Composite, attr: str
     ) -> "AttrContext":
-        return replace(
-            self, root_composite=root_composite, attr=attr, prefer_typeshed=False
-        )
+        return replace(self, root_composite=root_composite, attr=attr)
 
     def get_type_object_attribute_policy(
         self, *, on_class: bool, receiver: Value

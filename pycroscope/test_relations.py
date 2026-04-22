@@ -18,8 +18,8 @@ def test_string_backed_context_manager_protocol_specializes_before_runtime_cache
         [TypedValue(NoneType)],
     )
 
-    enter = checker.get_attribute_from_value(left, "__enter__", prefer_typeshed=True)
-    exit_ = checker.get_attribute_from_value(left, "__exit__", prefer_typeshed=True)
+    enter = checker.get_attribute_from_value(left, "__enter__")
+    exit_ = checker.get_attribute_from_value(left, "__exit__")
 
     assert str(enter) == "() -> NoneType"
     assert str(exit_).endswith("-> bool | None")
@@ -43,7 +43,7 @@ def test_string_backed_generator_context_manager_inherits_typed_base_enter() -> 
         class_owner_from_key("contextlib._GeneratorContextManager"), [TypedValue(int)]
     )
 
-    enter = checker.get_attribute_from_value(left, "__enter__", prefer_typeshed=True)
+    enter = checker.get_attribute_from_value(left, "__enter__")
     enter_sig = checker.signature_from_value(enter)
 
     assert str(enter_sig) == "() -> int"
@@ -58,7 +58,7 @@ def test_string_backed_async_generator_context_manager_inherits_typed_base_aente
         [KnownValue(None)],
     )
 
-    aenter = checker.get_attribute_from_value(left, "__aenter__", prefer_typeshed=True)
+    aenter = checker.get_attribute_from_value(left, "__aenter__")
     aenter_sig = checker.signature_from_value(aenter)
 
     assert (

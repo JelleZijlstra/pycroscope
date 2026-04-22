@@ -1830,9 +1830,7 @@ class TypeObject:
             # A better solution probably first requires a rewrite of the attribute fetching
             # system to make it more robust.
             elif member == "__hash__" and _should_use_permissive_dunder_hash(other_val):
-                expected = ctx.get_attribute_from_value(
-                    self_val, member, prefer_typeshed=True
-                )
+                expected = ctx.get_attribute_from_value(self_val, member)
                 if expected is UNINITIALIZED_VALUE:
                     # In static fallback mode, synthetic protocol members may not have
                     # a retrievable attribute type. Keep enforcing member presence.

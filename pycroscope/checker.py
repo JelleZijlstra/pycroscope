@@ -2021,7 +2021,6 @@ class Checker:
             None,
             "",
             self.options,
-            prefer_typeshed=False,
             checker=self,
         )
         descriptor_set_type = _synthetic_descriptor_set_type(attr, ctx)
@@ -2773,15 +2772,12 @@ class Checker:
             specialized_argspec = combined
         return specialized_argspec
 
-    def get_attribute_from_value(
-        self, root_value: Value, attribute: str, *, prefer_typeshed: bool = False
-    ) -> Value:
+    def get_attribute_from_value(self, root_value: Value, attribute: str) -> Value:
         ctx = CheckerAttrContext(
             Composite(root_value),
             lookup_root_value=None,
             attr=attribute,
             options=self.options,
-            prefer_typeshed=prefer_typeshed,
             checker=self,
         )
         return get_attribute(ctx)

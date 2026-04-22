@@ -722,7 +722,6 @@ class _AttrContext(CheckerAttrContext):
         *,
         node: ast.AST | None,
         ignore_none: bool = False,
-        prefer_typeshed: bool = False,
         record_reads: bool = True,
         self_value: Value | None = None,
     ) -> None:
@@ -731,7 +730,6 @@ class _AttrContext(CheckerAttrContext):
             lookup_root_value,
             attr,
             visitor.options,
-            prefer_typeshed=prefer_typeshed,
             checker=visitor.checker,
         )
         self.node = node
@@ -776,7 +774,6 @@ class _AttrContext(CheckerAttrContext):
             self.visitor,
             node=self.node,
             ignore_none=self.ignore_none,
-            prefer_typeshed=False,
             record_reads=self.record_reads,
             self_value=self.self_value,
         )
@@ -1576,11 +1573,7 @@ class ClassAttributeChecker:
         if _has_annotation_for_attr(typ, attr_name) or attributes.get_attrs_attribute(
             typ,
             attributes.AttrContext(
-                Composite(TypedValue(typ)),
-                None,
-                attr_name,
-                visitor.options,
-                prefer_typeshed=False,
+                Composite(TypedValue(typ)), None, attr_name, visitor.options
             ),
         ):
             return
@@ -14512,7 +14505,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         *,
         ignore_none: bool = False,
         use_fallback: bool = False,
-        prefer_typeshed: bool = False,
         record_reads: bool = True,
         self_value: Value | None = None,
     ) -> Value:
@@ -14652,7 +14644,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     node,
                     ignore_none=ignore_none,
                     use_fallback=False,
-                    prefer_typeshed=prefer_typeshed,
                     record_reads=False,
                 )
                 subresult = _drop_uninitialized_value(subresult)
@@ -14686,7 +14677,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self,
             node=node,
             ignore_none=ignore_none,
-            prefer_typeshed=prefer_typeshed,
             record_reads=record_reads,
             self_value=resolved_self_value,
         )
@@ -14710,7 +14700,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self,
                     node=node,
                     ignore_none=ignore_none,
-                    prefer_typeshed=prefer_typeshed,
                     record_reads=record_reads,
                     self_value=resolved_self_value,
                 )
@@ -14726,12 +14715,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return self._get_attribute_fallback(root_composite.value, attr, node)
         return result
 
-    def get_attribute_from_value(
-        self, root_value: Value, attribute: str, *, prefer_typeshed: bool = False
-    ) -> Value:
-        return self.get_attribute(
-            Composite(root_value), attribute, prefer_typeshed=prefer_typeshed
-        )
+    def get_attribute_from_value(self, root_value: Value, attribute: str) -> Value:
+        return self.get_attribute(Composite(root_value), attribute)
 
     def _get_attribute_fallback(
         self, root_value: Value, attr: str, node: ast.AST, *, allow_error: bool = True
