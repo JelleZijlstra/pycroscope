@@ -8,6 +8,7 @@ import collections.abc
 import enum
 import sys
 import types
+import typing
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -883,22 +884,55 @@ def _get_attribute_from_known_inner(
         if attribute_value is not UNINITIALIZED_VALUE:
             return attribute_value, None
 
+        try:
+            mod_annos = obj.__annotations__
+        except Exception:
+            pass
+        else:
+            if ctx.attr in mod_annos:
+                annotation = mod_annos[ctx.attr]
+                annotation_value = type_from_runtime(
+                    annotation,
+                    ctx.get_can_assign_context(),
+                    globals=obj.__dict__,
+                    ctx=RuntimeAnnotationsContext(ctx, self_key=None),
+                )
+                return annotation_value, None
+
+    if safe_isinstance(obj, type):
+        tobj = ctx.get_can_assign_context().make_type_object(obj)
+        on_class = True
+    else:
+        tobj = ctx.get_can_assign_context().make_type_object(type(obj))
+        on_class = False
+    policy = ctx.get_type_object_attribute_policy(on_class=on_class, receiver=value)
+    type_object_attr = tobj.get_attribute(ctx.attr, policy)
+
+    # Even if there's no runtime attribute, we believe the annotation if there is one.
+    if runtime_value is None:
+        if (
+            type_object_attr is not None
+            and type_object_attr.symbol.annotation is not None
+        ):
+            return type_object_attr.value, type_object_attr.error
+        return UNINITIALIZED_VALUE, _ca_error(value, ctx)
+
     if (
-        runtime_value is not None
-        and not safe_isinstance(
-            runtime_value.val,
-            (
-                types.FunctionType,
-                types.MethodType,
-                types.BuiltinFunctionType,
-                types.MethodWrapperType,
-            ),
-        )
-        and not safe_isinstance(obj, (type, types.FunctionType, types.ModuleType))
+        type_object_attr is not None
+        and type_object_attr.symbol.annotation is not None
+        and not type_object_attr.symbol.is_readonly
+        and not type_object_attr.symbol.is_final
     ):
+        # If there's an annotation and the attribute is mutable, we believe the annotation
+        return type_object_attr.value, type_object_attr.error
+
+    if not safe_isinstance(obj, (types.GenericAlias, typing._GenericAlias)):
         return runtime_value, None
 
-    return _get_attribute_from_known(obj, ctx), None
+    if type_object_attr is not None:
+        return type_object_attr.value, type_object_attr.error
+
+    return runtime_value, None
 
 
 def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:

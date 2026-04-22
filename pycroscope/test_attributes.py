@@ -1,5 +1,7 @@
 # static analysis: ignore
 
+from typing import assert_type
+
 import pytest
 
 from .extensions import LiteralOnly
@@ -64,7 +66,8 @@ class TestAttributes(TestNameCheckVisitorBase):
         def capybara():
             assert_type(Capybara.kerodon_id, object)
             c = Capybara()
-            return c.capybara_id
+            assert_type(c.capybara_id, int)
+            assert_type(c.kerodon_id, object)
 
     @assert_passes()
     def test_attribute_in_base_class(self):
@@ -86,7 +89,8 @@ class TestAttributes(TestNameCheckVisitorBase):
             def clsmthd(cls):
                 assert_type(cls.capybara_id, Literal[3])
 
-        def capybara():
+        def capybara(cls: type[Capybara]) -> None:
+            assert_type(cls.capybara_id, int | None)
             assert_type(Capybara().capybara_id, int | None)
             assert_type(Capybara.capybara_id, int | None)
             assert_type(DefiniteCapybara().capybara_id, Literal[3])
@@ -213,10 +217,9 @@ class TestAttributes(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_name_py3(self):
-        from typing_extensions import Literal
 
         def capybara():
-            assert_type(KnownValue.__name__, Literal["KnownValue"])
+            assert_type(KnownValue.__name__, str)
 
     @assert_passes()
     def test_attribute_type_inference(self):
@@ -511,7 +514,7 @@ class TestAttributes(TestNameCheckVisitorBase):
         has_prop = HasProp()
 
         def capybara():
-            assert_is_value(has_prop.does_it_really, AnyValue(AnySource.inference))
+            has_prop.does_it_really  # E: undefined_attribute
 
     @assert_passes()
     def test_super_descriptor_binding(self):
@@ -750,7 +753,9 @@ class TestAttributes(TestNameCheckVisitorBase):
             def value(self) -> int:
                 return 1
 
-        BrokenProperty.value.fget.__signature__ = 0
+        fget = BrokenProperty.value.fget
+        if fget is not None:
+            fget.__signature__ = 0
 
         def capybara(obj: BrokenProperty) -> None:
             assert_type(obj.value, Any)
