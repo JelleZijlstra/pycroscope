@@ -330,17 +330,16 @@ class TestAsyncGenerator(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_is_a_generator(self):
-        import collections.abc
         from typing import AsyncIterator
+
+        from typing_extensions import assert_type
 
         async def capybara() -> AsyncIterator[int]:
             yield 1
 
         def caller() -> None:
             x = capybara()
-            assert_is_value(
-                x, GenericValue(collections.abc.AsyncIterator, [TypedValue(int)])
-            )
+            assert_type(x, AsyncIterator[int])
 
 
 class TestGenericFunctions(TestNameCheckVisitorBase):

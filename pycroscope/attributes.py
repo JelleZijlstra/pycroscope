@@ -4,6 +4,7 @@ Code for retrieving the value of attributes.
 
 """
 
+import collections.abc
 import enum
 import sys
 import types
@@ -864,7 +865,7 @@ def _get_attribute_from_known_inner(
     # - The raw runtime value from getattr()
     # - For modules:
     #   - The runtime annotation
-    #   - The annotation from stubs, though typeshed.py doesn't yet expose a way to get this
+    #   - The annotation from stubs
     # - The value from TypeObject.get_attribute(), which can be better for methods.
     # TODO: We need to think about how to prioritize between these.
     # Plan is to write a more principled prioritization here, then remove the fallback
@@ -873,19 +874,33 @@ def _get_attribute_from_known_inner(
     default = object()
     runtime_obj = safe_getattr(obj, ctx.attr, default)
     if runtime_obj is default:
-        pass
+        runtime_value = None
     else:
         runtime_value = KnownValue(runtime_obj)
-        if not safe_isinstance(
-            runtime_obj,
+
+    if safe_isinstance(obj, types.ModuleType):
+        if obj is collections.abc and runtime_value is not None:
+            # Prefer the runtime lookup for collections.abc because typeshed pretends
+            # its values are imported from typing.
+            return runtime_value, None
+        attribute_value = ctx.resolve_name_from_typeshed(obj.__name__, ctx.attr)
+        if attribute_value is not UNINITIALIZED_VALUE:
+            return attribute_value, None
+
+    if (
+        runtime_value is not None
+        and not safe_isinstance(
+            runtime_value.val,
             (
                 types.FunctionType,
                 types.MethodType,
                 types.BuiltinFunctionType,
                 types.MethodWrapperType,
             ),
-        ) and not safe_isinstance(obj, (type, types.FunctionType, types.ModuleType)):
-            return runtime_value, None
+        )
+        and not safe_isinstance(obj, (type, types.FunctionType, types.ModuleType))
+    ):
+        return runtime_value, None
 
     return _get_attribute_from_known(obj, ctx), None
 

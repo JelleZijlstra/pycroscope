@@ -7,7 +7,6 @@ from .tests import make_simple_sequence
 from .value import (
     AnySource,
     AnyValue,
-    GenericValue,
     KnownValue,
     SequenceValue,
     TypedValue,
@@ -322,36 +321,31 @@ class TestNoReturn(TestNameCheckVisitorBase):
 class TestAsyncGenerator(TestNameCheckVisitorBase):
     @assert_passes()
     def test_async_iterator(self):
-        import collections.abc
         from typing import AsyncIterator
+
+        from typing_extensions import assert_type
 
         async def gen() -> AsyncIterator[int]:
             yield 3
             yield "not an int"  # E: incompatible_yield
 
         async def capybara() -> None:
-            assert_is_value(
-                gen(), GenericValue(collections.abc.AsyncIterator, [TypedValue(int)])
-            )
+            assert_type(gen(), AsyncIterator[int])
             async for i in gen():
                 assert_type(i, int)
 
     @assert_passes()
     def test_async_generator(self):
-        import collections.abc
         from typing import AsyncGenerator
+
+        from typing_extensions import assert_type
 
         async def gen() -> AsyncGenerator[int, None]:
             yield 3
             yield "not an int"  # E: incompatible_yield
 
         async def capybara() -> None:
-            assert_is_value(
-                gen(),
-                GenericValue(
-                    collections.abc.AsyncGenerator, [TypedValue(int), KnownValue(None)]
-                ),
-            )
+            assert_type(gen(), AsyncGenerator[int, None])  # E: must_use
             async for i in gen():
                 assert_type(i, int)
 
@@ -363,8 +357,9 @@ class TestAsyncGenerator(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_async_comprehension_over_generator(self):
-        import collections.abc
         from typing import AsyncIterator
+
+        from typing_extensions import assert_type
 
         async def f() -> AsyncIterator[int]:
             yield 1
@@ -372,9 +367,7 @@ class TestAsyncGenerator(TestNameCheckVisitorBase):
 
         async def capybara():
             x = f()
-            assert_is_value(
-                x, GenericValue(collections.abc.AsyncIterator, [TypedValue(int)])
-            )
+            assert_type(x, AsyncIterator[int])
             ints = [i async for i in x]
             assert_is_value(ints, SequenceValue(list, [(True, TypedValue(int))]))
 
