@@ -910,12 +910,21 @@ def _get_attribute_from_known_inner(
 
     # Even if there's no runtime attribute, we believe the annotation if there is one.
     if runtime_value is None:
+        if tobj.has_any_base():
+            return AnyValue(AnySource.from_another), None
         if (
             type_object_attr is not None
             and type_object_attr.symbol.annotation is not None
         ):
             return type_object_attr.value, type_object_attr.error
         return UNINITIALIZED_VALUE, _ca_error(value, ctx)
+
+    if (
+        tobj.is_enum()
+        and safe_isinstance(obj, type)
+        and safe_isinstance(runtime_value.val, obj)
+    ):
+        return runtime_value, None
 
     if (
         type_object_attr is not None
@@ -925,6 +934,27 @@ def _get_attribute_from_known_inner(
     ):
         # If there's an annotation and the attribute is mutable, we believe the annotation
         return type_object_attr.value, type_object_attr.error
+
+    if type_object_attr is not None and (
+        safe_isinstance(obj, type)
+        or (
+            isinstance(runtime_value, KnownValue)
+            and (
+                safe_isinstance(
+                    runtime_value.val, (types.MethodType, types.BuiltinFunctionType)
+                )
+                and runtime_value.val.__self__ is obj
+            )
+        )
+    ):
+        # Runtime class-object lookup still produces values with unspecialized
+        # Self for importable classes. TypeObject.get_attribute() handles many
+        # Self-sensitive cases above, but not all runtime MRO fallbacks.
+        if safe_isinstance(obj, type):
+            self_value = TypedValue(obj)
+        else:
+            self_value = ctx.get_self_value()
+        runtime_value = set_self(runtime_value, self_value, type_object_attr.owner.typ)
 
     if not safe_isinstance(obj, (types.GenericAlias, typing._GenericAlias)):
         return runtime_value, None
@@ -1019,8 +1049,7 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
     if safe_isinstance(obj, type) or (
         isinstance(result, KnownValue)
         and (
-            safe_isinstance(result.val, types.MethodType)
-            or safe_isinstance(result.val, types.BuiltinFunctionType)
+            safe_isinstance(result.val, (types.MethodType, types.BuiltinFunctionType))
             and result.val.__self__ is obj
         )
     ):

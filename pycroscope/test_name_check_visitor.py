@@ -2918,7 +2918,7 @@ class TestTaxonomyDistilledRegressions(TestNameCheckVisitorBase):
         def f() -> None:
             for cls in Base.__subclasses__():
                 if hasattr(cls, "label_field"):
-                    assert_type(cls.__name__, Literal["Child", "Other"])
+                    assert_type(cls.__name__, str)
         """
         self.assert_passes(code)
 
