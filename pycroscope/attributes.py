@@ -807,10 +807,6 @@ def _default_transformer(obj: object, attr: str) -> Value | None:
     if obj is Any:
         return AnyValue(AnySource.explicit)
 
-    # Avoid generating huge Union type with the actual value
-    if obj is sys and attr == "modules":
-        return GenericValue(dict, [TypedValue(str), TypedValue(types.ModuleType)])
-
     return None
 
 
