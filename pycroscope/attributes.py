@@ -17,7 +17,7 @@ from .annotations import RuntimeAnnotationsContext, type_from_runtime
 from .options import Options, PyObjectSequenceOption
 from .predicates import HasAttr
 from .relations import intersect_multi
-from .safe import safe_getattr, safe_isinstance
+from .safe import safe_getattr, safe_isinstance, safe_issubclass
 from .signature import MaybeSignature
 from .stacked_scopes import Composite
 from .type_object import AttributePolicy, TypeObject, TypeObjectAttribute
@@ -35,6 +35,7 @@ from .value import (
     GradualType,
     IntersectionValue,
     KnownValue,
+    KnownValueWithTypeVars,
     MultiValuedValue,
     NewTypeValue,
     OverlappingValue,
@@ -307,6 +308,10 @@ def _get_attribute_from_generic_alias(
         )
     if ctx.attr in _GENERIC_ALIAS_ATTR_EXCEPTIONS:
         return _get_attribute_from_value(TypedValue(types.GenericAlias), ctx)
+    lookup_root = ctx.get_self_value()
+    if lookup_root is not ctx.root_value:
+        lookup_ctx = ctx.clone_for_attribute_lookup(Composite(lookup_root), ctx.attr)
+        return _get_attribute_from_value(gradualize(lookup_root), lookup_ctx)
     return _get_attribute_from_value(gradualize(root), ctx)
 
 
@@ -386,6 +391,18 @@ def _get_attribute_from_subclass(
                 assert_never(metaclass)
     if ctx.attr == "__bases__":
         return GenericValue(tuple, [SubclassValue(TypedValue(object))]), None
+    if (
+        ctx.attr == "__getitem__"
+        and ctx.get_self_value() != ctx.root_value
+        and safe_isinstance(typ, type)
+        and safe_issubclass(typ, dict)
+    ):
+        default = object()
+        runtime_obj = safe_getattr(typ, ctx.attr, default)
+        if runtime_obj is not default:
+            result = set_self(KnownValue(runtime_obj), ctx.get_self_value(), typ)
+            ctx.record_usage(typ, result)
+            return result, None
     attribute = _get_type_object_attribute(
         tobj, ctx.attr, ctx, on_class=True, receiver_value=self_value
     )
@@ -484,8 +501,6 @@ def _get_attribute_from_known(
     obj = value.val
     if safe_isinstance(obj, type):
         ctx.record_attr_read(obj)
-        if ctx.attr in {"__name__", "__qualname__", "__module__", "__doc__"}:
-            return KnownValue(getattr(obj, ctx.attr))
     else:
         ctx.record_attr_read(type(obj))
 
@@ -558,6 +573,8 @@ def _get_attribute_from_known_inner(
         on_class = False
     policy = ctx.get_type_object_attribute_policy(on_class=on_class, receiver=value)
     type_object_attr = tobj.get_attribute(ctx.attr, policy)
+    if isinstance(value, KnownValueWithTypeVars) and type_object_attr is not None:
+        return type_object_attr.value, type_object_attr.error
 
     # Even if there's no runtime attribute, we believe the annotation if there is one.
     if runtime_value is None:
@@ -609,7 +626,11 @@ def _get_attribute_from_known_inner(
         # Self for importable classes. TypeObject.get_attribute() handles many
         # Self-sensitive cases above, but not all runtime MRO fallbacks.
         if safe_isinstance(obj, type):
-            self_value = TypedValue(obj)
+            context_self_value = ctx.get_self_value()
+            if isinstance(context_self_value, KnownValueWithTypeVars):
+                self_value = context_self_value
+            else:
+                self_value = TypedValue(obj)
         else:
             self_value = ctx.get_self_value()
         runtime_value = set_self(runtime_value, self_value, type_object_attr.owner.typ)

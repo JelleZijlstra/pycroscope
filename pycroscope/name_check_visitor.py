@@ -739,6 +739,10 @@ class _AttrContext(CheckerAttrContext):
     ) -> AttributePolicy:
         return AttributePolicy(
             on_class=on_class,
+            is_special_lookup=self.self_value is not None
+            and self.attr.startswith("__")
+            and self.attr.endswith("__")
+            and _attribute_root_class_info(self.self_value).is_class_object is True,
             receiver=receiver,
             visitor=self.visitor,
             node=self.node,
