@@ -69,11 +69,6 @@ from .value import (
 @dataclass
 class AttrContext:
     root_composite: Composite
-    # Optional approximation of root_composite.value used only for attribute lookup.
-    # This lets us fall back to a bound/constraint view for dispatch while still
-    # retaining the original root value for self-binding and metadata checks.
-    # TODO: I don't understand why we need this
-    lookup_root_value: Value | None
     attr: str
     options: Options = field(repr=False)
 

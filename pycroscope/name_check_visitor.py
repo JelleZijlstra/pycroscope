@@ -716,7 +716,6 @@ class _AttrContext(CheckerAttrContext):
     def __init__(
         self,
         root_composite: Composite,
-        lookup_root_value: Value | None,
         attr: str,
         visitor: "NameCheckVisitor",
         *,
@@ -725,13 +724,7 @@ class _AttrContext(CheckerAttrContext):
         record_reads: bool = True,
         self_value: Value | None = None,
     ) -> None:
-        super().__init__(
-            root_composite,
-            lookup_root_value,
-            attr,
-            visitor.options,
-            checker=visitor.checker,
-        )
+        super().__init__(root_composite, attr, visitor.options, checker=visitor.checker)
         self.node = node
         self.visitor = visitor
         self.ignore_none = ignore_none
@@ -769,7 +762,6 @@ class _AttrContext(CheckerAttrContext):
     ) -> "_AttrContext":
         return _AttrContext(
             root_composite,
-            self.lookup_root_value,
             attr,
             self.visitor,
             node=self.node,
@@ -14514,7 +14506,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         """
         resolved_self_value = self_value
-        lookup_root_value: Value | None = None
         if (
             isinstance(root_composite.value, PartialValue)
             and root_composite.value.operation is PartialValueOperation.SUBSCRIPT
@@ -14524,11 +14515,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._specialized_self_value_from_generic_alias_partial(
                     root_composite.value
                 )
-            )
-            lookup_root_value = (
-                specialized_self_value
-                if specialized_self_value is not None
-                else root_composite.value.root
             )
             if resolved_self_value is None:
                 resolved_self_value = specialized_self_value
@@ -14672,7 +14658,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return intersect_multi(results, self)
         ctx = _AttrContext(
             root_composite,
-            lookup_root_value,
             attr,
             self,
             node=node,
@@ -14695,7 +14680,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if mangled_attr != attr:
                 mangled_ctx = _AttrContext(
                     root_composite,
-                    lookup_root_value,
                     mangled_attr,
                     self,
                     node=node,

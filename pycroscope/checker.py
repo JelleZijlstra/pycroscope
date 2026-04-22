@@ -2774,11 +2774,7 @@ class Checker:
 
     def get_attribute_from_value(self, root_value: Value, attribute: str) -> Value:
         ctx = CheckerAttrContext(
-            Composite(root_value),
-            lookup_root_value=None,
-            attr=attribute,
-            options=self.options,
-            checker=self,
+            Composite(root_value), attr=attribute, options=self.options, checker=self
         )
         return get_attribute(ctx)
 

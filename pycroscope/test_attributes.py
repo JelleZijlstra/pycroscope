@@ -1,8 +1,7 @@
 # static analysis: ignore
 
-from typing import assert_type
-
 import pytest
+from typing_extensions import assert_type
 
 from .extensions import LiteralOnly
 from .test_name_check_visitor import TestNameCheckVisitorBase
