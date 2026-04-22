@@ -2797,9 +2797,6 @@ class CheckerAttrContext(AttrContext):
             return UNINITIALIZED_VALUE
         return value
 
-    def get_attribute_from_typeshed(self, typ: type, *, on_class: bool) -> Value:
-        return self.checker.ts_finder.get_attribute(typ, self.attr, on_class=on_class)
-
     def should_ignore_none_attributes(self) -> bool:
         return False
 
@@ -2811,14 +2808,6 @@ class CheckerAttrContext(AttrContext):
 
     def get_can_assign_context(self) -> CanAssignContext:
         return self.checker
-
-    def get_generic_bases(
-        self, typ: ClassKey, generic_args: Sequence[Value]
-    ) -> GenericBases:
-        return self.checker.get_generic_bases(typ, generic_args)
-
-    def get_synthetic_class(self, typ: ClassKey) -> SyntheticClassObjectValue | None:
-        return self.checker.get_synthetic_class(typ)
 
 
 def get_synthetic_member_initializer(tobj: TypeObject, name: str) -> Value | None:

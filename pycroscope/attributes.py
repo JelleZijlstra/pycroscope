@@ -5,21 +5,14 @@ Code for retrieving the value of attributes.
 """
 
 import collections.abc
-import enum
-import sys
 import types
 import typing
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, ClassVar
 
-import typing_extensions
 from typing_extensions import assert_never
 
-if sys.version_info >= (3, 14):
-    pass
-else:
-    pass  # pragma: no cover
 from .annotations import RuntimeAnnotationsContext, type_from_runtime
 from .options import Options, PyObjectSequenceOption
 from .predicates import HasAttr
@@ -38,8 +31,6 @@ from .value import (
     CanAssignContext,
     CanAssignError,
     ClassKey,
-    ClassOwner,
-    GenericBases,
     GenericValue,
     GradualType,
     IntersectionValue,
@@ -77,20 +68,6 @@ from .value import (
 # these don't appear to be in the standard types module
 SlotWrapperType = type(type.__init__)
 MethodDescriptorType = type(list.append)
-_ENUM_INSTANCE_DESCRIPTOR_TYPES = tuple(
-    descriptor_type
-    for descriptor_type in (
-        getattr(enum, "property", None),
-        types.DynamicClassAttribute,
-    )
-    if descriptor_type is not None
-)
-if sys.version_info >= (3, 12):
-    import typing as _typing
-
-    RuntimeTypeAliasType = _typing.TypeAliasType | typing_extensions.TypeAliasType
-else:
-    RuntimeTypeAliasType = typing_extensions.TypeAliasType  # pragma: no cover
 
 
 @dataclass
@@ -122,9 +99,6 @@ class AttrContext:
     def resolve_name_from_typeshed(self, module: str, name: str) -> Value:
         raise NotImplementedError
 
-    def get_attribute_from_typeshed(self, typ: type, *, on_class: bool) -> Value:
-        raise NotImplementedError
-
     def should_ignore_none_attributes(self) -> bool:
         raise NotImplementedError
 
@@ -135,14 +109,6 @@ class AttrContext:
         raise NotImplementedError
 
     def get_can_assign_context(self) -> CanAssignContext:
-        raise NotImplementedError
-
-    def get_generic_bases(
-        self, typ: ClassKey, generic_args: Sequence[Value]
-    ) -> GenericBases:
-        raise NotImplementedError
-
-    def get_synthetic_class(self, typ: ClassKey) -> SyntheticClassObjectValue | None:
         raise NotImplementedError
 
     def clone_for_attribute_lookup(
@@ -407,20 +373,6 @@ def _get_attribute_from_super_value(
     return attr.value, attr.error
 
 
-def _get_attribute_from_runtime_type_alias(
-    value: RuntimeTypeAliasType, ctx: AttrContext
-) -> Value:
-    if ctx.attr == "__value__":
-        return KnownValue(value.__value__)
-    if ctx.attr == "__type_params__":
-        return KnownValue(tuple(value.__type_params__))
-    if ctx.attr == "__name__":
-        return KnownValue(value.__name__)
-    if ctx.attr == "__module__":
-        return KnownValue(value.__module__)
-    return UNINITIALIZED_VALUE
-
-
 def may_have_dynamic_attributes(typ: type) -> bool:
     """These types have typeshed stubs, but instances may have other attributes."""
     if typ is type or typ is super or typ is types.FunctionType:
@@ -456,29 +408,6 @@ def _get_attribute_from_subclass(
         )
     ctx.record_usage(typ, attribute.value)
     return attribute.value, attribute.error
-
-
-_TCAA = Callable[[object], bool]
-
-
-class TreatClassAttributeAsAny(PyObjectSequenceOption[_TCAA]):
-    """Allows treating certain class attributes as Any.
-
-    Instances of this option are callables that take an object found among
-    a class's attributes and return True if the attribute should instead
-    be treated as Any.
-
-    """
-
-    default_value: ClassVar[Sequence[_TCAA]] = [
-        lambda cls_val: cls_val is None or cls_val is NotImplemented
-    ]
-    name = "treat_class_attribute_as_any"
-
-    @classmethod
-    def should_treat_as_any(cls, val: object, options: Options) -> bool:
-        option_value = options.get_value_for(cls)
-        return any(func(val) for func in option_value)
 
 
 _CAT = Callable[[object], tuple[Value, Value] | None]
@@ -565,12 +494,6 @@ def _get_attribute_from_typed(
     if attribute is None:
         return UNINITIALIZED_VALUE, _ca_error(value, ctx)
     return attribute.value, attribute.error
-
-
-def _normalize_class_key(value: object) -> ClassKey | None:
-    if isinstance(value, (type, ClassOwner)):
-        return value
-    return None
 
 
 _KAH = Callable[[object, str], Value | None]
