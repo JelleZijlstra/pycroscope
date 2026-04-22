@@ -11,32 +11,20 @@ import types
 import typing
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
-from enum import Enum
-from typing import Any, ClassVar, get_origin
+from typing import Any, ClassVar
 
 import typing_extensions
 from typing_extensions import assert_never
 
 if sys.version_info >= (3, 14):
-    from annotationlib import Format, get_annotations
+    pass
 else:
-    from inspect import get_annotations  # pragma: no cover
-from .annotations import (
-    RuntimeAnnotationsContext,
-    annotation_expr_from_annotations,
-    type_from_runtime,
-)
-from .input_sig import coerce_paramspec_specialization_to_input_sig
+    pass  # pragma: no cover
+from .annotations import RuntimeAnnotationsContext, type_from_runtime
 from .options import Options, PyObjectSequenceOption
 from .predicates import HasAttr
 from .relations import intersect_multi
-from .safe import (
-    is_async_fn,
-    is_instance_of_typing_name,
-    safe_getattr,
-    safe_isinstance,
-    safe_issubclass,
-)
+from .safe import safe_getattr, safe_isinstance
 from .signature import MaybeSignature
 from .stacked_scopes import Composite
 from .type_object import AttributePolicy, TypeObject, TypeObjectAttribute
@@ -51,13 +39,11 @@ from .value import (
     CanAssignError,
     ClassKey,
     ClassOwner,
-    ClassSymbol,
     GenericBases,
     GenericValue,
     GradualType,
     IntersectionValue,
     KnownValue,
-    KnownValueWithTypeVars,
     MultiValuedValue,
     NewTypeValue,
     OverlappingValue,
@@ -67,7 +53,6 @@ from .value import (
     PartialValue,
     PartialValueOperation,
     PredicateValue,
-    Qualifier,
     SimpleType,
     SubclassValue,
     SuperValue,
@@ -82,8 +67,6 @@ from .value import (
     TypeVarValue,
     UnboundMethodValue,
     Value,
-    _iter_typevar_map_items,
-    _typevar_map_from_varlike_pairs,
     gradualize,
     replace_fallback,
     set_self,
@@ -219,7 +202,7 @@ def _get_attribute_from_value(
         case AnyValue():
             return AnyValue(AnySource.from_another), None
         case KnownValue():
-            return _get_attribute_from_known_v2(root_value, ctx)
+            return _get_attribute_from_known(root_value, ctx)
         case CallableValue() if ctx.attr == "asynq" and root_value.signature.is_asynq:
             return root_value.get_asynq_value(), None
         case TypedValue():
@@ -535,131 +518,6 @@ class ClassAttributeTransformer(PyObjectSequenceOption[_CAT]):
         return None
 
 
-def _unwrap_value_from_subclass(result: Value, ctx: AttrContext) -> Value:
-    if not isinstance(result, KnownValue):
-        return result
-    cls_val = result.val
-    if (
-        isinstance(
-            cls_val,
-            (
-                types.FunctionType,
-                types.MethodType,
-                MethodDescriptorType,
-                SlotWrapperType,
-                classmethod,
-                staticmethod,
-            ),
-        )
-        or (
-            # non-static method
-            _static_hasattr(cls_val, "decorator")
-            and _static_hasattr(cls_val, "instance")
-            and not isinstance(cls_val.instance, type)
-        )
-        or is_async_fn(cls_val)
-    ):
-        # static or class method
-        return KnownValue(cls_val)
-    elif _static_hasattr(cls_val, "__get__"):
-        return AnyValue(AnySource.inference)  # can't figure out what this will return
-    elif TreatClassAttributeAsAny.should_treat_as_any(cls_val, ctx.options):
-        return AnyValue(AnySource.error)
-    else:
-        transformed = ClassAttributeTransformer.transform_attribute(
-            cls_val, ctx.options
-        )
-        if transformed is not None:
-            return transformed
-        return KnownValue(cls_val)
-
-
-def _get_direct_attribute_from_synthetic_class(
-    self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
-) -> Value:
-    if _is_synthetic_initvar_attribute(self_value, attr_name, ctx):
-        return UNINITIALIZED_VALUE
-    symbol = _get_synthetic_declared_symbol(self_value, attr_name, ctx)
-    if symbol is None:
-        return UNINITIALIZED_VALUE
-    if symbol.is_property:
-        class_type = self_value.class_type
-        can_assign_ctx = ctx.get_can_assign_context()
-        attribute = _get_type_object_attribute(
-            can_assign_ctx.make_type_object(class_type.typ),
-            attr_name,
-            ctx,
-            on_class=True,
-            receiver_value=class_type,
-        )
-        if attribute is not None:
-            return attribute.value
-        # Synthetic namedtuple fields after import failure can still reach this
-        # fallback when TypeObject cannot produce the specialized property value.
-        raw_value = symbol.initializer
-    elif symbol.annotation is not None and not symbol.is_method:
-        raw_value = symbol.annotation
-    else:
-        raw_value = symbol.initializer
-    if raw_value is None:
-        if symbol.is_classvar and not symbol.is_method:
-            return AnyValue(AnySource.inference)
-        return UNINITIALIZED_VALUE
-    result = raw_value
-    if _should_deliteralize_synthetic_enum_attr(self_value, attr_name, ctx):
-        return _deliteralize_value(result)
-    return result
-
-
-def _get_synthetic_declared_symbol(
-    self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
-) -> ClassSymbol | None:
-    class_type = self_value.class_type
-    can_assign_ctx = ctx.get_can_assign_context()
-    type_object = can_assign_ctx.make_type_object(class_type.typ)
-    symbol = type_object.get_synthetic_declared_symbols().get(attr_name)
-    if symbol is not None:
-        return symbol
-    mangled = _maybe_mangle_private_name(attr_name, self_value.name)
-    if mangled is None:
-        return None
-    return type_object.get_synthetic_declared_symbols().get(mangled)
-
-
-def _is_synthetic_initvar_attribute(
-    self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
-) -> bool:
-    symbol = _get_synthetic_declared_symbol(self_value, attr_name, ctx)
-    return symbol is not None and symbol.is_initvar
-
-
-def _maybe_mangle_private_name(attr_name: str, class_name: str) -> str | None:
-    if not attr_name.startswith("__") or attr_name.endswith("__"):
-        return None
-    return f"_{class_name}{attr_name}"
-
-
-def _should_deliteralize_synthetic_enum_attr(
-    self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
-) -> bool:
-    class_type = self_value.class_type
-    if not isinstance(class_type.typ, type) or not safe_issubclass(
-        class_type.typ, Enum
-    ):
-        return False
-    symbol = _get_synthetic_declared_symbol(self_value, attr_name, ctx)
-    if (
-        symbol is not None
-        and isinstance(symbol.initializer, KnownValue)
-        and safe_isinstance(symbol.initializer.val, Enum)
-    ):
-        return False
-    try:
-        return attr_name not in class_type.typ.__members__
-    except Exception:
-        return False
-
-
 def _deliteralize_value(value: Value) -> Value:
     value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):
@@ -692,17 +550,6 @@ def _deliteralize_simple_value(value: SimpleType) -> Value:
         assert_never(value)
 
 
-def _contains_self_typevar(value: Value) -> bool:
-    if isinstance(value, KnownValueWithTypeVars) and any(
-        type_param.is_self for type_param, _ in value.typevars.iter_typevars()
-    ):
-        return True
-    return any(
-        isinstance(subval, TypeVarValue) and subval.typevar_param.is_self
-        for subval in value.walk_values()
-    )
-
-
 def _get_attribute_from_typed(
     value: TypedValue, ctx: AttrContext
 ) -> tuple[Value, CanAssignError | None]:
@@ -718,80 +565,6 @@ def _get_attribute_from_typed(
     if attribute is None:
         return UNINITIALIZED_VALUE, _ca_error(value, ctx)
     return attribute.value, attribute.error
-
-
-def _get_runtime_class_attribute_from_synthetic_class(
-    typ: type, ctx: AttrContext
-) -> Value:
-    # Runtime Enum lookup preserves literal enum members for enum.member()
-    # helpers and aliases that TypeObject currently widens to Any.
-    if safe_issubclass(typ, Enum):
-        try:
-            runtime_enum_member = getattr(typ, ctx.attr)
-        except Exception:
-            pass
-        else:
-            if safe_isinstance(runtime_enum_member, Enum):
-                return KnownValue(runtime_enum_member)
-    synthetic_class = ctx.get_synthetic_class(typ)
-    if synthetic_class is None:
-        return UNINITIALIZED_VALUE
-    type_object = ctx.get_can_assign_context().make_type_object(typ)
-    symbol = _get_synthetic_declared_symbol(synthetic_class, ctx.attr, ctx)
-    if type_object.get_direct_dataclass_info() is None:
-        if _maybe_mangle_private_name(ctx.attr, synthetic_class.name) is None:
-            if symbol is None or symbol.is_instance_only:
-                return UNINITIALIZED_VALUE
-
-    if symbol is None or not symbol.is_method:
-        direct = _get_direct_attribute_from_synthetic_class(
-            synthetic_class, ctx.attr, ctx
-        )
-        if direct is not UNINITIALIZED_VALUE:
-            direct = _substitute_typevars(typ, (), direct, typ, ctx)
-            direct = _unwrap_value_from_subclass(direct, ctx)
-            return direct
-    return UNINITIALIZED_VALUE
-
-
-def _substitute_typevars(
-    typ: ClassKey,
-    generic_args: Sequence[Value],
-    result: Value,
-    provider: object,
-    ctx: AttrContext,
-) -> Value:
-    generic_bases = ctx.get_generic_bases(typ, generic_args)
-    provider_key: ClassKey | None = _normalize_class_key(provider)
-    if provider_key not in generic_bases:
-        provider_key = None
-    if provider_key is None and not isinstance(provider, ClassOwner):
-        origin = get_origin(provider)
-        provider_key = _normalize_class_key(origin)
-        if provider_key not in generic_bases:
-            provider_key = None
-    if provider_key is not None:
-        provider_typevars = generic_bases[provider_key]
-        substituted_typevars = _typevar_map_from_varlike_pairs(
-            (
-                typevar,
-                (
-                    coerce_paramspec_specialization_to_input_sig(value)
-                    if is_instance_of_typing_name(typevar, "ParamSpec")
-                    else value
-                ),
-            )
-            for typevar, value in _iter_typevar_map_items(provider_typevars)
-        )
-        result = result.substitute_typevars(substituted_typevars)
-    if generic_args and typ in generic_bases:
-        tv_map = generic_bases[typ]
-        if isinstance(result, KnownValueWithTypeVars):
-            merged_typevars = result.typevars.merge(tv_map)
-            result = KnownValueWithTypeVars(result.val, merged_typevars)
-        else:
-            result = result.substitute_typevars(tv_map)
-    return result
 
 
 def _normalize_class_key(value: object) -> ClassKey | None:
@@ -827,7 +600,7 @@ class KnownAttributeHook(PyObjectSequenceOption[_KAH]):
         return None
 
 
-def _get_attribute_from_known_v2(
+def _get_attribute_from_known(
     value: KnownValue, ctx: AttrContext
 ) -> tuple[Value, CanAssignError | None]:
     obj = value.val
@@ -864,9 +637,7 @@ def _get_attribute_from_known_inner(
     #   - The runtime annotation
     #   - The annotation from stubs
     # - The value from TypeObject.get_attribute(), which can be better for methods.
-    # TODO: We need to think about how to prioritize between these.
-    # Plan is to write a more principled prioritization here, then remove the fallback
-    # to _get_attribute_from_known().
+    # We use some heuristics to prioritize between these.
 
     default = object()
     runtime_obj = safe_getattr(obj, ctx.attr, default)
@@ -929,8 +700,15 @@ def _get_attribute_from_known_inner(
     if (
         type_object_attr is not None
         and type_object_attr.symbol.annotation is not None
-        and not type_object_attr.symbol.is_readonly
-        and not type_object_attr.symbol.is_final
+        # If it's read-only, we may have a more precise runtime type.
+        # But if it's also a ClassVar, believe the annotation
+        and (
+            (
+                not type_object_attr.symbol.is_readonly
+                and not type_object_attr.symbol.is_final
+            )
+            or type_object_attr.symbol.is_classvar
+        )
     ):
         # If there's an annotation and the attribute is mutable, we believe the annotation
         return type_object_attr.value, type_object_attr.error
@@ -965,109 +743,6 @@ def _get_attribute_from_known_inner(
     return runtime_value, None
 
 
-def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
-    if safe_isinstance(obj, type):
-        ctx.record_attr_read(obj)
-    else:
-        ctx.record_attr_read(type(obj))
-
-    if obj is None and ctx.should_ignore_none_attributes():
-        # This usually indicates some context is set to None
-        # in the module and initialized later.
-        return AnyValue(AnySource.error)
-
-    hooked_value = KnownAttributeHook.get_attribute(obj, ctx.attr, ctx.options)
-    if hooked_value is not None:
-        return hooked_value
-
-    if is_instance_of_typing_name(obj, "TypeAliasType"):
-        attribute_value = _get_attribute_from_runtime_type_alias(obj, ctx)
-        if attribute_value is not UNINITIALIZED_VALUE:
-            return attribute_value
-
-    if isinstance(obj, (types.FunctionType, types.BuiltinFunctionType)):
-        if ctx.attr in {"__name__", "__qualname__", "__module__"}:
-            return TypedValue(str)
-        if ctx.attr == "__annotations__":
-            return GenericValue(dict, [TypedValue(str), AnyValue(AnySource.explicit)])
-
-    if not safe_isinstance(obj, type):
-        can_assign_ctx = ctx.get_can_assign_context()
-        attribute = _get_type_object_attribute(
-            can_assign_ctx.make_type_object(type(obj)),
-            ctx.attr,
-            ctx,
-            on_class=False,
-            receiver_value=KnownValue(obj),
-        )
-        if attribute is not None and (
-            attribute.symbol.is_classmethod or _contains_self_typevar(attribute.value)
-        ):
-            ctx.record_usage(type(obj), attribute.value)
-            return attribute.value
-
-    if safe_isinstance(obj, type):
-        can_assign_ctx = ctx.get_can_assign_context()
-        type_object = can_assign_ctx.make_type_object(obj)
-        attribute = _get_type_object_attribute(
-            type_object, ctx.attr, ctx, on_class=True, receiver_value=KnownValue(obj)
-        )
-        if attribute is not None and (
-            attribute.symbol.returns_self_on_class_access
-            or _contains_self_typevar(attribute.value)
-            or (
-                ctx.attr not in {"__doc__", "__name__", "__qualname__", "__module__"}
-                and not safe_issubclass(obj, Enum)
-                and attribute.symbol.annotation is not None
-                and not attribute.symbol.is_method
-            )
-        ):
-            result = attribute.value
-            ctx.record_usage(obj, result)
-            return result
-
-    if safe_isinstance(obj, type) and safe_issubclass(obj, Enum):
-        # Keep this before runtime MRO lookup: enum nonmembers need the synthetic
-        # class view to deliteralize values such as enum.nonmember(2) to int.
-        synthetic_attr = _get_runtime_class_attribute_from_synthetic_class(obj, ctx)
-        if synthetic_attr is not UNINITIALIZED_VALUE:
-            return synthetic_attr
-
-    result, provider, _ = _get_attribute_from_mro(obj, ctx, on_class=True)
-    if result is UNINITIALIZED_VALUE and safe_isinstance(obj, type):
-        # TypeObject.get_attribute() above only returns selected class-object
-        # attributes for Self-sensitive cases. Synthetic dataclass-transform
-        # members such as __match_args__ still need this class-only fallback.
-        synthetic_attr = _get_runtime_class_attribute_from_synthetic_class(obj, ctx)
-        if synthetic_attr is not UNINITIALIZED_VALUE:
-            return synthetic_attr
-        tobj = ctx.get_can_assign_context().make_type_object(obj)
-        if tobj.has_any_base():
-            result = AnyValue(AnySource.from_another)
-    if not safe_isinstance(provider, type):
-        provider = type(provider)
-    if safe_isinstance(obj, type) or (
-        isinstance(result, KnownValue)
-        and (
-            safe_isinstance(result.val, (types.MethodType, types.BuiltinFunctionType))
-            and result.val.__self__ is obj
-        )
-    ):
-        # Runtime class-object lookup still produces values with unspecialized
-        # Self for importable classes. TypeObject.get_attribute() handles many
-        # Self-sensitive cases above, but not all runtime MRO fallbacks.
-        if safe_isinstance(obj, type):
-            self_value = TypedValue(obj)
-        else:
-            self_value = ctx.get_self_value()
-        result = set_self(result, self_value, provider)
-    if isinstance(obj, (types.ModuleType, type)):
-        ctx.record_usage(obj, result)
-    else:
-        ctx.record_usage(type(obj), result)
-    return result
-
-
 def _get_attribute_from_unbound(
     root_value: UnboundMethodValue, ctx: AttrContext
 ) -> tuple[Value, CanAssignError | None]:
@@ -1090,154 +765,6 @@ def _get_attribute_from_unbound(
     )
     ctx.record_usage(type(method), result)
     return result, None
-
-
-def _get_triple_from_annotations(
-    annotations: dict[str, object], owner: object, ctx: AttrContext
-) -> tuple[Value, object, bool] | None:
-    attr_expr = annotation_expr_from_annotations(
-        annotations,
-        ctx.attr,
-        ctx=RuntimeAnnotationsContext(
-            owner=owner, self_key=owner if isinstance(owner, type) else None
-        ),
-    )
-    if attr_expr is not None:
-        attr_type, qualifiers = attr_expr.maybe_unqualify(
-            {Qualifier.ClassVar, Qualifier.Final, Qualifier.InitVar}
-        )
-        if Qualifier.InitVar in qualifiers:
-            return None
-        if attr_type is not None:
-            return (attr_type, owner, False)
-    return None
-
-
-def _get_attribute_from_mro(
-    typ: object, ctx: AttrContext, on_class: bool
-) -> tuple[Value, object, bool]:
-    # Then go through the MRO and find base classes that may define the attribute.
-    if safe_isinstance(typ, type) and safe_issubclass(typ, Enum):
-        # Special case, to avoid picking an attribute of Enum instances (e.g., name)
-        # over an Enum member. Ideally we'd have a more principled way to support this
-        # but I haven't thought of one.
-        try:
-            return KnownValue(getattr(typ, ctx.attr)), typ, True
-        except Exception:
-            pass
-        if on_class and isinstance(
-            Enum.__dict__.get(ctx.attr), _ENUM_INSTANCE_DESCRIPTOR_TYPES
-        ):
-            return UNINITIALIZED_VALUE, object, False
-    elif safe_isinstance(typ, types.ModuleType):
-        try:
-            annotations = typ.__annotations__
-        except Exception:
-            pass
-        else:
-            triple = _get_triple_from_annotations(annotations, typ, ctx)
-            if triple is not None:
-                return triple
-
-    if safe_isinstance(typ, type):
-        try:
-            mro = list(type.mro(typ))
-        except Exception:
-            # broken mro method
-            pass
-        else:
-            use_runtime_annotations = (
-                ctx.get_can_assign_context().make_type_object(typ).is_namedtuple_like()
-            )
-            for base_cls in mro:
-                typeshed_type = ctx.get_attribute_from_typeshed(
-                    base_cls, on_class=on_class
-                )
-                if typeshed_type is not UNINITIALIZED_VALUE:
-                    if ctx.prefer_typeshed:
-                        return typeshed_type, base_cls, False
-                    # If it's a callable, we'll probably do better
-                    # getting the attribute from the type ourselves,
-                    # because we may have our own implementation.
-                    if not isinstance(typeshed_type, CallableValue):
-                        return typeshed_type, base_cls, False
-
-                try:
-                    base_dict = base_cls.__dict__
-                except Exception:
-                    continue
-
-                if use_runtime_annotations:
-                    try:
-                        # Make sure to use only __annotations__ that are actually on
-                        # this class, not ones inherited from a base class.
-                        if sys.version_info >= (3, 14):
-                            annotations = get_annotations(
-                                base_cls, format=Format.FORWARDREF
-                            )
-                        else:
-                            annotations = get_annotations(base_cls)  # pragma: no cover
-                    except Exception:
-                        pass
-                    else:
-                        triple = _get_triple_from_annotations(
-                            annotations, base_cls, ctx
-                        )
-                        if triple is not None:
-                            return triple
-
-                try:
-                    # Make sure we use only the object from this class, but do invoke
-                    # the descriptor protocol with getattr.
-                    base_dict[ctx.attr]
-                except Exception:
-                    pass
-                else:
-                    try:
-                        val = KnownValue(getattr(typ, ctx.attr))
-                    except Exception:
-                        if (
-                            ctx.attr == "__slots__"
-                            and safe_isinstance(typ, type)
-                            and ctx.get_synthetic_class(typ) is not None
-                        ):
-                            return UNINITIALIZED_VALUE, object, False
-                        val = AnyValue(AnySource.inference)
-                    return val, base_cls, True
-
-                if typeshed_type is not UNINITIALIZED_VALUE:
-                    return typeshed_type, base_cls, False
-
-    attrs_type = get_attrs_attribute(typ, ctx)
-    if attrs_type is not None:
-        return attrs_type, typ, False
-
-    # Even if we didn't find it any __dict__, maybe getattr() finds it directly.
-    try:
-        return KnownValue(getattr(typ, ctx.attr)), typ, True
-    except AttributeError:
-        pass
-    except Exception:
-        if (
-            ctx.attr == "__slots__"
-            and safe_isinstance(typ, type)
-            and ctx.get_synthetic_class(typ) is not None
-        ):
-            return UNINITIALIZED_VALUE, object, False
-        # It exists, but has a broken __getattr__ or something
-        return AnyValue(AnySource.inference), typ, True
-
-    return UNINITIALIZED_VALUE, object, False
-
-
-def _static_hasattr(value: object, attr: str) -> bool:
-    """Returns whether this value has the given attribute, ignoring __getattr__ overrides."""
-    try:
-        object.__getattribute__(value, attr)
-    except AttributeError:
-        return False
-    else:
-        return True
 
 
 def get_attrs_attribute(typ: object, ctx: AttrContext) -> Value | None:
