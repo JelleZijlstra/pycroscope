@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Clean up treatment of attributes to be more consistent and reliable. The `TreatClassAttributesAsAny` configuration is no longer supported.
 - Fix bug where the constructors of two classes with the same name were mixed up.
 - Respect class-level runtime constructor signatures for some metaclass-driven and extension-backed classes, so keyword-only constructors like `repoguess.Params(...)` no longer fall back to a bogus `object.__init__` call shape.
 - Make the command-line runner inject `typing.reveal_type` into `builtins` before importing user modules, with a compatible fallback on older Python versions, so top-level runtime use of `reveal_type()` no longer fails during CLI analysis.
