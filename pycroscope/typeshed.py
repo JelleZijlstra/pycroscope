@@ -635,8 +635,7 @@ class TypeshedFinder:
             val = getattr(builtins, name)
             if val is None or isinstance(val, type):
                 return KnownValue(val)
-        # TODO change to UNINITIALIZED_VALUE
-        return AnyValue(AnySource.inference)
+        return UNINITIALIZED_VALUE
 
     def resolve_name_if_present(self, module: str, name: str) -> Value | None:
         info = self._get_info_for_name(f"{module}.{name}")
