@@ -44,7 +44,6 @@ from .value import (
     PartialValue,
     PartialValueOperation,
     PredicateValue,
-    SimpleType,
     SubclassValue,
     SuperValue,
     SyntheticClassObjectValue,
@@ -433,38 +432,6 @@ class ClassAttributeTransformer(PyObjectSequenceOption[_CAT]):
         if transformed is not None:
             return transformed[0]
         return None
-
-
-def _deliteralize_value(value: Value) -> Value:
-    value = replace_fallback(value)
-    if isinstance(value, MultiValuedValue):
-        return unite_values(*[_deliteralize_value(subval) for subval in value.vals])
-    if isinstance(value, IntersectionValue):
-        return IntersectionValue(
-            tuple(_deliteralize_value(subval) for subval in value.vals)
-        )
-    return _deliteralize_simple_value(value)
-
-
-def _deliteralize_simple_value(value: SimpleType) -> Value:
-    if isinstance(value, KnownValue):
-        return TypedValue(type(value.val))
-    elif isinstance(
-        value,
-        (
-            AnyValue,
-            SyntheticClassObjectValue,
-            SyntheticModuleValue,
-            UnboundMethodValue,
-            TypedValue,
-            SubclassValue,
-            TypeFormValue,
-            PredicateValue,
-        ),
-    ):
-        return value
-    else:
-        assert_never(value)
 
 
 def _get_attribute_from_typed(
