@@ -1565,7 +1565,7 @@ class ClassAttributeChecker:
         if _has_annotation_for_attr(typ, attr_name) or attributes.get_attrs_attribute(
             typ,
             attributes.AttrContext(
-                Composite(TypedValue(typ)), None, attr_name, visitor.options
+                Composite(TypedValue(typ)), attr_name, visitor.options
             ),
         ):
             return

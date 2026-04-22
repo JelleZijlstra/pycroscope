@@ -2017,11 +2017,7 @@ class Checker:
 
     def _synthetic_dataclass_field_annotation(self, attr: Value) -> Value:
         ctx = CheckerAttrContext(
-            Composite(AnyValue(AnySource.inference)),
-            None,
-            "",
-            self.options,
-            checker=self,
+            Composite(AnyValue(AnySource.inference)), "", self.options, checker=self
         )
         descriptor_set_type = _synthetic_descriptor_set_type(attr, ctx)
         if descriptor_set_type is not None:
