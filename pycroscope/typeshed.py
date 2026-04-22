@@ -635,8 +635,7 @@ class TypeshedFinder:
             val = getattr(builtins, name)
             if val is None or isinstance(val, type):
                 return KnownValue(val)
-        # TODO change to UNINITIALIZED_VALUE
-        return AnyValue(AnySource.inference)
+        return UNINITIALIZED_VALUE
 
     def resolve_name_if_present(self, module: str, name: str) -> Value | None:
         info = self._get_info_for_name(f"{module}.{name}")
@@ -1643,6 +1642,18 @@ class TypeshedFinder:
         finally:
             self._active_infos.pop()
 
+    def _value_from_ann_assign(
+        self, node: ast.AnnAssign, module: str, owner: _ClassOwner | None
+    ) -> Value:
+        expr = self._parse_annotation(node.annotation, module, owner)
+        val, qualifiers = expr.maybe_unqualify({Qualifier.TypeAlias})
+        if val is not None and Qualifier.TypeAlias not in qualifiers:
+            return val
+        if node.value is not None:
+            return self._parse_expr(node.value, module, owner)
+        else:
+            return AnyValue(AnySource.inference)
+
     def _value_from_info_inner(
         self, info: typeshed_client.resolver.ResolvedName, module: str
     ) -> Value:
@@ -1666,6 +1677,16 @@ class TypeshedFinder:
                     value = self._parse_expr(info.ast.value, module, owner=None)
                 self._assignment_cache[key] = value
                 return value
+
+            # We usually prefer annotations over actual values (so we infer sys.modules
+            # as dict[str, module] instead of a huge literal dict), but for typing names it's
+            # better to get the runtime values.
+            if isinstance(info.ast, ast.AnnAssign) and module not in (
+                "typing",
+                "typing_extensions",
+            ):
+                return self._value_from_ann_assign(info.ast, module, owner=None)
+
             try:
                 __import__(module)
                 mod = sys.modules[module]
@@ -1674,14 +1695,7 @@ class TypeshedFinder:
                 if isinstance(info.ast, ast.ClassDef):
                     return self.make_synthetic_type(module, info)
                 elif isinstance(info.ast, ast.AnnAssign):
-                    expr = self._parse_annotation(
-                        info.ast.annotation, module, owner=None
-                    )
-                    val, qualifiers = expr.maybe_unqualify({Qualifier.TypeAlias})
-                    if val is not None and Qualifier.TypeAlias not in qualifiers:
-                        return val
-                    if info.ast.value:
-                        return self._parse_expr(info.ast.value, module, owner=None)
+                    return self._value_from_ann_assign(info.ast, module, owner=None)
                 elif isinstance(
                     info.ast,
                     (

@@ -907,7 +907,8 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             def __init_subclass__(
                 cls, *, init: bool = True, match_args: bool = True
             ) -> None:
-                pass
+                if match_args:
+                    cls.__match_args__ = tuple(cls.__annotations__.keys())
 
         class InitDisabled(Base, init=False):
             x: int

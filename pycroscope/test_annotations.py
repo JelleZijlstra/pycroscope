@@ -1376,10 +1376,9 @@ class TestParameterTypeGuard(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_generic(self):
-        import collections.abc
         from typing import Iterable, Type, TypeVar, Union
 
-        from typing_extensions import Annotated
+        from typing_extensions import Annotated, assert_type
 
         from pycroscope.extensions import ParameterTypeGuard
 
@@ -1391,17 +1390,9 @@ class TestParameterTypeGuard(TestNameCheckVisitorBase):
             return all(isinstance(elt, typ) for elt in elts)
 
         def capybara(elts: Iterable[Union[int, str]]) -> None:
-            assert_is_value(
-                elts,
-                GenericValue(
-                    collections.abc.Iterable,
-                    [MultiValuedValue([TypedValue(int), TypedValue(str)])],
-                ),
-            )
+            assert_type(elts, Iterable[int | str])
             if all_of_type(elts, int):
-                assert_is_value(
-                    elts, GenericValue(collections.abc.Iterable, [TypedValue(int)])
-                )
+                assert_type(elts, Iterable[int])
 
     @assert_passes()
     def test_self(self):

@@ -716,24 +716,15 @@ class _AttrContext(CheckerAttrContext):
     def __init__(
         self,
         root_composite: Composite,
-        lookup_root_value: Value | None,
         attr: str,
         visitor: "NameCheckVisitor",
         *,
         node: ast.AST | None,
         ignore_none: bool = False,
-        prefer_typeshed: bool = False,
         record_reads: bool = True,
         self_value: Value | None = None,
     ) -> None:
-        super().__init__(
-            root_composite,
-            lookup_root_value,
-            attr,
-            visitor.options,
-            prefer_typeshed=prefer_typeshed,
-            checker=visitor.checker,
-        )
+        super().__init__(root_composite, attr, visitor.options, checker=visitor.checker)
         self.node = node
         self.visitor = visitor
         self.ignore_none = ignore_none
@@ -771,12 +762,10 @@ class _AttrContext(CheckerAttrContext):
     ) -> "_AttrContext":
         return _AttrContext(
             root_composite,
-            self.lookup_root_value,
             attr,
             self.visitor,
             node=self.node,
             ignore_none=self.ignore_none,
-            prefer_typeshed=False,
             record_reads=self.record_reads,
             self_value=self.self_value,
         )
@@ -1576,11 +1565,7 @@ class ClassAttributeChecker:
         if _has_annotation_for_attr(typ, attr_name) or attributes.get_attrs_attribute(
             typ,
             attributes.AttrContext(
-                Composite(TypedValue(typ)),
-                None,
-                attr_name,
-                visitor.options,
-                prefer_typeshed=False,
+                Composite(TypedValue(typ)), attr_name, visitor.options
             ),
         ):
             return
@@ -14512,7 +14497,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         *,
         ignore_none: bool = False,
         use_fallback: bool = False,
-        prefer_typeshed: bool = False,
         record_reads: bool = True,
         self_value: Value | None = None,
     ) -> Value:
@@ -14522,7 +14506,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         """
         resolved_self_value = self_value
-        lookup_root_value: Value | None = None
         if (
             isinstance(root_composite.value, PartialValue)
             and root_composite.value.operation is PartialValueOperation.SUBSCRIPT
@@ -14532,11 +14515,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._specialized_self_value_from_generic_alias_partial(
                     root_composite.value
                 )
-            )
-            lookup_root_value = (
-                specialized_self_value
-                if specialized_self_value is not None
-                else root_composite.value.root
             )
             if resolved_self_value is None:
                 resolved_self_value = specialized_self_value
@@ -14652,7 +14630,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     node,
                     ignore_none=ignore_none,
                     use_fallback=False,
-                    prefer_typeshed=prefer_typeshed,
                     record_reads=False,
                 )
                 subresult = _drop_uninitialized_value(subresult)
@@ -14681,12 +14658,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return intersect_multi(results, self)
         ctx = _AttrContext(
             root_composite,
-            lookup_root_value,
             attr,
             self,
             node=node,
             ignore_none=ignore_none,
-            prefer_typeshed=prefer_typeshed,
             record_reads=record_reads,
             self_value=resolved_self_value,
         )
@@ -14705,12 +14680,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if mangled_attr != attr:
                 mangled_ctx = _AttrContext(
                     root_composite,
-                    lookup_root_value,
                     mangled_attr,
                     self,
                     node=node,
                     ignore_none=ignore_none,
-                    prefer_typeshed=prefer_typeshed,
                     record_reads=record_reads,
                     self_value=resolved_self_value,
                 )
@@ -14726,12 +14699,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return self._get_attribute_fallback(root_composite.value, attr, node)
         return result
 
-    def get_attribute_from_value(
-        self, root_value: Value, attribute: str, *, prefer_typeshed: bool = False
-    ) -> Value:
-        return self.get_attribute(
-            Composite(root_value), attribute, prefer_typeshed=prefer_typeshed
-        )
+    def get_attribute_from_value(self, root_value: Value, attribute: str) -> Value:
+        return self.get_attribute(Composite(root_value), attribute)
 
     def _get_attribute_fallback(
         self, root_value: Value, attr: str, node: ast.AST, *, allow_error: bool = True

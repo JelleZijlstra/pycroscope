@@ -131,7 +131,7 @@ class TestEnum(TestNameCheckVisitorBase):
 
         assert_type(Example.first, Literal[Example.first])
         assert_type(Example.first.value, Literal[1])
-        assert_type(Example.helper, int)
+        assert_type(Example.helper, Literal[2])
 
     @skip_before((3, 11))
     @assert_passes(run_in_both_module_modes=True)

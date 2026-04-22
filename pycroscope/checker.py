@@ -2017,12 +2017,7 @@ class Checker:
 
     def _synthetic_dataclass_field_annotation(self, attr: Value) -> Value:
         ctx = CheckerAttrContext(
-            Composite(AnyValue(AnySource.inference)),
-            None,
-            "",
-            self.options,
-            prefer_typeshed=False,
-            checker=self,
+            Composite(AnyValue(AnySource.inference)), "", self.options, checker=self
         )
         descriptor_set_type = _synthetic_descriptor_set_type(attr, ctx)
         if descriptor_set_type is not None:
@@ -2773,16 +2768,9 @@ class Checker:
             specialized_argspec = combined
         return specialized_argspec
 
-    def get_attribute_from_value(
-        self, root_value: Value, attribute: str, *, prefer_typeshed: bool = False
-    ) -> Value:
+    def get_attribute_from_value(self, root_value: Value, attribute: str) -> Value:
         ctx = CheckerAttrContext(
-            Composite(root_value),
-            lookup_root_value=None,
-            attr=attribute,
-            options=self.options,
-            prefer_typeshed=prefer_typeshed,
-            checker=self,
+            Composite(root_value), attr=attribute, options=self.options, checker=self
         )
         return get_attribute(ctx)
 
@@ -2792,11 +2780,10 @@ class CheckerAttrContext(AttrContext):
     checker: Checker = field(repr=False)
 
     def resolve_name_from_typeshed(self, module: str, name: str) -> Value:
-        # TODO: Change to resolve_name_if_present
-        return self.checker.ts_finder.resolve_name(module, name)
-
-    def get_attribute_from_typeshed(self, typ: type, *, on_class: bool) -> Value:
-        return self.checker.ts_finder.get_attribute(typ, self.attr, on_class=on_class)
+        value = self.checker.ts_finder.resolve_name_if_present(module, name)
+        if value is None:
+            return UNINITIALIZED_VALUE
+        return value
 
     def should_ignore_none_attributes(self) -> bool:
         return False
@@ -2809,14 +2796,6 @@ class CheckerAttrContext(AttrContext):
 
     def get_can_assign_context(self) -> CanAssignContext:
         return self.checker
-
-    def get_generic_bases(
-        self, typ: ClassKey, generic_args: Sequence[Value]
-    ) -> GenericBases:
-        return self.checker.get_generic_bases(typ, generic_args)
-
-    def get_synthetic_class(self, typ: ClassKey) -> SyntheticClassObjectValue | None:
-        return self.checker.get_synthetic_class(typ)
 
 
 def get_synthetic_member_initializer(tobj: TypeObject, name: str) -> Value | None:
