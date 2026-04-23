@@ -8372,13 +8372,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _set_argspec_to_retval(
         self, val: Value, info: FunctionInfo, result: FunctionResult
     ) -> None:
-        def is_safe_decorator(decorator: Value) -> bool:
-            if decorator in SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL:
-                return True
-            return isinstance(decorator, KnownValue) and AsynqDecorators.contains(
-                decorator.val, self.options
-            )
-
         if isinstance(info.node, ast.Lambda) or info.node.returns is not None:
             return
         if info.async_kind == AsyncFunctionKind.async_proxy:
@@ -8390,7 +8383,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if len(info.decorators) != 1:
                 return  # With decorators we don't know what it will return
             unapplied_decorator, _, _ = next(iter(info.decorators))
-            if not is_safe_decorator(unapplied_decorator):
+            if unapplied_decorator not in SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL:
                 return  # With decorators we don't know what it will return
         return_value = result.return_value
 

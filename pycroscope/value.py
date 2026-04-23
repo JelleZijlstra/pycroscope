@@ -1259,14 +1259,6 @@ class ParamSpecParam:
     def __str__(self) -> str:
         return _type_param_to_string("**", self.param_spec.__name__, self.owner)
 
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, ParamSpecParam):
-            return NotImplemented
-        return self.param_spec == other.param_spec
-
-    def __hash__(self) -> int:
-        return hash(self.param_spec)
-
 
 @dataclass(frozen=True)
 class TypeVarTupleParam:
