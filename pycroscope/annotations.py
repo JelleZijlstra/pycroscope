@@ -1191,9 +1191,20 @@ def _make_typevar_param_from_partial_call(
         )
     else:
         constraints = ()
+    if len(constraints) == 1:
+        _show_type_param_call_error(
+            ctx, "TypeVar must have at least two constraints", value=value
+        )
     if bound is not None and constraints:
         _show_type_param_call_error(
             ctx, "TypeVar cannot have both bound and constraints", value=value
+        )
+    if infer_variance and (covariant or contravariant):
+        _show_type_param_call_error(
+            ctx,
+            "TypeVar cannot combine infer_variance with explicit variance",
+            value=value,
+            node=ctx.get_error_node(),
         )
     if covariant and contravariant:
         _show_type_param_call_error(
