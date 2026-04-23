@@ -1236,15 +1236,11 @@ class TestCallable(TestNameCheckVisitorBase):
 class TestTypeVar(TestNameCheckVisitorBase):
     @assert_passes(allow_import_failures=True)
     def test_invalid_typevar_constructor_args(self):
-        from typing_extensions import TypeVar
+        from typing_extensions import TypeVar as TV
 
-        TypeVar("SingleConstraint", str)  # E: incompatible_call
-        TypeVar(
-            "InferCovariant", infer_variance=True, covariant=True
-        )  # E: incompatible_call
-        TypeVar(
-            "InferContravariant", infer_variance=True, contravariant=True
-        )  # E: incompatible_call
+        TV("Single", str)  # E: incompatible_call
+        TV("ICo", infer_variance=True, covariant=True)  # E: incompatible_call
+        TV("IContra", infer_variance=True, contravariant=True)  # E: incompatible_call
 
     @assert_passes()
     def test_bound(self):
