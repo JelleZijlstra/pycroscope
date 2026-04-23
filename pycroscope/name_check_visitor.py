@@ -6491,23 +6491,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             module_name, qualname, qualname if identity is None else identity
         )
 
-    def _current_scope_type_param_owner(self) -> ClassKey | FunctionOwner | AliasOwner:
-        scope = self.scopes.current_scope()
-        scope_node = scope.scope_node
-        scope_object = scope.scope_object
-        if isinstance(scope_object, (type, ClassOwner)):
-            return scope_object
-        if isinstance(scope_node, ast.ClassDef):
-            return self._get_synthetic_class_key(scope_node)
-        if isinstance(scope_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            return self._function_owner_from_node(scope_node, identity=scope_object)
-        if _AST_TYPE_ALIAS is not None and isinstance(scope_node, ast.TypeAlias):
-            assert isinstance(scope_node.name, ast.Name)
-            return self._alias_owner_from_name(
-                scope_node.name.id, identity=scope_object
-            )
-        raise AssertionError(f"unexpected type parameter scope {scope_node!r}")
-
     def _get_class_qualname_from_name(
         self, name: str, *, contexts: Sequence[ast.AST] | None = None
     ) -> str:
@@ -12958,6 +12941,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
 
     if sys.version_info >= (3, 12):
+
+        def _current_scope_type_param_owner(
+            self,
+        ) -> ClassKey | FunctionOwner | AliasOwner:
+            scope = self.scopes.current_scope()
+            scope_node = scope.scope_node
+            scope_object = scope.scope_object
+            if isinstance(scope_object, (type, ClassOwner)):
+                return scope_object
+            if isinstance(scope_node, ast.ClassDef):
+                return self._get_synthetic_class_key(scope_node)
+            if isinstance(scope_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return self._function_owner_from_node(scope_node, identity=scope_object)
+            if isinstance(scope_node, ast.TypeAlias):
+                assert isinstance(scope_node.name, ast.Name)
+                return self._alias_owner_from_name(
+                    scope_node.name.id, identity=scope_object
+                )
+            raise AssertionError(f"unexpected type parameter scope {scope_node!r}")
 
         def _pep695_type_param_expr_needs_string_forward_ref(
             self, node: ast.expr
