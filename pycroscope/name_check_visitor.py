@@ -55,12 +55,11 @@ from unittest.mock import ANY
 
 import typeshed_client
 import typing_extensions
-from typing_extensions import Protocol, assert_never, is_typeddict
+from typing_extensions import Protocol, Sentinel, assert_never, is_typeddict
 
 from . import attributes, format_strings, importer, node_visitor, type_evaluation
 from . import dataclass as dataclass_helpers
 from .analysis_lib import (
-    Sentinel,
     get_attribute_path,
     get_subclasses_recursively,
     is_cython_class,
