@@ -17,10 +17,9 @@ from dataclasses import dataclass, replace
 from types import FunctionType, ModuleType
 from typing import Literal, Protocol
 
-from typing_extensions import assert_never
+from typing_extensions import Sentinel, assert_never
 
 import pycroscope
-from pycroscope.analysis_lib import Sentinel
 from pycroscope.find_unused import used
 from pycroscope.safe import safe_equals, safe_isinstance
 from pycroscope.typevar import resolve_bounds_map
@@ -2314,7 +2313,7 @@ def can_assign_and_used_any(
 
 
 Irreducible = Sentinel("Irreducible")
-TypeOrIrreducible = GradualType | Literal[Irreducible]
+TypeOrIrreducible = GradualType | Irreducible
 
 
 def _intersect_predicate(

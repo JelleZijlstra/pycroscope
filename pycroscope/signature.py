@@ -17,12 +17,11 @@ from dataclasses import dataclass, field, replace
 from types import FunctionType, MethodType
 from typing import Any, ClassVar, Literal, NamedTuple, TypeVar, get_args, get_origin
 
-from typing_extensions import Self, assert_never
+from typing_extensions import Self, Sentinel, assert_never
 
 import pycroscope
 from pycroscope import relations
 
-from .analysis_lib import Sentinel
 from .error_code import Error, ErrorCode
 from .input_sig import (
     ActualArguments,
@@ -132,7 +131,7 @@ from .value import (
 )
 
 UNANNOTATED = AnyValue(AnySource.unannotated)
-ELLIPSIS = Sentinel("ellipsis")
+ELLIPSIS = Sentinel("ELLIPSIS")
 ELLIPSIS_COMPOSITE = Composite(AnyValue(AnySource.ellipsis_callable))
 NO_ARG_SENTINEL = KnownValue(Sentinel("no argument given"))
 
@@ -364,8 +363,7 @@ class PossibleArg:
 # ARGS for *args, KWARGS for **kwargs, PossibleArg for args that may
 # be missing, TypeVarValue for a ParamSpec.
 Argument = tuple[
-    Composite,
-    None | str | PossibleArg | Literal[ARGS, KWARGS, ELLIPSIS] | ParamSpecParam,
+    Composite, None | str | PossibleArg | ARGS | KWARGS | ELLIPSIS | ParamSpecParam
 ]
 
 # Arguments bound to a call

@@ -13,9 +13,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from pycroscope.relations import is_assignable_with_reason, is_subtype_with_reason
+from typing_extensions import Sentinel
 
-from .analysis_lib import Sentinel
+from .relations import is_assignable_with_reason, is_subtype_with_reason
 from .stacked_scopes import (
     Constraint,
     ConstraintType,
@@ -39,16 +39,16 @@ from .value import (
     unite_values,
 )
 
-ARGS = Sentinel("*args")
-KWARGS = Sentinel("**kwargs")
-DEFAULT = Sentinel("default")
-UNKNOWN = Sentinel("unknown")
+ARGS = Sentinel("ARGS")
+KWARGS = Sentinel("KWARGS")
+DEFAULT = Sentinel("DEFAULT")
+UNKNOWN = Sentinel("UNKNOWN")
 
 # How a bound argument was filled: int for a positional arg,
 # str for a keyword arg, DEFAULT for a parameter filled from the
 # default, ARGS for a parameter filled from *args, KWARGS for **kwargs,
 # UNKNOWN if there are multiple possibilities.
-Position = int | str | Literal[DEFAULT, ARGS, KWARGS, UNKNOWN]
+Position = int | str | DEFAULT | ARGS | KWARGS | UNKNOWN
 
 VarMap = Mapping[str, Value]
 

@@ -227,11 +227,6 @@ def is_cython_class(cls: type[object]) -> bool:
     return "__pyx_vtable__" in cls.__dict__
 
 
-@dataclass(frozen=True)
-class Sentinel:
-    name: str
-
-
 @used
 def trace(func: Callable[P, T]) -> Callable[P, T]:
     """Decorator to trace function calls."""

@@ -6,11 +6,10 @@ TypeVar solver.
 
 from collections.abc import Iterable, Sequence
 
-from typing_extensions import assert_never
+from typing_extensions import Sentinel, assert_never
 
 import pycroscope
 
-from .analysis_lib import Sentinel
 from .safe import all_of_type
 from .value import (
     AnySource,
@@ -38,8 +37,8 @@ from .value import (
     unite_values,
 )
 
-BOTTOM = Sentinel("<bottom>")
-TOP = Sentinel("<top>")
+BOTTOM = Sentinel("BOTTOM")
+TOP = Sentinel("TOP")
 
 
 def _as_fixed_tuple_members(value: Value) -> Sequence[Value] | None:

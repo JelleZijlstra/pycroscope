@@ -31,11 +31,11 @@ from dataclasses import dataclass, field, replace
 from functools import cached_property
 from itertools import chain
 from types import ModuleType
-from typing import Any, NamedTuple, Optional, TypeVar, cast
+from typing import Any, NamedTuple, TypeVar, cast
 
-from typing_extensions import assert_never
+from typing_extensions import Sentinel, assert_never
 
-from .analysis_lib import Sentinel, override
+from .analysis_lib import override
 from .boolability import get_boolability
 from .extensions import reveal_type
 from .predicates import FALSY, TRUTHY
@@ -74,7 +74,7 @@ T = TypeVar("T")
 
 LEAVES_SCOPE = "%LEAVES_SCOPE"
 LEAVES_LOOP = "%LEAVES_LOOP"
-_UNINITIALIZED = Sentinel("uninitialized")
+_UNINITIALIZED = Sentinel("_UNINITIALIZED")
 
 
 def _is_subtype(supertype: Value, subtype: Value, ctx: CanAssignContext) -> bool:
@@ -179,7 +179,7 @@ class VarnameWithOrigin:
 SubScope = dict[Varname, list[Node]]
 
 # Type for Constraint.value if constraint type is predicate
-# PredicateFunc = Callable[[Value, bool], Optional[Value]]
+# PredicateFunc = Callable[[Value, bool], Value | None]
 
 
 class Composite(NamedTuple):
@@ -288,7 +288,7 @@ class Constraint(AbstractConstraint):
 
     For example::
 
-        def f(x: Optional[int]) -> None:
+        def f(x: int | None) -> None:
             reveal_type(x)  # int | None
             assert x
             # Now a constraint of type is_truthy is active. Because
@@ -308,7 +308,7 @@ class Constraint(AbstractConstraint):
     value: Any
     """Type for an ``is_instance`` constraint; unused for is_truthy;
     :class:`pycroscope.value.Value` object for `is_value_object`."""
-    inverted: Optional["Constraint"] = field(
+    inverted: "Constraint | None" = field(
         compare=False, repr=False, hash=False, default=None
     )
 
@@ -745,7 +745,7 @@ class Scope:
 
     scope_type: ScopeType
     variables: dict[Varname, Value] = field(default_factory=dict)
-    parent_scope: Optional["Scope"] = None
+    parent_scope: "Scope | None" = None
     scope_node: Node | None = None
     scope_object: object | None = None
     simplification_limit: int | None = None
@@ -772,7 +772,7 @@ class Scope:
         from_parent_scope: bool = False,
         fallback_value: Value | None = None,
         can_assign_ctx: CanAssignContext,
-    ) -> tuple[Value, Optional["Scope"], VarnameOrigin]:
+    ) -> tuple[Value, "Scope | None", VarnameOrigin]:
         local_value, origin = self.get_local(
             varname,
             node,
@@ -815,7 +815,7 @@ class Scope:
         from_parent_scope: bool = False,
         fallback_value: Value | None = None,
         can_assign_ctx: CanAssignContext,
-    ) -> tuple[Value, Optional["Scope"], VarnameOrigin]:
+    ) -> tuple[Value, "Scope | None", VarnameOrigin]:
         local_value, origin = self.peek_local(
             varname,
             node,

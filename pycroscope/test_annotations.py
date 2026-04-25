@@ -2833,3 +2833,19 @@ class TestProtocol(TestNameCheckVisitorBase):
 
         def caller() -> None:
             capybara(obj)
+
+
+class TestSentinel(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_sentinel(self):
+        from typing_extensions import Sentinel, assert_type
+
+        SENT = Sentinel("SENT")
+
+        def f(x: SENT | int) -> int:
+            if x is SENT:
+                assert_type(x, SENT)
+                return 0
+            else:
+                assert_type(x, int)
+                return x

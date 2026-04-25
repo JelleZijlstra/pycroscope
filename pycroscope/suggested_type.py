@@ -12,9 +12,8 @@ from dataclasses import dataclass, field
 from types import FunctionType
 from typing import Any
 
-from typing_extensions import assert_never
+from typing_extensions import Sentinel, assert_never
 
-from .analysis_lib import Sentinel
 from .error_code import ErrorCode
 from .node_visitor import ErrorContext, Failure
 from .relations import is_assignable
@@ -51,7 +50,7 @@ from .value import (
     unite_values,
 )
 
-BOUND_RECEIVER = Sentinel("bound receiver")
+BOUND_RECEIVER = Sentinel("BOUND_RECEIVER")
 CallSource = object
 
 
