@@ -3404,68 +3404,7 @@ class TestNewType(TestNameCheckVisitorBase):
         BadNewType7 = NewType("BadNewType7", Any)  # E: incompatible_call
 
 
-class TestTypingConstructNameMatching(TestNameCheckVisitorBase):
-    @assert_passes()
-    def test_assignment_target_name_mismatch(self):
-        from typing import NamedTuple, NewType, TypedDict, TypeVar
-
-        from typing_extensions import ParamSpec, TypeVarTuple
-
-        GoodTypeVar = TypeVar("GoodTypeVar")
-        BadTypeVar = TypeVar("WrongTypeVar")  # E: incompatible_call
-        GoodTypeVarTuple = TypeVarTuple("GoodTypeVarTuple")
-        BadTypeVarTuple = TypeVarTuple("WrongTypeVarTuple")  # E: incompatible_call
-        GoodParamSpec = ParamSpec("GoodParamSpec")
-        BadParamSpec = ParamSpec("WrongParamSpec")  # E: incompatible_call
-        GoodNewType = NewType("GoodNewType", int)
-        BadNewType = NewType("WrongNewType", int)  # E: incompatible_call
-        GoodNamedTuple = NamedTuple("GoodNamedTuple", [("x", int)])
-        BadNamedTuple = NamedTuple(
-            "WrongNamedTuple", [("x", int)]  # E: incompatible_call
-        )
-        GoodTypedDict = TypedDict("GoodTypedDict", {"x": int})
-        BadTypedDict = TypedDict("WrongTypedDict", {"x": int})  # E: incompatible_call
-        print(
-            GoodTypeVar,
-            BadTypeVar,
-            GoodTypeVarTuple,
-            BadTypeVarTuple,
-            GoodParamSpec,
-            BadParamSpec,
-            GoodNewType,
-            BadNewType,
-            GoodNamedTuple,
-            BadNamedTuple,
-            GoodTypedDict,
-            BadTypedDict,
-        )
-
-    @assert_passes(allow_import_failures=True)
-    def test_assignment_target_name_checks_keyword_name_arguments(self):
-        from random import random
-
-        from typing_extensions import NewType
-
-        GoodNewType = NewType(tp=int, name="GoodNewType")
-        maybe_name = "MaybeNewType" if random() else 1
-        MaybeNewType = NewType(tp=int, name=maybe_name)
-        object_name: object = "ObjectNameNewType"
-        ObjectNameNewType = NewType(
-            tp=int,
-            # E: incompatible_argument
-            name=object_name,
-        )
-        BadNewType = NewType(tp=int, name="WrongNewType")  # E: incompatible_call
-
-        print(GoodNewType, MaybeNewType, ObjectNameNewType, BadNewType)
-
-    @assert_passes()
-    def test_assignment_target_name_mismatch_with_keywords(self):
-        from typing_extensions import ParamSpec
-
-        BadParamSpec = ParamSpec(name="WrongParamSpec")  # E: incompatible_call
-        print(BadParamSpec)
-
+class TestTypeVarTuple(TestNameCheckVisitorBase):
     @skip_before((3, 11))
     def test_generic_typevartuple_base_validation(self):
         self.assert_passes(

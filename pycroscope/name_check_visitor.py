@@ -468,16 +468,6 @@ class _SupportsDescriptorGet(Protocol):
     ) -> object: ...
 
 
-_TYPING_CONSTRUCTS_WITH_NAME_ARG: dict[str, str] = {
-    "TypeVar": "name",
-    "TypeVarTuple": "name",
-    "ParamSpec": "name",
-    "NewType": "name",
-    "NamedTuple": "typename",
-    "TypedDict": "typename",
-}
-
-
 def _is_known_none_annotation(value: Value) -> bool:
     return replace_fallback(value) == KnownNone
 

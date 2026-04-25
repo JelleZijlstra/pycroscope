@@ -13,15 +13,14 @@ from collections.abc import Iterable, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from itertools import zip_longest
-from typing import TypeAlias, TypeVar
+from typing import Protocol, TypeAlias, TypeVar
 
-from typing_extensions import Protocol
+from typing_extensions import Sentinel
 
-from pycroscope.input_sig import InputSigValue
-
-from .analysis_lib import Sentinel, is_positional_only_arg_name
+from .analysis_lib import is_positional_only_arg_name
 from .error_code import ErrorCode
 from .extensions import deprecated as deprecated_decorator
+from .input_sig import InputSigValue
 from .maybe_asynq import asynq
 from .node_visitor import Error, ErrorContext
 from .options import Options, PyObjectSequenceOption
