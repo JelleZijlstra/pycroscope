@@ -3465,12 +3465,6 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
             callable=assert_type,
             impl=_assert_type_impl,
         ),
-        # Need to override this because the type for the tp parameter in typeshed is too strict
-        Signature.make(
-            [SigParameter("name", annotation=TypedValue(str)), SigParameter(name="tp")],
-            callable=NewType,
-            impl=_newtype_impl,
-        ),
         Signature.make(
             [
                 SigParameter(
@@ -3587,6 +3581,18 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
         annotation=TypeFormValue(TypedValue(object)),
     )
     for mod in typing, typing_extensions:
+        newtype = getattr(mod, "NewType")
+        signatures.append(
+            Signature.make(
+                [
+                    SigParameter("name", annotation=TypedValue(str)),
+                    SigParameter(name="tp"),
+                ],
+                callable=newtype,
+                impl=_newtype_impl,
+            )
+        )
+
         try:
             typevar_class = getattr(mod, "TypeVar")
         except AttributeError:

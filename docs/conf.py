@@ -82,12 +82,17 @@ nitpick_ignore = [
     ("py:class", "pycroscope.value.Variance"),
     ("py:class", "pycroscope.value.FunctionDecorator"),
     ("py:class", "typing_extensions.ParamSpec"),
+    ("py:class", "BoundArgs"),
 ]
 
 
 autodoc_member_order = "bysource"
 autodoc_default_options = {"inherited-members": False, "member-order": "bysource"}
 autodoc_inherit_docstrings = False
+autodoc_type_aliases = {
+    "BoundArgs": "pycroscope.signature.BoundArgs",
+    "Position": "pycroscope.type_evaluation.Position",
+}
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ["_templates"]
