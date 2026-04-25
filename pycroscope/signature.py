@@ -1092,7 +1092,7 @@ class Signature:
 
     def bind_arguments(
         self, actual_args: ActualArguments, ctx: CheckCallContext
-    ) -> "BoundArgs | None":
+    ) -> BoundArgs | None:
         """Attempt to bind the parameters in the signature to the arguments actually passed in.
 
         Nomenclature:
