@@ -5,6 +5,7 @@
 """
 
 import inspect
+import sys
 import types
 import typing
 from collections.abc import Container, Sequence
@@ -258,3 +259,13 @@ def is_async_fn(obj: object) -> bool:
 def not_none(arg: T | None) -> T:
     assert arg is not None
     return arg
+
+
+def is_sentinel(val: object) -> bool:
+    """Is this object a PEP 661 sentinel?"""
+    if sys.version_info >= (3, 15):
+        if isinstance(val, sentinel):
+            return True
+    return is_instance_of_typing_name(val, "Sentinel") or is_instance_of_typing_name(
+        val, "sentinel"
+    )

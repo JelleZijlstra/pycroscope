@@ -1,4 +1,5 @@
 import ast
+import builtins
 import collections
 import collections.abc
 import inspect
@@ -6,6 +7,7 @@ import re
 import sys
 import typing
 from collections.abc import Callable, Iterable, Sequence
+from dataclasses import replace
 from itertools import product
 from typing import NewType, TypeVar, cast
 
@@ -2440,6 +2442,7 @@ def _typeddict_entry_from_field_value(
 
 
 def _typeddict_impl(ctx: CallContext) -> Value:
+    _check_assignment_name_match(ctx, "typename", "TypedDict")
     fields = ctx.vars["fields"]
     kwargs = ctx.vars["kwargs"]
     has_fields = fields is not NO_ARG_SENTINEL and fields != KnownValue(None)
@@ -2651,6 +2654,7 @@ def _runtime_type_from_value(value: Value) -> object | None:
 
 
 def _newtype_impl(ctx: CallContext) -> Value:
+    _check_assignment_name_match(ctx, "name", "NewType")
     name_value = replace_fallback(ctx.vars["name"])
     if not (isinstance(name_value, KnownValue) and isinstance(name_value.val, str)):
         return ctx.inferred_return_value
@@ -2706,6 +2710,7 @@ def _newtype_impl(ctx: CallContext) -> Value:
 # Should not be necessary, but by default we pick up a wrong signature for
 # typing.NamedTuple
 def _namedtuple_impl(ctx: CallContext) -> Value:
+    _check_assignment_name_match(ctx, "typename", "NamedTuple")
     has_kwargs = bool(_get_known_kwargs_entries(ctx.vars["kwargs"]))
     # Mirrors the runtime logic in typing.NamedTuple in 3.13
     if ctx.vars["fields"] is NO_ARG_SENTINEL:
@@ -2796,15 +2801,40 @@ def _dataclass_transform_impl(ctx: CallContext) -> Value:
     return AnnotatedValue(TypedValue(_IdentityCallable), [extension])
 
 
-def _typevar_impl(ctx: CallContext) -> Value:
-    if isinstance(ctx.vars["name"], KnownValue) and isinstance(
-        ctx.vars["name"].val, str
+def _get_assignment_target_name(ctx: CallContext) -> str | None:
+    if ctx.node is None:
+        return None
+    match ctx.visitor.current_statement:
+        case ast.Assign(targets=[ast.Name(id=varname)], value=value) if (
+            value is ctx.node
+        ):
+            return varname
+        case ast.AnnAssign(target=ast.Name(id=varname), value=value) if (
+            value is ctx.node
+        ):
+            return varname
+    return None
+
+
+def _check_assignment_name_match(ctx: CallContext, name_arg: str, callee: str) -> None:
+    name_val = ctx.vars.get(name_arg)
+    target_name = _get_assignment_target_name(ctx)
+    if (
+        target_name is not None
+        and isinstance(name_val, KnownValue)
+        and isinstance(name_val.val, str)
     ):
-        # We special case TypeVar to avoid having to deal with the fact that it
-        # is a generic function at runtime. This allows us to give better
-        # error messages for unsupported arguments and to support using TypeVar
-        # in annotations without needing to import it from typing_extensions.
-        pass
+        if name_val.val != target_name:
+            ctx.show_error(
+                f"{callee} named {name_val.val!r} must be assigned to "
+                "a variable with the same name",
+                ErrorCode.incompatible_call,
+                arg=name_arg,
+            )
+
+
+def _typevar_impl(ctx: CallContext) -> Value:
+    _check_assignment_name_match(ctx, "name", "TypeVar")
     if ctx.vars["bound"] is NO_ARG_SENTINEL:
         bound = None
     else:
@@ -2860,6 +2890,42 @@ def _typevar_impl(ctx: CallContext) -> Value:
                 arg="default",
             )
 
+    return ctx.inferred_return_value
+
+
+def _paramspec_impl(ctx: CallContext) -> Value:
+    _check_assignment_name_match(ctx, "name", "ParamSpec")
+    if ctx.vars.get("bound", NO_ARG_SENTINEL) is not NO_ARG_SENTINEL:
+        ctx.show_error(
+            "ParamSpec bounds are not supported",
+            ErrorCode.incompatible_call,
+            arg="bound",
+        )
+    # TODO: check variance and default
+    return ctx.inferred_return_value
+
+
+def _typevartuple_impl(ctx: CallContext) -> Value:
+    _check_assignment_name_match(ctx, "name", "TypeVarTuple")
+    if ctx.vars.get("bound", NO_ARG_SENTINEL) is not NO_ARG_SENTINEL:
+        ctx.show_error(
+            "TypeVarTuple bounds are not supported",
+            ErrorCode.incompatible_call,
+            arg="bound",
+        )
+    # TODO: check variance and default
+    return ctx.inferred_return_value
+
+
+def _sentinel_impl(ctx: CallContext) -> Value:
+    _check_assignment_name_match(ctx, "name", "sentinel")
+    repr = ctx.vars.get("repr", NO_ARG_SENTINEL)
+    if repr is not NO_ARG_SENTINEL and repr != KnownValue(None):
+        ctx.show_error(
+            "The `repr` argument to `sentinel` is deprecated",
+            ErrorCode.incompatible_call,
+            arg="repr",
+        )
     return ctx.inferred_return_value
 
 
@@ -3483,6 +3549,43 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
                 return_annotation=KnownValue(None),
             ),
         ]
+
+    name_param = SigParameter("name", _POS_ONLY, annotation=TypedValue(str))
+    bound_param = SigParameter(
+        "bound",
+        ParameterKind.KEYWORD_ONLY,
+        default=NO_ARG_SENTINEL,
+        annotation=TypeFormValue(TypedValue(object)),
+    )
+    constraints_param = SigParameter(
+        "constraints",
+        ParameterKind.VAR_POSITIONAL,
+        annotation=GenericValue(tuple, [TypeFormValue(TypedValue(object))]),
+    )
+    covariant_param = SigParameter(
+        "covariant",
+        ParameterKind.KEYWORD_ONLY,
+        default=KnownValue(False),
+        annotation=TypedValue(bool),
+    )
+    contravariant_param = SigParameter(
+        "contravariant",
+        ParameterKind.KEYWORD_ONLY,
+        default=KnownValue(False),
+        annotation=TypedValue(bool),
+    )
+    infer_variance_param = SigParameter(
+        "infer_variance",
+        ParameterKind.KEYWORD_ONLY,
+        default=KnownValue(False),
+        annotation=TypedValue(bool),
+    )
+    default_param = SigParameter(
+        "default",
+        ParameterKind.KEYWORD_ONLY,
+        default=NO_ARG_SENTINEL,
+        annotation=TypeFormValue(TypedValue(object)),
+    )
     for mod in typing, typing_extensions:
         try:
             typevar_class = getattr(mod, "TypeVar")
@@ -3490,54 +3593,73 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
             pass
         else:
             typevar_params = [
-                SigParameter("name", _POS_ONLY, annotation=TypedValue(str)),
-                SigParameter(
-                    "constraints",
-                    ParameterKind.VAR_POSITIONAL,
-                    annotation=GenericValue(tuple, [TypeFormValue(TypedValue(object))]),
-                ),
-                SigParameter(
-                    "bound",
-                    ParameterKind.KEYWORD_ONLY,
-                    default=NO_ARG_SENTINEL,
-                    annotation=TypeFormValue(TypedValue(object)),
-                ),
-                SigParameter(
-                    "covariant",
-                    ParameterKind.KEYWORD_ONLY,
-                    default=KnownValue(False),
-                    annotation=TypedValue(bool),
-                ),
-                SigParameter(
-                    "contravariant",
-                    ParameterKind.KEYWORD_ONLY,
-                    default=KnownValue(False),
-                    annotation=TypedValue(bool),
-                ),
+                name_param,
+                constraints_param,
+                bound_param,
+                covariant_param,
+                contravariant_param,
             ]
             if sys.version_info >= (3, 11) or mod is typing_extensions:
-                typevar_params.append(
-                    SigParameter(
-                        "infer_variance",
-                        ParameterKind.KEYWORD_ONLY,
-                        default=KnownValue(False),
-                        annotation=TypedValue(bool),
-                    )
-                )
+                typevar_params.append(infer_variance_param)
             if sys.version_info >= (3, 12) or mod is typing_extensions:
-                typevar_params.append(
-                    SigParameter(
-                        "default",
-                        ParameterKind.KEYWORD_ONLY,
-                        default=NO_ARG_SENTINEL,
-                        annotation=TypeFormValue(TypedValue(object)),
-                    )
-                )
+                typevar_params.append(default_param)
             sig = Signature.make(
                 typevar_params,
                 return_annotation=TypedValue(typevar_class),
                 callable=typevar_class,
                 impl=_typevar_impl,
+                allow_call=True,
+                allow_partial_call=True,
+            )
+            signatures.append(sig)
+
+        try:
+            paramspec_class = getattr(mod, "ParamSpec")
+        except AttributeError:
+            pass
+        else:
+            ps_params = [
+                name_param,
+                replace(bound_param, annotation=TypedValue(object)),
+                covariant_param,
+                contravariant_param,
+            ]
+            if sys.version_info >= (3, 11) or mod is typing_extensions:
+                ps_params.append(infer_variance_param)
+            if sys.version_info >= (3, 12) or mod is typing_extensions:
+                ps_params.append(replace(default_param, annotation=TypedValue(object)))
+            sig = Signature.make(
+                ps_params,
+                return_annotation=TypedValue(paramspec_class),
+                callable=paramspec_class,
+                impl=_paramspec_impl,
+                allow_call=True,
+                allow_partial_call=True,
+            )
+            signatures.append(sig)
+
+        try:
+            tvt_class = getattr(mod, "TypeVarTuple")
+        except AttributeError:
+            pass
+        else:
+            tvt_params = [name_param]
+            if sys.version_info >= (3, 12) or mod is typing_extensions:
+                tvt_params.append(
+                    replace(default_param, annotation=TypeFormValue(TypedValue(object)))
+                )
+            if sys.version_info >= (3, 15) or mod is typing_extensions:
+                tvt_params.append(
+                    replace(bound_param, annotation=TypeFormValue(TypedValue(object)))
+                )
+                tvt_params.append(covariant_param)
+                tvt_params.append(contravariant_param)
+                tvt_params.append(infer_variance_param)
+            sig = Signature.make(
+                tvt_params,
+                return_annotation=TypedValue(tvt_class),
+                callable=tvt_class,
+                impl=_typevartuple_impl,
                 allow_call=True,
                 allow_partial_call=True,
             )
@@ -3697,6 +3819,33 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
                 return_annotation=TypedValue(_IdentityCallable),
                 callable=dataclass_transform_func,
                 impl=_dataclass_transform_impl,
+            )
+            signatures.append(sig)
+
+    for mod, name in [
+        (typing_extensions, "Sentinel"),
+        (typing_extensions, "sentinel"),
+        (builtins, "sentinel"),
+    ]:
+        try:
+            sentinel_cls = getattr(mod, name)
+        except AttributeError:
+            pass
+        else:
+            params = [name_param]
+            if sys.version_info < (3, 15):
+                params.append(
+                    SigParameter(
+                        "repr",
+                        default=KnownValue(None),
+                        annotation=TypedValue(str) | KnownValue(None),
+                    )
+                )
+            sig = Signature.make(
+                params,
+                return_annotation=TypedValue(sentinel_cls),
+                callable=sentinel_cls,
+                impl=_sentinel_impl,
             )
             signatures.append(sig)
     result: dict[object, Signature | OverloadedSignature] = {}

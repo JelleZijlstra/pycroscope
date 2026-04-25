@@ -55,6 +55,7 @@ from pycroscope.error_code import Error, ErrorCode
 from pycroscope.extensions import CustomCheck, ExternalType
 from pycroscope.safe import (
     is_instance_of_typing_name,
+    is_sentinel,
     safe_equals,
     safe_getattr,
     safe_isinstance,
@@ -1741,6 +1742,8 @@ class KnownValue(Value):
     def __str__(self) -> str:
         if self.val is None:
             return "None"
+        elif is_sentinel(self.val):
+            return str(self.val)
         elif isinstance(self.val, ModuleType):
             return f"module {self.val.__name__!r}"
         elif isinstance(self.val, FunctionType):

@@ -84,7 +84,13 @@ from .extensions import (
 from .find_unused import used
 from .functions import FunctionDefNode
 from .node_visitor import ErrorContext
-from .safe import is_instance_of_typing_name, is_typing_name, is_union, safe_getattr
+from .safe import (
+    is_instance_of_typing_name,
+    is_sentinel,
+    is_typing_name,
+    is_union,
+    safe_getattr,
+)
 from .signature import (
     ANY_SIGNATURE,
     ELLIPSIS_PARAM,
@@ -860,6 +866,8 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
         return KnownValue(TypedDict)
     elif is_typing_name(val, "NamedTuple"):
         return TypedValue(tuple)
+    elif is_sentinel(val):
+        return KnownValue(val)
     else:
         ctx.show_error(f"Invalid type annotation {val}")
         return AnyValue(AnySource.error)
