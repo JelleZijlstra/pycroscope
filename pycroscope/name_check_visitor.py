@@ -3663,17 +3663,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             for _, value, _ in decorator_values
         ):
             tobj.set_is_disjoint_base(True)
-        if sys.version_info >= (3, 12) and node.type_params:
+        is_pep695_generic = sys.version_info >= (3, 12) and node.type_params
+
+        if is_pep695_generic:
             ctx = self.scopes.add_scope(
                 ScopeType.annotation_scope, scope_node=node, scope_object=class_obj
             )
         else:
             ctx = contextlib.nullcontext()
-        with ctx:
+        with self.active_type_params.add_scope(class_key), ctx:
             legacy_type_param_ctx: AbstractContextManager[set[object] | None] = (
                 contextlib.nullcontext(None)
             )
-            if self._is_checking() and sys.version_info >= (3, 12) and node.type_params:
+            if self._is_checking() and is_pep695_generic:
                 legacy_type_param_ctx = (
                     self.active_type_params.reject_legacy_type_params(
                         "Class definition cannot combine old-style TypeVar declarations"
@@ -3681,7 +3683,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                 )
             with legacy_type_param_ctx as allowed_legacy_identities:
-                if sys.version_info >= (3, 12) and node.type_params:
+                if is_pep695_generic:
                     declared_type_param_nodes = node.type_params
                     type_param_values = list(
                         self.visit_type_param_values(
@@ -3709,7 +3711,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 self._check_type_parameter_base_argument_validity(node, base_values)
                 self._check_type_parameter_base_coverage(node, base_values)
-                if sys.version_info >= (3, 12) and declared_type_param_nodes:
+                if is_pep695_generic:
                     self._check_pep695_type_parameter_base_compatibility(
                         node, base_values
                     )

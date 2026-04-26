@@ -1,24 +1,28 @@
 import ast
 import contextlib
+import sys
 from collections.abc import Generator, Iterable, Sequence
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from typing import Protocol
 
 from .analysis_lib import override
 from .error_code import Error, ErrorCode
-from .safe import safe_getattr
-from .value import TypeParam, TypeVarParam, Value
+from .value import TypeParam, TypeParamOwner, TypeVarLike, TypeVarParam, Value
 
-_TYPE_PARAM_AST_NODE_TYPES = tuple(
-    typ
-    for typ in (
-        safe_getattr(ast, "TypeVar", None),
-        safe_getattr(ast, "ParamSpec", None),
-        safe_getattr(ast, "TypeVarTuple", None),
-    )
-    if isinstance(typ, type)
-)
+if sys.version_info >= (3, 12):
+    _TYPE_PARAM_AST_NODE_TYPES = (ast.TypeVar, ast.ParamSpec, ast.TypeVarTuple)
+else:
+    _TYPE_PARAM_AST_NODE_TYPES = ()
+
+TypeParamIdentity = TypeVarLike | ast.AST
+
+
+@dataclass
+class TypeParamScope:
+    owner: TypeParamOwner
+    scope: dict[TypeParamIdentity, TypeParam]
+    is_collecting: bool = False
 
 
 class TypeParamVisitor(Protocol):
@@ -109,6 +113,16 @@ class ActiveTypeParams:
         self._variance_is_suspended = 0
         self._variance_outside_annotations = 0
         self._subscript_arg_polarities: list[tuple[tuple[int, bool], ...]] = []
+        self._scopes: list[TypeParamScope] = []
+
+    @contextmanager
+    def add_scope(self, owner: TypeParamOwner) -> Generator[None]:
+        scope = TypeParamScope(owner, {})
+        self._scopes.append(scope)
+        try:
+            yield
+        finally:
+            self._scopes.pop()
 
     def current_annotation_identities(self) -> set[object]:
         identities: set[object] = set()
