@@ -14,6 +14,7 @@ pycroscope: A semi-static typechecker
    configuration
    typesystem
    design
+   type_params
    type_evaluation
    annotated_types
    glossary

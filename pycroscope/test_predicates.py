@@ -12,7 +12,7 @@ from .value import (
 
 
 def test_is_universally_assignable_intersection() -> None:
-    typevar = TypeVarValue(TypeVarParam(TypeVar("T_pred")))
+    typevar = TypeVarValue(TypeVarParam(TypeVar("T_pred"), owner=None))
     value = IntersectionValue((typevar, AnyValue(AnySource.unannotated)))
     assert is_universally_assignable(value, TypedValue(int))
 

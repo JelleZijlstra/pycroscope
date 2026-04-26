@@ -38,6 +38,7 @@ from . import (
     tests,
     type_object,
     type_object_builder,
+    type_params,
     typeshed,
     typevar,
     value,
@@ -82,3 +83,4 @@ used(annotated_types)
 used(runtime)
 used(input_sig)
 used(relations)
+used(type_params)

@@ -734,7 +734,9 @@ class Checker:
     ) -> None:
         self.make_synthetic_class(typ)
         type_object = self.make_type_object(typ)
-        type_object.set_direct_bases(direct_bases_from_values(base_values, self))
+        type_object.set_direct_bases(
+            direct_bases_from_values(base_values, self, owner=typ)
+        )
         if declared_type_params:
             type_object.set_declared_type_params(declared_type_params)
         else:
@@ -1154,7 +1156,7 @@ class Checker:
             )
         )
         typevar = cast(TypeVarType, TypeVar(f"_Ctor_{class_name}_T", *constraints))
-        tv_value = TypeVarValue(TypeVarParam(typevar))
+        tv_value = TypeVarValue(TypeVarParam(typevar, owner=None))
         generic_param = SigParameter(
             first_param.name,
             kind=first_param.kind,

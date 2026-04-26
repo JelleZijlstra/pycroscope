@@ -197,6 +197,7 @@ def _runtime_dataclass_field_info(field: object) -> DataclassFieldInfo:
 def _iter_base_type_values(
     value: Value,
     arg_spec_cache: ArgSpecCache,
+    owner: ClassKey | None = None,
     seen_known_bases: frozenset[int] = frozenset(),
 ) -> Iterator[TypedValue | AnyValue]:
     if isinstance(value, PartialValue):
@@ -206,11 +207,11 @@ def _iter_base_type_values(
         if isinstance(root, SyntheticClassObjectValue):
             root = root.class_type
         elif isinstance(root, KnownValue):
-            root = arg_spec_cache._type_from_base(root.val, object)
+            root = arg_spec_cache._type_from_base(root.val, owner or object)
         root = replace_fallback(root)
         members = tuple(
             (
-                arg_spec_cache._type_from_base(member.val, object)
+                arg_spec_cache._type_from_base(member.val, owner or object)
                 if arg_spec_cache is not None and isinstance(member, KnownValue)
                 else member
             )
@@ -219,39 +220,55 @@ def _iter_base_type_values(
         if isinstance(root, SequenceValue) and root.typ is tuple:
             yield SequenceValue(tuple, [(False, member) for member in members])
             return
+        if isinstance(root, (TypedValue, GenericValue)) and root.typ is tuple:
+            if len(members) == 2 and members[1] == KnownValue(Ellipsis):
+                yield GenericValue(tuple, [members[0]])
+            else:
+                yield SequenceValue(tuple, [(False, member) for member in members])
+            return
         if isinstance(root, (TypedValue, GenericValue)):
             yield GenericValue(root.typ, members)
         return
     value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):
         for subval in value.vals:
-            yield from _iter_base_type_values(subval, arg_spec_cache, seen_known_bases)
+            yield from _iter_base_type_values(
+                subval, arg_spec_cache, owner=owner, seen_known_bases=seen_known_bases
+            )
         return
     if isinstance(value, IntersectionValue):
         for subval in value.vals:
-            yield from _iter_base_type_values(subval, arg_spec_cache, seen_known_bases)
+            yield from _iter_base_type_values(
+                subval, arg_spec_cache, owner=owner, seen_known_bases=seen_known_bases
+            )
         return
     yield from _iter_base_type_values_from_simple(
-        value, arg_spec_cache, seen_known_bases
+        value, arg_spec_cache, owner, seen_known_bases
     )
 
 
 def _iter_base_type_values_from_simple(
-    value: SimpleType, arg_spec_cache: ArgSpecCache, seen_known_bases: frozenset[int]
+    value: SimpleType,
+    arg_spec_cache: ArgSpecCache,
+    owner: ClassKey | None,
+    seen_known_bases: frozenset[int],
 ) -> Iterator[TypedValue | AnyValue]:
     if isinstance(value, KnownValue):
         base_id = id(value.val)
         if base_id in seen_known_bases:
             return
         yield from _iter_base_type_values(
-            # TODO: owner is wrong, but this probably doesn't matter
-            arg_spec_cache._type_from_base(value.val, object),
+            arg_spec_cache._type_from_base(value.val, owner or object),
             arg_spec_cache,
-            seen_known_bases | {base_id},
+            owner=owner,
+            seen_known_bases=seen_known_bases | {base_id},
         )
     elif isinstance(value, SyntheticClassObjectValue):
         yield from _iter_base_type_values(
-            value.class_type, arg_spec_cache, seen_known_bases
+            value.class_type,
+            arg_spec_cache,
+            owner=owner,
+            seen_known_bases=seen_known_bases,
         )
     elif isinstance(value, SequenceValue) and value.typ is tuple:
         yield value
@@ -418,7 +435,9 @@ def _runtime_member_value(raw_value: object, owner: type) -> Value:
     if not isinstance(runtime_params, tuple) or not runtime_params:
         return value
 
-    ctx = RuntimeAnnotationsContext(owner=owner, self_key=owner)
+    ctx = RuntimeAnnotationsContext(
+        owner=owner, self_key=owner, new_type_param_owner=owner
+    )
     with ctx.suppress_errors():
         type_params = tuple(make_type_param(param, ctx) for param in runtime_params)
         type_arguments = tuple(type_from_runtime(arg, ctx=ctx) for arg in args)

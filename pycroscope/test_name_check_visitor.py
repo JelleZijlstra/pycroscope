@@ -244,6 +244,24 @@ def _make_module(code_str: str) -> types.ModuleType:
     return make_module(code_str, extra_scope)
 
 
+def _make_checked_visitor(
+    code_str: str,
+) -> tuple[ConfiguredNameCheckVisitor, ast.Module]:
+    code_str = textwrap.dedent(code_str)
+    tree = ast.parse(code_str)
+    module = _make_module(code_str)
+    settings = {code: code not in DISABLED_IN_TESTS for code in ErrorCode}
+    kwargs = ConfiguredNameCheckVisitor.prepare_constructor_kwargs(
+        {"settings": settings}
+    )
+    visitor = ConfiguredNameCheckVisitor(
+        module.__name__, code_str, tree, module=module, verbosity=0, **kwargs
+    )
+    assert visitor.check_for_test() == []
+    assert visitor.perform_final_checks(kwargs) == []
+    return visitor, tree
+
+
 # ===================================================
 # Tests for specific functionality.
 # ===================================================
