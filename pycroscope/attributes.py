@@ -308,10 +308,6 @@ def _get_attribute_from_generic_alias(
         )
     if ctx.attr in _GENERIC_ALIAS_ATTR_EXCEPTIONS:
         return _get_attribute_from_value(TypedValue(types.GenericAlias), ctx)
-    lookup_root = ctx.get_self_value()
-    if lookup_root is not ctx.root_value:
-        lookup_ctx = ctx.clone_for_attribute_lookup(Composite(lookup_root), ctx.attr)
-        return _get_attribute_from_value(gradualize(lookup_root), lookup_ctx)
     return _get_attribute_from_value(gradualize(root), ctx)
 
 
