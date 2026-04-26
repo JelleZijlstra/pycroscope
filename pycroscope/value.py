@@ -1157,7 +1157,7 @@ def _type_param_to_string(prefix: str, name: str, owner: TypeParamOwner | None) 
 @dataclass(frozen=True)
 class TypeVarParam:
     typevar: TypeVarType
-    owner: TypeParamOwner | None = None  # TODO: make required
+    owner: TypeParamOwner | None
     bound: Value | None = None
     default: Value | None = None
     constraints: Sequence[Value] = ()
@@ -1236,7 +1236,7 @@ class TypeVarParam:
 @dataclass(frozen=True)
 class ParamSpecParam:
     param_spec: ParamSpecLike
-    owner: TypeParamOwner | None = None  # TODO: make required
+    owner: TypeParamOwner | None
     default: Value | None = None
     variance: Variance = Variance.INVARIANT
 
@@ -1263,7 +1263,7 @@ class ParamSpecParam:
 @dataclass(frozen=True)
 class TypeVarTupleParam:
     typevar_tuple: TypeVarTupleLike
-    owner: TypeParamOwner | None = None  # TODO: make required
+    owner: TypeParamOwner | None
     default: Value | None = None
     variance: Variance = Variance.INVARIANT
 
@@ -1302,13 +1302,13 @@ def _value_from_runtime_type_param_component(component: object) -> Value:
     if isinstance(component, Value):
         return component
     if is_instance_of_typing_name(component, "TypeVar"):
-        return TypeVarValue(TypeVarParam(component))
+        return TypeVarValue(TypeVarParam(component, owner=None))
     if is_instance_of_typing_name(component, "TypeVarTuple"):
         return TypeVarTupleValue(component)
     if is_instance_of_typing_name(component, "ParamSpec"):
         from pycroscope.input_sig import InputSigValue
 
-        return InputSigValue(ParamSpecParam(component))
+        return InputSigValue(ParamSpecParam(component, owner=None))
     if isinstance(component, tuple):
         return SequenceValue(
             tuple,
@@ -4331,10 +4331,17 @@ class CustomMapping(Protocol[K, V_co]):
 
 NominalMappingValue = GenericValue(
     collections.abc.Mapping,
-    [TypeVarValue(TypeVarParam(K)), TypeVarValue(TypeVarParam(V))],
+    [
+        TypeVarValue(TypeVarParam(K, owner=None)),
+        TypeVarValue(TypeVarParam(V, owner=None)),
+    ],
 )
 ProtocolMappingValue = GenericValue(
-    CustomMapping, [TypeVarValue(TypeVarParam(K)), TypeVarValue(TypeVarParam(V_co))]
+    CustomMapping,
+    [
+        TypeVarValue(TypeVarParam(K, owner=None)),
+        TypeVarValue(TypeVarParam(V_co, owner=None)),
+    ],
 )
 
 
@@ -4391,12 +4398,12 @@ def kv_pairs_from_mapping(
             if isinstance(can_assign, CanAssignError):
                 return can_assign
         key_type = can_assign.get_typevar(
-            TypeVarParam(K), AnyValue(AnySource.generic_argument)
+            TypeVarParam(K, owner=None), AnyValue(AnySource.generic_argument)
         )
         value_type = can_assign.get_typevar(
-            TypeVarParam(V),
+            TypeVarParam(V, owner=None),
             can_assign.get_typevar(
-                TypeVarParam(V_co), AnyValue(AnySource.generic_argument)
+                TypeVarParam(V_co, owner=None), AnyValue(AnySource.generic_argument)
             ),
         )
         return [KVPair(key_type, value_type, is_many=True)]

@@ -11215,7 +11215,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for member in members:
             val = GenericValue(
                 protocol,
-                [TypeVarValue(TypeVarParam(T_co)), TypeVarValue(TypeVarParam(U_co))],
+                [
+                    TypeVarValue(TypeVarParam(T_co, owner=None)),
+                    TypeVarValue(TypeVarParam(U_co, owner=None)),
+                ],
             )
             can_assign = self.get_tv_map(val, member)
             if isinstance(can_assign, CanAssignError):
@@ -11224,10 +11227,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             inferred.append(
                 (
                     can_assign.get_typevar(
-                        TypeVarParam(T_co), AnyValue(AnySource.generic_argument)
+                        TypeVarParam(T_co, owner=None),
+                        AnyValue(AnySource.generic_argument),
                     ),
                     can_assign.get_typevar(
-                        TypeVarParam(U_co), AnyValue(AnySource.generic_argument)
+                        TypeVarParam(U_co, owner=None),
+                        AnyValue(AnySource.generic_argument),
                     ),
                 )
             )

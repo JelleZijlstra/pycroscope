@@ -1767,11 +1767,11 @@ class TestCustomCheck(TestNameCheckVisitorBase):
 
             def walk_values(self) -> Iterable[Value]:
                 if isinstance(self.value, TypeVar):
-                    yield TypeVarValue(TypeVarParam(self.value))
+                    yield TypeVarValue(TypeVarParam(self.value, owner=None))
 
             def substitute_typevars(self, typevars: TypeVarMap) -> "GreaterThan":
                 if isinstance(self.value, TypeVar):
-                    value = typevars.get_typevar(TypeVarParam(self.value))
+                    value = typevars.get_typevar(TypeVarParam(self.value, owner=None))
                     if isinstance(value, KnownValue) and isinstance(value.val, int):
                         return GreaterThan(value.val)
                 return self

@@ -2987,10 +2987,12 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
         Signature.make(
             [
                 SigParameter(
-                    "value", _POS_ONLY, annotation=TypeVarValue(TypeVarParam(T))
+                    "value",
+                    _POS_ONLY,
+                    annotation=TypeVarValue(TypeVarParam(T, owner=None)),
                 )
             ],
-            return_annotation=TypeVarValue(TypeVarParam(T)),
+            return_annotation=TypeVarValue(TypeVarParam(T, owner=None)),
             impl=_reveal_type_impl,
             callable=reveal_type,
         ),
@@ -3003,10 +3005,12 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
         Signature.make(
             [
                 SigParameter(
-                    "value", _POS_ONLY, annotation=TypeVarValue(TypeVarParam(T))
+                    "value",
+                    _POS_ONLY,
+                    annotation=TypeVarValue(TypeVarParam(T, owner=None)),
                 )
             ],
-            return_annotation=TypeVarValue(TypeVarParam(T)),
+            return_annotation=TypeVarValue(TypeVarParam(T, owner=None)),
             impl=_dump_value_impl,
             callable=dump_value,
         ),
@@ -3282,14 +3286,17 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
                     _POS_ONLY,
                     annotation=GenericValue(
                         dict,
-                        [TypeVarValue(TypeVarParam(K)), TypeVarValue(TypeVarParam(V))],
+                        [
+                            TypeVarValue(TypeVarParam(K, owner=None)),
+                            TypeVarValue(TypeVarParam(V, owner=None)),
+                        ],
                     ),
                 ),
                 SigParameter("k", _POS_ONLY),
             ],
             callable=dict.__getitem__,
             impl=_dict_getitem_impl,
-            return_annotation=TypeVarValue(TypeVarParam(V)),
+            return_annotation=TypeVarValue(TypeVarParam(V, owner=None)),
         ),
         Signature.make(
             [
@@ -3359,7 +3366,10 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
                     _POS_ONLY,
                     annotation=GenericValue(
                         dict,
-                        [TypeVarValue(TypeVarParam(K)), TypeVarValue(TypeVarParam(V))],
+                        [
+                            TypeVarValue(TypeVarParam(K, owner=None)),
+                            TypeVarValue(TypeVarParam(V, owner=None)),
+                        ],
                     ),
                 )
             ],
@@ -3367,8 +3377,8 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
                 dict,
                 [
                     KVPair(
-                        TypeVarValue(TypeVarParam(K)),
-                        TypeVarValue(TypeVarParam(V)),
+                        TypeVarValue(TypeVarParam(K, owner=None)),
+                        TypeVarValue(TypeVarParam(V, owner=None)),
                         is_many=True,
                     )
                 ],
@@ -3450,11 +3460,13 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
         Signature.make(
             [
                 SigParameter(
-                    "val", _POS_ONLY, annotation=TypeVarValue(TypeVarParam(T))
+                    "val",
+                    _POS_ONLY,
+                    annotation=TypeVarValue(TypeVarParam(T, owner=None)),
                 ),
                 SigParameter("typ", _POS_ONLY),
             ],
-            return_annotation=TypeVarValue(TypeVarParam(T)),
+            return_annotation=TypeVarValue(TypeVarParam(T, owner=None)),
             callable=assert_type,
             impl=_assert_type_impl,
         ),
@@ -3769,10 +3781,12 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
             sig = Signature.make(
                 [
                     SigParameter(
-                        "value", _POS_ONLY, annotation=TypeVarValue(TypeVarParam(T))
+                        "value",
+                        _POS_ONLY,
+                        annotation=TypeVarValue(TypeVarParam(T, owner=None)),
                     )
                 ],
-                return_annotation=TypeVarValue(TypeVarParam(T)),
+                return_annotation=TypeVarValue(TypeVarParam(T, owner=None)),
                 impl=_reveal_type_impl,
                 callable=reveal_type_func,
             )
@@ -3785,11 +3799,13 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
             sig = Signature.make(
                 [
                     SigParameter(
-                        "val", _POS_ONLY, annotation=TypeVarValue(TypeVarParam(T))
+                        "val",
+                        _POS_ONLY,
+                        annotation=TypeVarValue(TypeVarParam(T, owner=None)),
                     ),
                     SigParameter("typ", _POS_ONLY),
                 ],
-                return_annotation=TypeVarValue(TypeVarParam(T)),
+                return_annotation=TypeVarValue(TypeVarParam(T, owner=None)),
                 callable=assert_type_func,
                 impl=_assert_type_impl,
             )

@@ -527,7 +527,7 @@ def test_runtime_type_object_tracks_declared_type_params_and_specialized_mro() -
         checker.get_type_parameters(Base)
     )
     assert [entry.get_mro_value() for entry in base_object.get_mro()] == [
-        GenericValue(Base, [TypeVarValue(TypeVarParam(T))]),
+        GenericValue(Base, [TypeVarValue(TypeVarParam(T, owner=None))]),
         TypedValue(Generic),
         TypedValue(object),
     ]
@@ -629,7 +629,7 @@ def test_synthetic_type_object_tracks_declared_type_params_and_specialized_mro()
     base = class_owner_from_key("test.Base")
     child = class_owner_from_key("test.Child")
     grandchild = class_owner_from_key("test.GrandChild")
-    type_param = TypeVarParam(T)
+    type_param = TypeVarParam(T, owner=None)
     checker.register_synthetic_type_bases(base, [], declared_type_params=[type_param])
     checker.register_synthetic_type_bases(
         child,
@@ -666,7 +666,7 @@ def test_synthetic_type_object_infers_declared_type_params_from_bases() -> None:
     checker = Checker()
     base = class_owner_from_key("test.Base")
     child = class_owner_from_key("test.Child")
-    type_param = TypeVarParam(T)
+    type_param = TypeVarParam(T, owner=None)
     checker.register_synthetic_type_bases(base, [], declared_type_params=[type_param])
     checker.register_synthetic_type_bases(
         child, [GenericValue(base, [TypeVarValue(type_param)])]

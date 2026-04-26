@@ -1154,7 +1154,7 @@ class Checker:
             )
         )
         typevar = cast(TypeVarType, TypeVar(f"_Ctor_{class_name}_T", *constraints))
-        tv_value = TypeVarValue(TypeVarParam(typevar))
+        tv_value = TypeVarValue(TypeVarParam(typevar, owner=None))
         generic_param = SigParameter(
             first_param.name,
             kind=first_param.kind,

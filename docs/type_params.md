@@ -163,6 +163,5 @@ state.
    `NameCheckVisitor` into a `bind_all()` helper in `type_params.py`.
 4. Replace `additional_identities` with explicit aliases passed to `declare()`
    or returned by `bind_all()`.
-5. Once every construction path has an owner, make `owner` required on
-   `TypeVarParam`, `ParamSpecParam`, and `TypeVarTupleParam`, then include it in
-   equality and hashing.
+5. Once every construction path has an owner, include owners in equality and
+   hashing.

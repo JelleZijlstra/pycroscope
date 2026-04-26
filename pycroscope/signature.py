@@ -1370,7 +1370,7 @@ class Signature:
                 ):
                     star_kwargs_consumed = True
                     star_args_consumed = True
-                    sig = ParamSpecParam(actual_args.star_kwargs.param_spec)
+                    sig = ParamSpecParam(actual_args.star_kwargs.param_spec, owner=None)
                     composite = Composite(InputSigValue(sig))
                     bound_args[param.name] = KWARGS, composite
                 else:
@@ -2432,11 +2432,13 @@ def preprocess_args(
                 processed_args.append(
                     (
                         Composite(
-                            InputSigValue(ParamSpecParam(arg.value.param_spec)),
+                            InputSigValue(
+                                ParamSpecParam(arg.value.param_spec, owner=None)
+                            ),
                             arg.varname,
                             arg.node,
                         ),
-                        ParamSpecParam(arg.value.param_spec),
+                        ParamSpecParam(arg.value.param_spec, owner=None),
                     )
                 )
                 continue
@@ -2634,10 +2636,10 @@ def _preprocess_kwargs_no_mvv(
             ctx.on_error(f"{value} is not a mapping", detail=str(mapping_tv_map))
             return None
         key_type = mapping_tv_map.get_typevar(
-            TypeVarParam(K), AnyValue(AnySource.generic_argument)
+            TypeVarParam(K, owner=None), AnyValue(AnySource.generic_argument)
         )
         value_type = mapping_tv_map.get_typevar(
-            TypeVarParam(V), AnyValue(AnySource.generic_argument)
+            TypeVarParam(V, owner=None), AnyValue(AnySource.generic_argument)
         )
         return _preprocess_kwargs_kv_pairs(
             [KVPair(key_type, value_type, is_many=True)], ctx
@@ -3186,7 +3188,10 @@ K = TypeVar("K")
 V = TypeVar("V")
 MappingValue = GenericValue(
     collections.abc.Mapping,
-    [TypeVarValue(TypeVarParam(K)), TypeVarValue(TypeVarParam(V))],
+    [
+        TypeVarValue(TypeVarParam(K, owner=None)),
+        TypeVarValue(TypeVarParam(V, owner=None)),
+    ],
 )
 
 
@@ -4313,7 +4318,7 @@ def has_relation_var_keyword(
                 f"{kwargs_annotation} is not a mapping type", [mapping_tv_map]
             )
         key_arg = mapping_tv_map.get_typevar(
-            TypeVarParam(K), AnyValue(AnySource.generic_argument)
+            TypeVarParam(K, owner=None), AnyValue(AnySource.generic_argument)
         )
         can_assign = has_relation(key_arg, KnownValue(my_param.name), relation, ctx)
         if isinstance(can_assign, CanAssignError):
@@ -4323,7 +4328,7 @@ def has_relation_var_keyword(
             )
         bounds_maps.append(can_assign)
         value_arg = mapping_tv_map.get_typevar(
-            TypeVarParam(V), AnyValue(AnySource.generic_argument)
+            TypeVarParam(V, owner=None), AnyValue(AnySource.generic_argument)
         )
         can_assign = has_relation(value_arg, my_annotation, relation, ctx)
         if isinstance(can_assign, CanAssignError):
@@ -4347,5 +4352,5 @@ def _get_var_keyword_value_type(
     if isinstance(mapping_tv_map, CanAssignError):
         return None
     return mapping_tv_map.get_typevar(
-        TypeVarParam(V), AnyValue(AnySource.generic_argument)
+        TypeVarParam(V, owner=None), AnyValue(AnySource.generic_argument)
     )
