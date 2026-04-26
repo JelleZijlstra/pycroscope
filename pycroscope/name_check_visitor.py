@@ -3744,7 +3744,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._check_inconsistent_generic_base_specialization(node, base_values)
                 self._check_protocol_base_validity(node, base_values)
                 # TODO: clean up this extra AST walk
-                for base_node, base_value in zip(node.bases, base_values):
+                for base_node in node.bases:
                     parsed_base_value = value_from_ast(
                         base_node,
                         ctx=_SelfBaseDetectionContext(
@@ -13362,7 +13362,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     # GenericAlias object, which may not support further specialization.
                     annotation_ctx = _DefaultContext(visitor=self, node=node)
                     members = self._maybe_unpack_tuple(index, node)
-                    print("RTA", runtime_type_alias, repr(runtime_type_alias))
                     if isinstance(
                         runtime_type_alias, SyntheticTypeFormValue
                     ) and isinstance(runtime_type_alias.inner_type, TypeAliasValue):
@@ -17077,16 +17076,9 @@ def _is_dataclass_classvar_final(expr: AnnotationExpr) -> bool:
 
 
 def _is_typealiastype_value(value: Value) -> bool:
-    for subval in flatten_values(value, unwrap_annotated=True):
-        if _is_typealiastype_known_value(subval):
-            return True
-    return False
-
-
-def _is_typealiastype_known_value(value: Value) -> bool:
+    value = replace_fallback(value)
     return isinstance(value, KnownValue) and (
         is_typing_name(value.val, "TypeAliasType")
-        or is_instance_of_typing_name(value.val, "TypeAliasType")
     )
 
 
