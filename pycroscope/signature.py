@@ -2063,6 +2063,8 @@ class Signature:
                     params.append((name, param.substitute_typevars(typevars)))
             else:
                 substituted = param.substitute_typevars(typevars)
+                # TODO: this seems to be a workaround for some poor handling of
+                # TypeVarTuple.
                 if (
                     substituted.name.startswith("@")
                     and substituted.kind is ParameterKind.POSITIONAL_ONLY
