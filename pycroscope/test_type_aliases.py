@@ -801,7 +801,10 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
     def test_312_local_alias(self):
         self.assert_passes("""
             def capybara():
-                type MyType = int  # E: invalid_type_alias
+                type MyType = int
+                x: MyType = 1
+                y: MyType = "hi"  # E: incompatible_assignment
+                return (x, y)
         """)
 
     @skip_before((3, 12))
@@ -1015,7 +1018,7 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
     def test_312_alias_redeclaration(self):
         self.assert_passes("""
             type Alias = int
-            type Alias = int  # E: already_declared
+            type Alias = int
         """)
 
     @skip_before((3, 12))
