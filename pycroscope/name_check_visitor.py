@@ -368,6 +368,14 @@ if sys.version_info >= (3, 11):
 else:  # pragma: no cover
     TryNode = ast.Try
 
+if sys.version_info >= (3, 12):
+    TypeAliasTypeVal = TypedValue(typing.TypeAliasType) | TypedValue(
+        typing_extensions.TypeAliasType
+    )
+else:
+    TypeAliasTypeVal = TypedValue(typing_extensions.TypeAliasType)
+NewTypeVal = TypedValue(typing.NewType)
+
 TYPE_CHECKING_MODULES: frozenset[str] = frozenset({"typing", "typing_extensions"})
 
 
@@ -3602,6 +3610,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             if _is_namedtuple_marker_base(base_value):
                 is_direct_namedtuple = True
+            self._check_for_invalid_base(base_node, base_value)
         if base_values:
             if not any(
                 isinstance(base, KnownValue) and is_typing_name(base.val, "TypedDict")
@@ -3613,6 +3622,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         elif isinstance(tobj.typ, ClassOwner):
             tobj.set_direct_bases([TypedValue(object)])
         return base_values, base_type_param_variance_infos, is_direct_namedtuple
+
+    def _check_for_invalid_base(self, base_node: ast.AST, base_value: Value) -> None:
+        if is_subtype(TypeAliasTypeVal, base_value, self):
+            self._show_error_if_checking(
+                base_node,
+                "Type alias cannot be used as a base class",
+                error_code=ErrorCode.invalid_base,
+            )
+        if is_subtype(NewTypeVal, base_value, self):
+            self._show_error_if_checking(
+                base_node,
+                "NewType cannot be used as a base class",
+                error_code=ErrorCode.invalid_base,
+            )
 
     def _process_metaclass(
         self, keyword_values: Sequence[tuple[ast.keyword, Value]], tobj: TypeObject
@@ -3738,18 +3761,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             self._self_error_message(
                                 "cannot be used in base class expressions"
                             ),
-                            error_code=ErrorCode.invalid_base,
-                        )
-                    if _is_type_alias_base_value(base_value):
-                        self._show_error_if_checking(
-                            base_node,
-                            "Type aliases cannot be used as base classes",
-                            error_code=ErrorCode.invalid_base,
-                        )
-                    if _is_newtype_base_value(base_value):
-                        self._show_error_if_checking(
-                            base_node,
-                            "NewType types cannot be used as base classes",
                             error_code=ErrorCode.invalid_base,
                         )
             if any(
@@ -16285,27 +16296,6 @@ def _maybe_normalize_filename(filename: str) -> str:
         return str(Path(filename).resolve())
     except OSError:
         return os.path.abspath(filename)
-
-
-def _is_newtype_base_value(base_value: Value) -> bool:
-    for subval in flatten_values(replace_fallback(base_value)):
-        if not isinstance(subval, KnownValue):
-            continue
-        if isinstance(subval.val, type):
-            continue
-        if safe_hasattr(subval.val, "__supertype__"):
-            return True
-    return False
-
-
-def _is_type_alias_base_value(base_value: Value) -> bool:
-    for subval in flatten_values(base_value, unwrap_annotated=True):
-        if _is_type_alias_object_value(subval):
-            return True
-        fallback = replace_fallback(subval)
-        if fallback is not subval and _is_type_alias_object_value(fallback):
-            return True
-    return False
 
 
 def _is_typeddict_marker_base(base_value: Value) -> bool:
