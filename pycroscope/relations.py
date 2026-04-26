@@ -973,18 +973,6 @@ def _has_relation(
             generic_args = right_tobj.get_generic_args_for_base(
                 left.typ, right.args if isinstance(right, GenericValue) else ()
             )
-            if generic_args is None:
-                fallback_bases = ctx.get_generic_bases(
-                    right.typ, right.args if isinstance(right, GenericValue) else ()
-                )
-                fallback_tv_map = fallback_bases.get(left.typ)
-                if fallback_tv_map is not None:
-                    generic_args = [
-                        fallback_tv_map.get_value(
-                            type_param, default_value_for_type_param(type_param)
-                        )
-                        for type_param in ctx.get_type_parameters(left.typ)
-                    ]
             if generic_args is not None:
                 comparison_left = left
                 left_tobj = left.get_type_object(ctx)
