@@ -939,8 +939,6 @@ class PartialValueOperation(enum.Enum):
     SUBSCRIPT = 1
     UNPACK = 2
     BITOR = 3
-    PEP_613_ALIAS = 4
-    PEP_695_ALIAS = 5
 
 
 @dataclass(frozen=True)
@@ -963,10 +961,6 @@ class PartialValue(Value):
             case PartialValueOperation.BITOR:
                 members = " | ".join(str(member) for member in self.members)
                 return f"{self.runtime_value} (partial from {self.root} | {members})"
-            case PartialValueOperation.PEP_613_ALIAS:
-                return f"{self.runtime_value} (PEP 613 alias for {self.root})"
-            case PartialValueOperation.PEP_695_ALIAS:
-                return f"{self.runtime_value} (PEP 695 alias for {self.root})"
             case _:
                 assert_never(self.operation)
 
@@ -1000,20 +994,11 @@ class PartialValue(Value):
         yield from self.runtime_value.walk_values()
 
 
-def is_type_alias_partial_operation(operation: PartialValueOperation) -> bool:
-    return operation in (
-        PartialValueOperation.PEP_613_ALIAS,
-        PartialValueOperation.PEP_695_ALIAS,
-    )
-
-
 def get_type_alias_root(value: Value) -> "TypeAliasValue | None":
-    if (
-        isinstance(value, PartialValue)
-        and is_type_alias_partial_operation(value.operation)
-        and isinstance(value.root, TypeAliasValue)
+    if isinstance(value, SyntheticTypeFormValue) and isinstance(
+        value.inner_type, TypeAliasValue
     ):
-        return value.root
+        return value.inner_type
     if isinstance(value, TypeAliasValue):
         return value
     return None
@@ -3526,6 +3511,37 @@ class TypeFormValue(Value):
 
 
 @dataclass(frozen=True)
+class SyntheticTypeFormValue(Value):
+    """Represents an object that can be used in annotations,
+    but for which we do not have a runtime object."""
+
+    inner_type: Value
+    runtime_type: Value
+    node: ast.AST
+
+    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+        return SyntheticTypeFormValue(
+            self.inner_type.substitute_typevars(typevars),
+            self.runtime_type.substitute_typevars(typevars),
+            self.node,
+        )
+
+    def walk_values(self) -> Iterable[Value]:
+        yield self
+        yield from self.inner_type.walk_values()
+        yield from self.runtime_type.walk_values()
+
+    def get_fallback_value(self) -> Value:
+        return self.runtime_type
+
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
+        return self.get_fallback_value().get_type_value(ctx)
+
+    def __str__(self) -> builtins.str:
+        return f"TypeForm[{self.inner_type}] (synthetic from {self.runtime_type})"
+
+
+@dataclass(frozen=True)
 class AddPredicateExtension(Extension):
     """An :class:`Extension` used in a function return type. Used to
     indicate that the function argument named `varname` should receive
@@ -3960,6 +3976,7 @@ GradualType: typing_extensions.TypeAlias = (
     | AnnotatedValue
     | PartialValue
     | PartialCallValue
+    | SyntheticTypeFormValue
     | SuperValue
 )
 

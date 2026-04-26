@@ -6,7 +6,6 @@ Code for retrieving the value of attributes.
 
 import collections.abc
 import types
-import typing
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, ClassVar
@@ -17,7 +16,7 @@ from .annotations import RuntimeAnnotationsContext, type_from_runtime
 from .options import Options, PyObjectSequenceOption
 from .predicates import HasAttr
 from .relations import intersect_multi
-from .safe import safe_getattr, safe_isinstance
+from .safe import is_generic_alias, safe_getattr, safe_isinstance
 from .signature import MaybeSignature
 from .stacked_scopes import Composite
 from .type_object import AttributePolicy, TypeObject, TypeObjectAttribute
@@ -48,6 +47,7 @@ from .value import (
     SuperValue,
     SyntheticClassObjectValue,
     SyntheticModuleValue,
+    SyntheticTypeFormValue,
     TypeAliasValue,
     TypedDictValue,
     TypedValue,
@@ -262,6 +262,8 @@ def _get_attribute_from_value(
             return UNINITIALIZED_VALUE, None
         case PredicateValue() | TypeFormValue():
             return _get_attribute_from_value(TypedValue(object), ctx)
+        case SyntheticTypeFormValue(runtime_type=runtime_type):
+            return _get_attribute_from_value(gradualize(runtime_type), ctx)
         case TypeVarValue():
             if (
                 root_value.typevar_param.bound is not None
@@ -612,7 +614,7 @@ def _get_attribute_from_known_inner(
             self_value = ctx.get_self_value()
         runtime_value = set_self(runtime_value, self_value, type_object_attr.owner.typ)
 
-    if not safe_isinstance(obj, (types.GenericAlias, typing._GenericAlias)):
+    if not is_generic_alias(obj):
         return runtime_value, None
 
     if type_object_attr is not None:

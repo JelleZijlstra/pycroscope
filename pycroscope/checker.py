@@ -2068,20 +2068,6 @@ class Checker:
             )
             if sig is not None:
                 return sig
-            if value.operation in (
-                PartialValueOperation.PEP_613_ALIAS,
-                PartialValueOperation.PEP_695_ALIAS,
-            ):
-                if (
-                    value.operation is PartialValueOperation.PEP_613_ALIAS
-                    and _runtime_value_is_union(value.runtime_value)
-                ):
-                    return None
-                return self.signature_from_value(
-                    value.runtime_value,
-                    get_return_override=get_return_override,
-                    get_call_attribute=get_call_attribute,
-                )
         value = replace_fallback(value)
         if isinstance(value, KnownValue):
             if (
@@ -2105,7 +2091,11 @@ class Checker:
                             return bound.substitute_typevars(value.typevars)
             origin = safe_getattr(value.val, "__origin__", None)
             args = safe_getattr(value.val, "__args__", None)
-            if isinstance(origin, type) and isinstance(args, tuple):
+            if (
+                isinstance(origin, type)
+                and isinstance(args, tuple)
+                and origin is not types.UnionType
+            ):
                 origin_argspec = self.signature_from_value(
                     KnownValue(origin),
                     get_return_override=get_return_override,

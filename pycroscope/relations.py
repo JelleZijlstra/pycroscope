@@ -61,6 +61,7 @@ from pycroscope.value import (
     SuperValue,
     SyntheticClassObjectValue,
     SyntheticModuleValue,
+    SyntheticTypeFormValue,
     T_iter,
     TypeAliasValue,
     TypedDictEntry,
@@ -515,6 +516,21 @@ def _has_relation(
     if isinstance(right, TypeFormValue):
         right_inner = gradualize(right.get_fallback_value())
         return _has_relation(left, right_inner, relation, ctx, original_right=right)
+
+    # SyntheticTypeFormValue
+    if isinstance(left, SyntheticTypeFormValue):
+        if left == right:
+            return {}
+        else:
+            return CanAssignError(f"{right} is not {relation.description} {left}")
+    if isinstance(right, SyntheticTypeFormValue):
+        return _has_relation(
+            left,
+            gradualize(right.get_fallback_value()),
+            relation,
+            ctx,
+            original_right=right,
+        )
 
     # OverlappingValue
     if isinstance(left, OverlappingValue):
@@ -1334,7 +1350,7 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
     """
     value = gradualize(value)
 
-    if isinstance(value, TypeFormValue):
+    if isinstance(value, (TypeFormValue, SyntheticTypeFormValue)):
         return gradualize(value.inner_type)
     elif isinstance(value, AnnotatedValue):
         # Annotated metadata is ignored for implicit TypeForm extraction.
@@ -2435,6 +2451,14 @@ def _intersect_values_inner(
         return _intersect_wrapper(left, right, ctx)
     if isinstance(right, wrapper_types):
         return _intersect_wrapper(right, left, ctx)
+
+    if isinstance(left, SyntheticTypeFormValue):
+        if left == right:
+            return left
+        else:
+            return NO_RETURN_VALUE
+    if isinstance(right, SyntheticTypeFormValue):
+        return NO_RETURN_VALUE
 
     return _intersect_basic_types(left, right, ctx)
 

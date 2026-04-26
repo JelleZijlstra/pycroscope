@@ -334,6 +334,7 @@ class _CannotResolve(Exception):
 def _invalid_classinfo_kind(
     value: Value, ctx: CallContext, *, is_subclass_check: bool
 ) -> str | None:
+    value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):
         for subval in value.vals:
             invalid_kind = _invalid_classinfo_kind(
@@ -342,15 +343,6 @@ def _invalid_classinfo_kind(
             if invalid_kind is not None:
                 return invalid_kind
         return None
-    if isinstance(value, AnnotatedValue):
-        return _invalid_classinfo_kind(
-            value.value, ctx, is_subclass_check=is_subclass_check
-        )
-    if (
-        isinstance(value, PartialValue)
-        and value.operation is PartialValueOperation.PEP_695_ALIAS
-    ):
-        return "a type alias"
     if isinstance(value, TypeAliasValue):
         return "a type alias"
     if isinstance(value, SyntheticClassObjectValue):
@@ -364,6 +356,8 @@ def _invalid_classinfo_kind(
             return "a protocol that is not @runtime_checkable"
         if is_subclass_check and _is_runtime_checkable_data_protocol(value.typ, ctx):
             return "a runtime-checkable protocol with non-method members"
+        if is_typing_name(value.typ, "TypeAliasType"):
+            return "a type alias"
         return None
     if isinstance(value, GenericValue) and isinstance(value.typ, type):
         if _is_non_runtime_checkable_protocol(value.typ, ctx):

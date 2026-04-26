@@ -75,7 +75,6 @@ from .annotations import (
     SyntheticEvaluator,
     _DefaultContext,
     _normalize_paramspec_generic_args,
-    _specialize_type_alias_partial,
     _specialize_type_alias_value,
     annotation_expr_from_annotations,
     annotation_expr_from_ast,
@@ -307,6 +306,7 @@ from .value import (
     SubclassValue,
     SyntheticClassObjectValue,
     SyntheticModuleValue,
+    SyntheticTypeFormValue,
     SysPlatformExtension,
     SysVersionInfoExtension,
     TypeAlias,
@@ -340,7 +340,6 @@ from .value import (
     get_typevar_variance,
     is_async_iterable,
     is_iterable,
-    is_type_alias_partial_operation,
     is_union,
     iter_type_params_in_value,
     kv_pairs_from_mapping,
@@ -367,6 +366,14 @@ if sys.version_info >= (3, 11):
     TryNode = ast.Try | ast.TryStar
 else:  # pragma: no cover
     TryNode = ast.Try
+
+if sys.version_info >= (3, 12):
+    TypeAliasTypeVal = TypedValue(typing.TypeAliasType) | TypedValue(
+        typing_extensions.TypeAliasType
+    )
+else:
+    TypeAliasTypeVal = TypedValue(typing_extensions.TypeAliasType)
+NewTypeVal = TypedValue(typing.NewType)
 
 TYPE_CHECKING_MODULES: frozenset[str] = frozenset({"typing", "typing_extensions"})
 
@@ -2373,10 +2380,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         if declared_type is not None:
                             stored_value = (
                                 value
-                                if (
-                                    isinstance(value, PartialValue)
-                                    and is_type_alias_partial_operation(value.operation)
-                                )
+                                if isinstance(value, SyntheticTypeFormValue)
                                 else declared_type
                             )
                             current_scope.variables[varname] = stored_value
@@ -3454,8 +3458,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if self.in_annotation:
                 declared_type = defining_scope.get_declared_type(node.id)
                 if isinstance(declared_type, TypeAliasValue) and not (
-                    isinstance(value, PartialValue)
-                    and is_type_alias_partial_operation(value.operation)
+                    isinstance(value, SyntheticTypeFormValue)
                 ):
                     value = declared_type
         if value is UNINITIALIZED_VALUE:
@@ -3600,6 +3603,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             if _is_namedtuple_marker_base(base_value):
                 is_direct_namedtuple = True
+            self._check_for_invalid_base(base_node, base_value)
         if base_values:
             if not any(
                 isinstance(base, KnownValue) and is_typing_name(base.val, "TypedDict")
@@ -3611,6 +3615,24 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         elif isinstance(tobj.typ, ClassOwner):
             tobj.set_direct_bases([TypedValue(object)])
         return base_values, base_type_param_variance_infos, is_direct_namedtuple
+
+    def _check_for_invalid_base(self, base_node: ast.AST, base_value: Value) -> None:
+        if is_subtype(TypeAliasTypeVal, base_value, self):
+            self._show_error_if_checking(
+                base_node,
+                "Type alias cannot be used as a base class",
+                error_code=ErrorCode.invalid_base,
+            )
+        elif is_subtype(NewTypeVal, base_value, self):
+            self._show_error_if_checking(
+                base_node,
+                "NewType cannot be used as a base class",
+                error_code=ErrorCode.invalid_base,
+            )
+        elif self._is_final_base_value(base_value):
+            self._show_error_if_checking(
+                base_node, "Cannot inherit from final class", ErrorCode.invalid_base
+            )
 
     def _process_metaclass(
         self, keyword_values: Sequence[tuple[ast.keyword, Value]], tobj: TypeObject
@@ -3722,7 +3744,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._check_inconsistent_generic_base_specialization(node, base_values)
                 self._check_protocol_base_validity(node, base_values)
                 # TODO: clean up this extra AST walk
-                for base_node, base_value in zip(node.bases, base_values):
+                for base_node in node.bases:
                     parsed_base_value = value_from_ast(
                         base_node,
                         ctx=_SelfBaseDetectionContext(
@@ -3738,24 +3760,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             ),
                             error_code=ErrorCode.invalid_base,
                         )
-                    if _is_type_alias_base_value(base_value):
-                        self._show_error_if_checking(
-                            base_node,
-                            "Type aliases cannot be used as base classes",
-                            error_code=ErrorCode.invalid_base,
-                        )
-                    if _is_newtype_base_value(base_value):
-                        self._show_error_if_checking(
-                            base_node,
-                            "NewType types cannot be used as base classes",
-                            error_code=ErrorCode.invalid_base,
-                        )
             if any(
                 is_subtype(SubclassValue(TypedValue(enum.Enum)), base, self)
                 for base in base_values
             ):
                 self.enum_class_keys.add(class_key)
-            self._check_for_final_base_classes(node, base_values)
             with self.active_type_params.disallow(disallowed_type_params):
                 keyword_values = [(kw, self.visit(kw.value)) for kw in node.keywords]
             self._process_metaclass(keyword_values, tobj)
@@ -7946,18 +7955,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         _, qualifiers = annotation_expr.maybe_unqualify(set(Qualifier))
         return Qualifier.ClassVar in qualifiers
 
-    def _check_for_final_base_classes(
-        self, node: ast.ClassDef, base_values: Sequence[Value]
-    ) -> None:
-        if not self._is_checking():
-            return
-        for base in base_values:
-            if self._is_final_base_value(base):
-                self._show_error_if_checking(
-                    node, "Cannot inherit from final class", ErrorCode.invalid_base
-                )
-                return
-
     def _is_final_base_value(self, base_value: Value) -> bool:
         for tobj in _iter_type_objects_from_base_value(base_value, self.checker):
             if tobj.typ in self.final_class_keys:
@@ -11784,7 +11781,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        explicit_type_alias_assignment_value: PartialValue | None = None
+        explicit_type_alias_assignment_value = None
         local_type_param_polarities: dict[object, set[int]] | None = None
         class_type_param_polarities = (
             self.active_type_params.current_class_type_param_polarities()
@@ -11942,12 +11939,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         alias_evaluator, lambda type_params=type_params: type_params
                     ),
                 )
-                explicit_type_alias_assignment_value = PartialValue(
-                    PartialValueOperation.PEP_613_ALIAS,
-                    alias_root,
-                    node.value,
-                    (),
-                    _runtime_value_for_pep613_alias(alias_root),
+                explicit_type_alias_assignment_value = SyntheticTypeFormValue(
+                    inner_type=alias_root,
+                    runtime_type=AnyValue(
+                        AnySource.inference
+                    ),  # will be replaced later
+                    node=node,
                 )
             # `TypeAlias` marks this assignment as an alias declaration, not a
             # variable declaration of the marker type itself.
@@ -12085,7 +12082,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         if node.value is not None:
             if explicit_type_alias_assignment_value is not None:
-                runtime_value = explicit_type_alias_assignment_value.runtime_value
+                runtime_value = explicit_type_alias_assignment_value.runtime_type
                 with (
                     self.catch_errors(),
                     override(self, "in_type_alias_definition", True),
@@ -12094,7 +12091,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if evaluated_runtime_value != AnyValue(AnySource.error):
                     runtime_value = evaluated_runtime_value
                 explicit_type_alias_assignment_value = dataclass_replace(
-                    explicit_type_alias_assignment_value, runtime_value=runtime_value
+                    explicit_type_alias_assignment_value, runtime_type=runtime_value
                 )
                 is_yield = False
                 value = explicit_type_alias_assignment_value
@@ -12243,7 +12240,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         ann_assign_declared_type = expected_type
         if explicit_type_alias_assignment_value is not None:
-            ann_assign_declared_type = explicit_type_alias_assignment_value.root
+            ann_assign_declared_type = explicit_type_alias_assignment_value.inner_type
         if self.scopes.scope_type() == ScopeType.class_scope and isinstance(
             node.target, ast.Name
         ):
@@ -12751,11 +12748,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         name = node.targets[0].id
         existing_value = self._get_local_object(name, node)
         runtime_existing = (
-            existing_value.runtime_value
-            if (
-                isinstance(existing_value, PartialValue)
-                and existing_value.operation is PartialValueOperation.PEP_695_ALIAS
-            )
+            existing_value.runtime_type
+            if (isinstance(existing_value, SyntheticTypeFormValue))
             else existing_value
         )
         if isinstance(runtime_existing, KnownValue) and is_instance_of_typing_name(
@@ -12842,13 +12836,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             TypeAlias(evaluator, lambda: tuple(type_params)),
         )
         runtime_value = _runtime_value_for_pep695_alias(alias_root, alias_obj)
-        return PartialValue(
-            PartialValueOperation.PEP_695_ALIAS,
-            alias_root,
-            node.value,
-            (),
-            runtime_value,
-        )
+        return SyntheticTypeFormValue(alias_root, runtime_value, node.value)
 
     if sys.version_info >= (3, 12):
 
@@ -12892,11 +12880,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._record_type_alias_structure(name, node, node.value)
             alias_val = self._get_local_object(name, node)
             alias_runtime = (
-                alias_val.runtime_value
-                if (
-                    isinstance(alias_val, PartialValue)
-                    and alias_val.operation is PartialValueOperation.PEP_695_ALIAS
-                )
+                alias_val.runtime_type
+                if (isinstance(alias_val, SyntheticTypeFormValue))
                 else alias_val
             )
             if isinstance(alias_runtime, KnownValue) and isinstance(
@@ -12971,12 +12956,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             lambda: tuple(type_param_values),
                         ),
                     )
-                    alias_val = PartialValue(
-                        PartialValueOperation.PEP_695_ALIAS,
+                    alias_val = SyntheticTypeFormValue(
                         alias_root,
-                        node.value,
-                        (),
                         _runtime_value_for_pep695_alias(alias_root, alias_obj),
+                        node.value,
                     )
             set_value, _ = self._set_name_in_scope(name, node, alias_val)
             return set_value
@@ -13379,10 +13362,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     # GenericAlias object, which may not support further specialization.
                     annotation_ctx = _DefaultContext(visitor=self, node=node)
                     members = self._maybe_unpack_tuple(index, node)
-                    if isinstance(runtime_type_alias, PartialValue):
-                        return _specialize_type_alias_partial(
-                            runtime_type_alias, members, annotation_ctx, node=node
+                    if isinstance(
+                        runtime_type_alias, SyntheticTypeFormValue
+                    ) and isinstance(runtime_type_alias.inner_type, TypeAliasValue):
+                        new_alias = _specialize_type_alias_value(
+                            runtime_type_alias.inner_type,
+                            members,
+                            annotation_ctx,
+                            node=node,
                         )
+                        new_runtime_type = self._composite_from_subscript_no_mvv(
+                            node,
+                            Composite(runtime_type_alias.runtime_type, None, None),
+                            index_composite,
+                            None,
+                        )
+                        return SyntheticTypeFormValue(new_alias, new_runtime_type, node)
                     assert isinstance(runtime_type_alias, TypeAliasValue)
                     return _specialize_type_alias_value(
                         runtime_type_alias, members, annotation_ctx, node=node
@@ -13757,7 +13752,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # behavior in value position. Ordinary values annotated with an alias type
         # should behave like their underlying runtime values.
         if _is_type_alias_specialization_symbol_composite(root_composite):
-            assert isinstance(root_composite.value, (PartialValue, TypeAliasValue))
             return root_composite.value
         return None
 
@@ -14692,25 +14686,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 return AnyValue(AnySource.error)
             return UNINITIALIZED_VALUE
-        # TypeAliasValue may fall back to a union or intersection. Unwrap those
-        # fallback values for regular attribute lookup so attributes.get_attribute()
-        # never receives a MultiValuedValue/IntersectionValue directly.
-        is_type_alias_symbol = _is_type_alias_symbol_composite(root_composite)
-        if not is_type_alias_symbol:
-            resolved_value = root_composite.value
-            while True:
-                fallback = resolved_value.get_fallback_value()
-                if fallback is None:
-                    break
-                resolved_value = fallback
-            if resolved_value is not root_composite.value and (
-                isinstance(root_composite.value, TypeAliasValue)
-                or is_union(resolved_value)
-                or isinstance(resolved_value, IntersectionValue)
-            ):
-                root_composite = Composite(
-                    resolved_value, root_composite.varname, root_composite.node
-                )
         if is_union(root_composite.value):
             results = []
             for subval in flatten_values(root_composite.value):
@@ -14830,13 +14805,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self_value=resolved_self_value,
                 )
                 result = attributes.get_attribute(mangled_ctx)
-        if result is UNINITIALIZED_VALUE and node is not None and is_type_alias_symbol:
-            self._show_error_if_checking(
-                node,
-                f"{root_composite.value} has no attribute {attr!r}",
-                ErrorCode.undefined_attribute,
-            )
-            return AnyValue(AnySource.error)
         if result is UNINITIALIZED_VALUE and use_fallback and node is not None:
             return self._get_attribute_fallback(root_composite.value, attr, node)
         return result
@@ -15353,20 +15321,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return root_info.class_key.qualname.rsplit(".", 1)[-1]
         return None
 
-    def _is_non_instantiable_union_runtime_value(self, value: Value) -> bool:
-        if (
-            isinstance(value, PartialValue)
-            and value.operation is PartialValueOperation.PEP_613_ALIAS
-        ):
-            return False
-        value = replace_fallback(value)
-        if not isinstance(value, KnownValue):
-            return False
-        if value.val is typing.Union:
-            return True
-        origin = get_origin(value.val)
-        return origin is typing.Union or origin is types.UnionType
-
     def _check_call_no_mvv(
         self,
         node: ast.AST | None,
@@ -15408,15 +15362,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_error_if_checking(
                     node,
                     f"Cannot instantiate abstract class {callee_wrapped.name}",
-                    error_code=ErrorCode.incompatible_call,
-                )
-            return AnyValue(AnySource.error)
-
-        if self._is_non_instantiable_union_runtime_value(callee_wrapped):
-            if node is not None:
-                self._show_error_if_checking(
-                    node,
-                    "Cannot instantiate union",
                     error_code=ErrorCode.incompatible_call,
                 )
             return AnyValue(AnySource.error)
@@ -16300,27 +16245,6 @@ def _maybe_normalize_filename(filename: str) -> str:
         return os.path.abspath(filename)
 
 
-def _is_newtype_base_value(base_value: Value) -> bool:
-    for subval in flatten_values(replace_fallback(base_value)):
-        if not isinstance(subval, KnownValue):
-            continue
-        if isinstance(subval.val, type):
-            continue
-        if safe_hasattr(subval.val, "__supertype__"):
-            return True
-    return False
-
-
-def _is_type_alias_base_value(base_value: Value) -> bool:
-    for subval in flatten_values(base_value, unwrap_annotated=True):
-        if _is_type_alias_object_value(subval):
-            return True
-        fallback = replace_fallback(subval)
-        if fallback is not subval and _is_type_alias_object_value(fallback):
-            return True
-    return False
-
-
 def _is_typeddict_marker_base(base_value: Value) -> bool:
     return isinstance(base_value, KnownValue) and is_typing_name(
         base_value.val, "TypedDict"
@@ -17152,33 +17076,10 @@ def _is_dataclass_classvar_final(expr: AnnotationExpr) -> bool:
 
 
 def _is_typealiastype_value(value: Value) -> bool:
-    for subval in flatten_values(value, unwrap_annotated=True):
-        if _is_typealiastype_known_value(subval):
-            return True
-    return False
-
-
-def _is_type_alias_object_value(value: Value) -> bool:
-    return (
-        isinstance(value, PartialValue)
-        and value.operation is PartialValueOperation.PEP_695_ALIAS
-    ) or _is_typealiastype_known_value(value)
-
-
-def _is_typealiastype_known_value(value: Value) -> bool:
+    value = replace_fallback(value)
     return isinstance(value, KnownValue) and (
         is_typing_name(value.val, "TypeAliasType")
-        or is_instance_of_typing_name(value.val, "TypeAliasType")
     )
-
-
-def _is_type_alias_symbol_composite(root_composite: Composite) -> bool:
-    if not (
-        isinstance(root_composite.value, PartialValue)
-        and root_composite.value.operation is PartialValueOperation.PEP_695_ALIAS
-    ):
-        return False
-    return _is_type_alias_specialization_symbol_composite(root_composite)
 
 
 def _is_type_alias_specialization_symbol_composite(root_composite: Composite) -> bool:
@@ -17681,6 +17582,7 @@ def _is_runtime_initvar_attribute(typ: type, attr_name: str) -> bool:
     return False
 
 
+# TODO: kill this
 def _is_typing_alias_value(value: object) -> bool:
     typ = type(value)
     if safe_getattr(typ, "__module__", None) != "typing":

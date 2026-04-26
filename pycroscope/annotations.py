@@ -138,6 +138,7 @@ from .value import (
     SequenceValue,
     SubclassValue,
     SyntheticClassObjectValue,
+    SyntheticTypeFormValue,
     TypeAlias,
     TypeAliasValue,
     TypedDictEntry,
@@ -163,9 +164,7 @@ from .value import (
     bound_self_type_from_class_key,
     class_owner_from_key,
     get_single_typevartuple_param,
-    get_type_alias_root,
     get_typevar_variance,
-    is_type_alias_partial_operation,
     iter_type_params_in_value,
     match_typevar_arguments,
     replace_fallback,
@@ -2316,24 +2315,20 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
     elif isinstance(value, MultiValuedValue):
         return unite_values(*[_type_from_value(val, ctx) for val in value.vals])
     elif isinstance(value, TypeFormValue):
-        return value
+        return value.inner_type
     elif isinstance(value, AnnotatedValue):
         self_owner = next(value.get_metadata_of_type(SelfOwnerExtension), None)
         if self_owner is not None:
             with override(ctx, "self_key", self_owner.class_key):
                 return _type_from_value(value.value, ctx)
         return _type_from_value(value.value, ctx)
+    elif isinstance(value, SyntheticTypeFormValue):
+        return value.inner_type
     elif isinstance(value, PartialValue):
         if value.operation is PartialValueOperation.SUBSCRIPT:
             return _type_from_subscripted_value(value.root, value.members, ctx)
         if value.operation is PartialValueOperation.BITOR:
             return _type_from_bitor_value(value.root, value.members, ctx)
-        if value.operation is PartialValueOperation.PEP_613_ALIAS:
-            assert isinstance(value.root, TypeAliasValue)
-            return value.root.get_value()
-        if value.operation is PartialValueOperation.PEP_695_ALIAS:
-            assert isinstance(value.root, TypeAliasValue)
-            return value.root
         return value.get_fallback_value()
     elif isinstance(value, PartialCallValue):
         type_param = make_type_param_from_value(value, ctx=ctx)
@@ -2459,13 +2454,10 @@ def _annotation_expr_from_subscripted_value(
 def _type_from_subscripted_value(
     root: Value, members: Sequence[Value], ctx: Context
 ) -> Value:
-    if isinstance(root, PartialValue) and is_type_alias_partial_operation(
-        root.operation
+    if isinstance(root, SyntheticTypeFormValue) and isinstance(
+        root.inner_type, TypeAliasValue
     ):
-        specialized = _specialize_type_alias_partial(root, members, ctx)
-        if root.operation is PartialValueOperation.PEP_613_ALIAS:
-            return specialized.runtime_value
-        return specialized.root
+        return _specialize_type_alias_value(root.inner_type, members, ctx)
 
     if isinstance(root, AnnotatedValue):
         self_owner = next(root.get_metadata_of_type(SelfOwnerExtension), None)
@@ -2921,25 +2913,6 @@ def _type_from_subscripted_value(
             return GenericValue(origin, typed_members)
         ctx.show_error(f"Unrecognized subscripted annotation: {root}")
         return AnyValue(AnySource.error)
-
-
-def _specialize_type_alias_partial(
-    root: PartialValue,
-    members: Sequence[Value],
-    ctx: Context,
-    *,
-    node: ast.AST | None = None,
-) -> PartialValue:
-    assert is_type_alias_partial_operation(root.operation)
-    alias_root = get_type_alias_root(root)
-    assert alias_root is not None
-    specialized_root = _specialize_type_alias_value(alias_root, members, ctx, node=node)
-    runtime_value = (
-        specialized_root.get_value()
-        if root.operation is PartialValueOperation.PEP_613_ALIAS
-        else root.runtime_value
-    )
-    return PartialValue(root.operation, specialized_root, root.node, (), runtime_value)
 
 
 def _specialize_type_alias_value(

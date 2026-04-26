@@ -82,7 +82,7 @@ class TestRecursion(TestNameCheckVisitorBase):
         x2 = ListAlias[int]()
 
         def bad_calls():
-            x3 = ListOrSetAlias()  # E: incompatible_call
+            x3 = ListOrSetAlias()  # E: not_callable
             return x3
 
     @assert_passes()
