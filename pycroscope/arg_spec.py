@@ -284,7 +284,7 @@ def _make_annotations_context(
     globals: Mapping[str, object] | None = None,
     callable_obj: object | None = None,
     *,
-    owner: type | None = None,
+    owner: ClassKey | None = None,
 ) -> AnnotationsContext:
     if owner is None:
         owner = _get_callable_owner(callable_obj)
@@ -1679,7 +1679,7 @@ class ArgSpecCache:
         self.generic_bases_cache[typ] = generic_bases
         return generic_bases
 
-    def _type_from_base(self, base: object, owner: type) -> Value:
+    def _type_from_base(self, base: object, owner: ClassKey) -> Value:
         # Avoid promoting float to float|int here.
         if base is float:
             return TypedValue(float)
