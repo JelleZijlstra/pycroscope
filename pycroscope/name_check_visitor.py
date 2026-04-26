@@ -3684,7 +3684,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                 )
             with legacy_type_param_ctx as allowed_legacy_identities:
-                if is_pep695_generic:
+                if sys.version_info >= (3, 12) and node.type_params:
                     type_param_values = list(
                         self.visit_type_param_values(
                             node.type_params,

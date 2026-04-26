@@ -369,11 +369,13 @@ class ActiveTypeParams:
         finally:
             self._scopes.pop()
 
-    def current_owner(self) -> TypeParamOwner:
-        for scope in reversed(self._scopes):
-            if scope.owner is not None:
-                return scope.owner
-        raise AssertionError("no active type parameter owner")
+    if sys.version_info >= (3, 12):
+
+        def current_owner(self) -> TypeParamOwner:
+            for scope in reversed(self._scopes):
+                if scope.owner is not None:
+                    return scope.owner
+            raise AssertionError("no active type parameter owner")
 
     def current_annotation_identities(self) -> set[TypeParamIdentity]:
         identities: set[TypeParamIdentity] = set()
