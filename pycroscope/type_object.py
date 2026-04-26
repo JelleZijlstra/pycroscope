@@ -3149,16 +3149,9 @@ def _apply_descriptor_protocol_to_method(
         and receiver_class.get_type() is not None
     ):
         method_composite = (
-            Composite(policy.self_value)
-            if policy.on_class
-            and policy.self_value is not None
-            and merged_attribute.name.startswith("__")
-            and merged_attribute.name.endswith("__")
-            else (
-                policy.receiver_composite
-                if policy.receiver_composite is not None
-                else Composite(receiver_class if policy.on_class else receiver_instance)
-            )
+            policy.receiver_composite
+            if policy.receiver_composite is not None
+            else Composite(receiver_class if policy.on_class else receiver_instance)
         )
         bound_value = UnboundMethodValue(
             attr_name=merged_attribute.name,
