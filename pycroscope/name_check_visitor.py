@@ -2144,7 +2144,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ast.FunctionDef | ast.AsyncFunctionDef, frozenset[FunctionDecorator]
     ]
     _function_returns_self_by_node: dict[ast.FunctionDef | ast.AsyncFunctionDef, bool]
-    _type_alias_first_definition_by_scope: dict[int, dict[str, ast.AST]]
     _type_alias_unguarded_refs_by_scope: dict[int, dict[str, set[str]]]
     _method_cache: dict[type[ast.AST], Callable[[Any], Value | None]]
     _name_node_to_statement: dict[ast.AST, ast.AST | None] | None
@@ -2315,7 +2314,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._pending_overload_blocks = {}
         self._function_decorator_kinds_by_node = {}
         self._function_returns_self_by_node = {}
-        self._type_alias_first_definition_by_scope = {}
         self._type_alias_unguarded_refs_by_scope = {}
         self._method_cache = {}
         self._statement_types = set()
@@ -12370,10 +12368,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self, name: str, alias_node: ast.AST, value_node: ast.AST
     ) -> None:
         scope_key = self._current_scope_key()
-        first_by_name = self._type_alias_first_definition_by_scope.setdefault(
-            scope_key, {}
-        )
-        first_by_name.setdefault(name, alias_node)
         refs_by_name = self._type_alias_unguarded_refs_by_scope.setdefault(
             scope_key, {}
         )
@@ -12775,24 +12769,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             else:
                 alias_obj = None
             type_param_values = []
-            disallow_in_function = self.scopes.scope_type() == ScopeType.function_scope
             if self._is_checking():
-                if disallow_in_function:
-                    self._show_error_if_checking(
-                        node,
-                        "Type alias statements are not allowed inside functions",
-                        error_code=ErrorCode.invalid_type_alias,
-                    )
-                first_by_name = self._type_alias_first_definition_by_scope.get(
-                    self._current_scope_key(), {}
-                )
-                first_definition = first_by_name.get(name)
-                if first_definition is not None and first_definition is not node:
-                    self._show_error_if_checking(
-                        node,
-                        f"Type alias {name} is already defined",
-                        error_code=ErrorCode.already_declared,
-                    )
                 if self._type_alias_has_unguarded_cycle(name):
                     self._show_error_if_checking(
                         node,
@@ -12843,7 +12820,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             else:
                 value = None
             if alias_obj is None:
-                if value is None or disallow_in_function:
+                if value is None:
                     alias_val = AnyValue(AnySource.inference)
                 else:
                     alias_root = TypeAliasValue(

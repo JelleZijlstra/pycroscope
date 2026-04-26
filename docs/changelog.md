@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Drop restrictions against redefined and function-local `type` statements.
 - Support `typing_extensions.Sentinel` and (on Python 3.15+) `builtins.sentinel`, as specified by PEP 661.
 - Clean up treatment of attributes to be more consistent and reliable. The `TreatClassAttributesAsAny` configuration is no longer supported.
 - Fix bug where the constructors of two classes with the same name were mixed up.
