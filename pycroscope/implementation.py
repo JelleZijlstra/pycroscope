@@ -3544,11 +3544,6 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
         default=NO_ARG_SENTINEL,
         annotation=TypeFormValue(TypedValue(object)),
     )
-    constraints_param = SigParameter(
-        "constraints",
-        ParameterKind.VAR_POSITIONAL,
-        annotation=GenericValue(tuple, [TypeFormValue(TypedValue(object))]),
-    )
     covariant_param = SigParameter(
         "covariant",
         ParameterKind.KEYWORD_ONLY,

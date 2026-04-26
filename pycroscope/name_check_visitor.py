@@ -246,6 +246,7 @@ from .type_object import (
 )
 from .type_params import (
     ActiveTypeParams,
+    TypeParamIdentity,
     _compose_observed_variance_polarity,
     _record_variance_polarity,
 )
@@ -353,7 +354,6 @@ from .value import (
     unite_and_simplify,
     unite_values,
     unpack_values,
-    with_type_param_owner,
 )
 from .yield_checker import YieldChecker
 
@@ -3148,7 +3148,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self.scopes.scope_type() != ScopeType.class_scope:
             return None
         identities = self.active_type_params.current_annotation_identities()
-        return identities or None
+        result: set[object] = set()
+        for identity in identities:
+            result.add(identity)
+        return result or None
 
     def _evaluate_type_alias_node(
         self,
@@ -3671,7 +3674,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         else:
             ctx = contextlib.nullcontext()
-        with self.active_type_params.add_scope(class_key), ctx:
+        with self.active_type_params.push_scope(class_key), ctx:
             legacy_type_param_ctx: AbstractContextManager[set[object] | None] = (
                 contextlib.nullcontext(None)
             )
@@ -3684,17 +3687,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             with legacy_type_param_ctx as allowed_legacy_identities:
                 if is_pep695_generic:
-                    declared_type_param_nodes = node.type_params
                     type_param_values = list(
                         self.visit_type_param_values(
-                            declared_type_param_nodes,
+                            node.type_params,
                             legacy_allowed_identities=allowed_legacy_identities,
                         )
                     )
                 else:
                     assert allowed_legacy_identities is None
                     type_param_values = []
-                    declared_type_param_nodes = []
 
                 disallowed_type_params = (
                     self.active_type_params.current_annotation_identities()
@@ -3907,39 +3908,29 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                 )
             prebound_registered_type_param_values = tuple(registered_type_param_values)
-            registered_type_param_values = self._bind_type_param_owners(
-                registered_type_param_values, generic_class_key
-            )
-            raw_registered_type_param_replacements = {
-                candidate.typevar: registered_type_param
-                for raw_type_param, prebound_type_param, registered_type_param in zip(
-                    raw_registered_type_param_values,
-                    prebound_registered_type_param_values,
-                    registered_type_param_values,
-                )
-                for candidate in (raw_type_param, prebound_type_param)
-            }
-            registered_type_param_values = tuple(
-                self._normalize_type_param_identities_in_type_param(
-                    type_param, raw_registered_type_param_replacements
-                )
-                for type_param in registered_type_param_values
-            )
-            type_param_alias_identities: list[set[object]] = []
-            raw_type_params_by_identity: dict[object, TypeParam] = {}
-            for raw_type_param, prebound_type_param, registered_type_param in zip(
-                raw_registered_type_param_values,
-                prebound_registered_type_param_values,
-                registered_type_param_values,
+            type_param_alias_identities: list[set[TypeParamIdentity]] = []
+            raw_type_param_aliases: list[set[object]] = []
+            for raw_type_param, prebound_type_param in zip(
+                raw_registered_type_param_values, prebound_registered_type_param_values
             ):
-                aliases: set[object] = set()
-                for candidate in (raw_type_param, prebound_type_param):
-                    if candidate.typevar is not registered_type_param.typevar:
-                        aliases.add(candidate.typevar)
-                    raw_type_params_by_identity[candidate.typevar] = (
-                        registered_type_param
-                    )
-                type_param_alias_identities.append(aliases)
+                aliases: set[object] = {raw_type_param.typevar}
+                if raw_type_param.typevar is not prebound_type_param.typevar:
+                    aliases.add(prebound_type_param.typevar)
+                raw_type_param_aliases.append(aliases)
+            binding_result = self.active_type_params.bind_all(
+                registered_type_param_values,
+                generic_class_key,
+                aliases=raw_type_param_aliases,
+                normalize_value=self._normalize_type_param_identities_in_value,
+            )
+            registered_type_param_values = binding_result.type_params
+            raw_type_params_by_identity: dict[object, TypeParam] = {}
+            for param_aliases, registered_type_param in zip(
+                binding_result.aliases, registered_type_param_values
+            ):
+                type_param_alias_identities.append(set(param_aliases))
+                for identity in param_aliases:
+                    raw_type_params_by_identity[identity] = registered_type_param
             if registered_type_param_values:
                 tobj.set_declared_type_params(tuple(registered_type_param_values))
             else:
@@ -3982,8 +3973,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 class_annotation_identities.update(alias_identities)
             with (
                 self.active_type_params.push_pep695_scope(
-                    class_scope_type_params,
-                    additional_identities=type_param_alias_identities,
+                    class_scope_type_params, aliases=type_param_alias_identities
                 ),
                 self.active_type_params.allow_in_annotations(
                     class_annotation_identities
@@ -4037,10 +4027,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     if type_param_values
                     else effective_type_param_values
                 )
-                if raw_registered_type_param_replacements:
+                if raw_type_params_by_identity:
                     declared_type_params = tuple(
-                        self._normalize_type_param_identities_in_type_param(
-                            type_param, raw_registered_type_param_replacements
+                        self.active_type_params.normalize_type_param_identities(
+                            type_param,
+                            raw_type_params_by_identity,
+                            normalize_value=self._normalize_type_param_identities_in_value,
                         )
                         for type_param in declared_type_params
                     )
@@ -4049,10 +4041,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         node.bases
                     )
                 )
-                if raw_registered_type_param_replacements:
+                if raw_type_params_by_identity:
                     annotation_declared_type_params = tuple(
-                        self._normalize_type_param_identities_in_type_param(
-                            type_param, raw_registered_type_param_replacements
+                        self.active_type_params.normalize_type_param_identities(
+                            type_param,
+                            raw_type_params_by_identity,
+                            normalize_value=self._normalize_type_param_identities_in_value,
                         )
                         for type_param in annotation_declared_type_params
                     )
@@ -6957,14 +6951,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and not isinstance(node, ast.Lambda)
             and node.type_params
         ):
+            function_owner = self._function_owner_from_node(
+                node, identity=potential_function
+            )
             ctx = self.scopes.add_scope(
                 ScopeType.annotation_scope,
                 scope_node=node,
                 scope_object=potential_function,
             )
+            type_param_scope = self.active_type_params.push_scope(function_owner)
         else:
             ctx = contextlib.nullcontext()
-        with ctx:
+            type_param_scope = contextlib.nullcontext()
+        with ctx, type_param_scope:
             legacy_type_param_ctx: AbstractContextManager[set[object] | None] = (
                 contextlib.nullcontext(None)
             )
@@ -12383,118 +12382,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 legacy_allowed_identities.add(extracted.typevar)
         return type_param_values
 
-    def _substitute_typevars_in_type_param(
-        self, type_param: TypeParam, substitutions: TypeVarMap
-    ) -> TypeParam:
-        if isinstance(type_param, TypeVarParam):
-            return replace(
-                type_param,
-                bound=(
-                    None
-                    if type_param.bound is None
-                    else type_param.bound.substitute_typevars(substitutions)
-                ),
-                default=(
-                    None
-                    if type_param.default is None
-                    else type_param.default.substitute_typevars(substitutions)
-                ),
-                constraints=tuple(
-                    constraint.substitute_typevars(substitutions)
-                    for constraint in type_param.constraints
-                ),
-            )
-        if isinstance(type_param, TypeVarTupleParam):
-            return replace(
-                type_param,
-                default=(
-                    None
-                    if type_param.default is None
-                    else type_param.default.substitute_typevars(substitutions)
-                ),
-            )
-        return replace(
-            type_param,
-            default=(
-                None
-                if type_param.default is None
-                else type_param.default.substitute_typevars(substitutions)
-            ),
-        )
-
-    def _normalize_type_param_identities_in_type_param(
-        self, type_param: TypeParam, replacements: Mapping[object, TypeParam]
-    ) -> TypeParam:
-        if isinstance(type_param, TypeVarParam):
-            return replace(
-                type_param,
-                bound=(
-                    None
-                    if type_param.bound is None
-                    else self._normalize_type_param_identities_in_value(
-                        type_param.bound, replacements
-                    )
-                ),
-                default=(
-                    None
-                    if type_param.default is None
-                    else self._normalize_type_param_identities_in_value(
-                        type_param.default, replacements
-                    )
-                ),
-                constraints=tuple(
-                    self._normalize_type_param_identities_in_value(
-                        constraint, replacements
-                    )
-                    for constraint in type_param.constraints
-                ),
-            )
-        if isinstance(type_param, TypeVarTupleParam):
-            return replace(
-                type_param,
-                default=(
-                    None
-                    if type_param.default is None
-                    else self._normalize_type_param_identities_in_value(
-                        type_param.default, replacements
-                    )
-                ),
-            )
-        return replace(
-            type_param,
-            default=(
-                None
-                if type_param.default is None
-                else self._normalize_type_param_identities_in_value(
-                    type_param.default, replacements
-                )
-            ),
-        )
-
-    def _bind_type_param_owners(
-        self,
-        type_params: Sequence[TypeParam],
-        owner: ClassKey | FunctionOwner | AliasOwner,
-    ) -> tuple[TypeParam, ...]:
-        owner_bound = tuple(
-            with_type_param_owner(type_param, owner) for type_param in type_params
-        )
-        substitutions = TypeVarMap()
-        replacements: dict[object, TypeParam] = {}
-        for raw_type_param, bound_type_param in zip(type_params, owner_bound):
-            substitutions = substitutions.with_value(
-                raw_type_param, type_param_to_value(bound_type_param)
-            )
-            replacements[raw_type_param.typevar] = bound_type_param
-            replacements[bound_type_param.typevar] = bound_type_param
-        return tuple(
-            self._normalize_type_param_identities_in_type_param(
-                self._substitute_typevars_in_type_param(type_param, substitutions),
-                replacements,
-            )
-            for type_param in owner_bound
-        )
-
     def _record_type_alias_structure(
         self, name: str, alias_node: ast.AST, value_node: ast.AST
     ) -> None:
@@ -12591,7 +12478,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             record_type_param(type_param)
         if owner is None:
             return tuple(type_params)
-        return self._bind_type_param_owners(type_params, owner)
+        return self.active_type_params.bind_all(
+            type_params,
+            owner,
+            normalize_value=self._normalize_type_param_identities_in_value,
+        ).type_params
 
     def _legacy_function_type_params_from_annotations(
         self,
@@ -12644,12 +12535,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 raw_type_params.append(type_param)
         if not raw_type_params:
             return params, return_annotation, ()
-        bound_type_params = self._bind_type_param_owners(raw_type_params, owner)
-        substitutions = TypeVarMap()
-        for raw_type_param, bound_type_param in zip(raw_type_params, bound_type_params):
-            substitutions = substitutions.with_value(
-                raw_type_param, type_param_to_value(bound_type_param)
-            )
+        binding_result = self.active_type_params.bind_all(
+            raw_type_params,
+            owner,
+            normalize_value=self._normalize_type_param_identities_in_value,
+        )
+        bound_type_params = binding_result.type_params
+        substitutions = binding_result.substitutions
         rebound_params = tuple(
             replace(
                 param_info,
@@ -12856,14 +12748,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         alias_owner = self._alias_owner_from_name(name, identity=alias_obj)
         if self._is_collecting():
             self._record_type_alias_structure(name, node, value_node)
-        type_params = tuple(
-            (
-                with_type_param_owner(type_param, alias_owner)
-                if type_param.owner is None
-                else type_param
-            )
-            for type_param in self._extract_runtime_type_alias_type_params(node.value)
-        )
+        type_params = self.active_type_params.bind_all(
+            self._extract_runtime_type_alias_type_params(node.value),
+            alias_owner,
+            normalize_value=self._normalize_type_param_identities_in_value,
+        ).type_params
         declared_type_params = list(type_params)
         if self.current_class_type_params is not None:
             declared_type_params.extend(self.current_class_type_params)
@@ -12943,25 +12832,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
 
     if sys.version_info >= (3, 12):
-
-        def _current_scope_type_param_owner(
-            self,
-        ) -> ClassKey | FunctionOwner | AliasOwner:
-            scope = self.scopes.current_scope()
-            scope_node = scope.scope_node
-            scope_object = scope.scope_object
-            if isinstance(scope_object, (type, ClassOwner)):
-                return scope_object
-            if isinstance(scope_node, ast.ClassDef):
-                return self._get_synthetic_class_key(scope_node)
-            if isinstance(scope_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                return self._function_owner_from_node(scope_node, identity=scope_object)
-            if isinstance(scope_node, ast.TypeAlias):
-                assert isinstance(scope_node.name, ast.Name)
-                return self._alias_owner_from_name(
-                    scope_node.name.id, identity=scope_object
-                )
-            raise AssertionError(f"unexpected type parameter scope {scope_node!r}")
 
         def _pep695_type_param_expr_needs_string_forward_ref(
             self, node: ast.expr
@@ -13057,6 +12927,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         scope_node=node,
                         scope_object=alias_obj,
                     ),
+                    self.active_type_params.push_scope(
+                        self._alias_owner_from_name(name, identity=alias_obj)
+                    ),
                     self.active_type_params.reject_legacy_type_params(
                         legacy_param_message,
                         error_code=ErrorCode.invalid_type_alias,
@@ -13120,7 +12993,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
 
         def visit_TypeVar(self, node: ast.TypeVar) -> Value:
-            owner = self._current_scope_type_param_owner()
+            owner = self.active_type_params.current_owner()
             bound = constraints = default = None
             if node.bound is not None:
                 if isinstance(node.bound, ast.Tuple):
@@ -13185,7 +13058,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return typevar
 
         def visit_ParamSpec(self, node: ast.ParamSpec) -> Value:
-            owner = self._current_scope_type_param_owner()
+            owner = self.active_type_params.current_owner()
             maybe_runtime_param_spec = self._get_runtime_type_param_for_current_scope(
                 node.name, expected_kind="ParamSpec"
             )
@@ -13198,7 +13071,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return typevar
 
         def visit_TypeVarTuple(self, node: ast.TypeVarTuple) -> Value:
-            owner = self._current_scope_type_param_owner()
+            owner = self.active_type_params.current_owner()
             maybe_runtime_typevar_tuple = (
                 self._get_runtime_type_param_for_current_scope(
                     node.name, expected_kind="TypeVarTuple"
