@@ -17,7 +17,7 @@ from .annotations import RuntimeAnnotationsContext, type_from_runtime
 from .options import Options, PyObjectSequenceOption
 from .predicates import HasAttr
 from .relations import intersect_multi
-from .safe import safe_getattr, safe_isinstance, safe_issubclass
+from .safe import safe_getattr, safe_isinstance
 from .signature import MaybeSignature
 from .stacked_scopes import Composite
 from .type_object import AttributePolicy, TypeObject, TypeObjectAttribute
@@ -387,18 +387,6 @@ def _get_attribute_from_subclass(
                 assert_never(metaclass)
     if ctx.attr == "__bases__":
         return GenericValue(tuple, [SubclassValue(TypedValue(object))]), None
-    if (
-        ctx.attr == "__getitem__"
-        and ctx.get_self_value() != ctx.root_value
-        and safe_isinstance(typ, type)
-        and safe_issubclass(typ, dict)
-    ):
-        default = object()
-        runtime_obj = safe_getattr(typ, ctx.attr, default)
-        if runtime_obj is not default:
-            result = set_self(KnownValue(runtime_obj), ctx.get_self_value(), typ)
-            ctx.record_usage(typ, result)
-            return result, None
     attribute = _get_type_object_attribute(
         tobj, ctx.attr, ctx, on_class=True, receiver_value=self_value
     )

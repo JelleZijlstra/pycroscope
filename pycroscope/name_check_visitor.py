@@ -737,13 +737,17 @@ class _AttrContext(CheckerAttrContext):
     def get_type_object_attribute_policy(
         self, *, on_class: bool, receiver: Value
     ) -> AttributePolicy:
+        is_dunder = self.attr.startswith("__") and self.attr.endswith("__")
+        is_special_lookup = (
+            self.self_value is not None
+            and _attribute_root_class_info(self.self_value).is_class_object is True
+            and is_dunder
+        )
         return AttributePolicy(
             on_class=on_class,
-            is_special_lookup=self.self_value is not None
-            and self.attr.startswith("__")
-            and self.attr.endswith("__")
-            and _attribute_root_class_info(self.self_value).is_class_object is True,
+            is_special_lookup=is_special_lookup,
             receiver=receiver,
+            self_value=self.self_value if is_dunder else None,
             visitor=self.visitor,
             node=self.node,
             receiver_composite=self.root_composite,
@@ -3602,7 +3606,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 for base in base_values
             ) and isinstance(tobj.typ, ClassOwner):
                 tobj.set_direct_bases(
-                    direct_bases_from_values(base_values, self.checker)
+                    direct_bases_from_values(base_values, self.checker, owner=tobj.typ)
                 )
         elif isinstance(tobj.typ, ClassOwner):
             tobj.set_direct_bases([TypedValue(object)])
@@ -3949,6 +3953,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 base_values_for_registration = list(
                     self._base_values_for_generic_analysis(node, base_values)
                 )
+            elif any(
+                _base_conversion_is_imprecise(
+                    base, self.checker, owner=generic_class_key
+                )
+                for base in base_values
+            ):
+                analyzed_bases = self._base_values_for_generic_analysis(
+                    node, base_values
+                )
+                if any(
+                    not _base_conversion_is_imprecise(
+                        base, self.checker, owner=generic_class_key
+                    )
+                    for base in analyzed_bases
+                ):
+                    base_values_for_registration = list(analyzed_bases)
             if raw_type_params_by_identity:
                 base_values_for_registration = [
                     self._normalize_type_param_identities_in_value(
@@ -17006,6 +17026,13 @@ def _count_starred_type_param_args(slice_node: ast.AST) -> int:
     if isinstance(slice_node, ast.Tuple):
         return sum(isinstance(elt, ast.Starred) for elt in slice_node.elts)
     return int(isinstance(slice_node, ast.Starred))
+
+
+def _base_conversion_is_imprecise(
+    base_value: Value, checker: Checker, *, owner: ClassKey
+) -> bool:
+    converted = direct_bases_from_values([base_value], checker, owner=owner)
+    return any(isinstance(base, AnyValue) for base in converted)
 
 
 def _mangle_class_attribute_name(class_name: str, attribute_name: str) -> str:

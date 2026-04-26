@@ -377,7 +377,10 @@ MroValue = TypedValue | AnyValue
 
 
 def direct_bases_from_values(
-    base_values: Sequence[Value], checker: "pycroscope.checker.Checker"
+    base_values: Sequence[Value],
+    checker: "pycroscope.checker.Checker",
+    *,
+    owner: ClassKey | None = None,
 ) -> tuple[MroValue, ...]:
     import pycroscope.type_object_builder as type_object_builder
 
@@ -385,8 +388,9 @@ def direct_bases_from_values(
         converted
         for base in base_values
         for converted in type_object_builder._iter_base_type_values(
-            base, checker.arg_spec_cache
+            base, checker.arg_spec_cache, owner=owner
         )
+        if owner is None or _class_key_from_value(converted) != owner
     ]
     return tuple(_replace_invalid_bases(direct_bases or [TypedValue(object)]))
 
@@ -3139,13 +3143,21 @@ def _apply_descriptor_protocol_to_method(
         and _is_method_like(initializer)
         and receiver_class.get_type() is not None
     ):
-        bound_value = UnboundMethodValue(
-            attr_name=merged_attribute.name,
-            composite=(
+        method_composite = (
+            Composite(policy.self_value)
+            if policy.on_class
+            and policy.self_value is not None
+            and merged_attribute.name.startswith("__")
+            and merged_attribute.name.endswith("__")
+            else (
                 policy.receiver_composite
                 if policy.receiver_composite is not None
                 else Composite(receiver_class if policy.on_class else receiver_instance)
-            ),
+            )
+        )
+        bound_value = UnboundMethodValue(
+            attr_name=merged_attribute.name,
+            composite=method_composite,
             typevars=(
                 initializer.typevars
                 if isinstance(initializer, KnownValueWithTypeVars)
