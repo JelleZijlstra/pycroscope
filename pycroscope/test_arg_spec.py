@@ -14,10 +14,11 @@ from .test_name_check_visitor import (
     ConfiguredNameCheckVisitor,
     TestNameCheckVisitorBase,
 )
-from .test_node_visitor import assert_passes
+from .test_node_visitor import assert_passes, skip_before
 from .value import (
     AnySource,
     AnyValue,
+    FunctionOwner,
     GenericValue,
     KnownValue,
     NewTypeValue,
@@ -52,13 +53,19 @@ def test_type_param_str_is_concise() -> None:
     p = ParamSpec("P")
     ts = TypeVarTuple("Ts")
 
-    assert str(TypeVarParam(bounded, bound=TypedValue(int))) == "~S"
+    assert str(TypeVarParam(bounded, owner=None, bound=TypedValue(int))) == "~S"
     assert (
-        str(TypeVarParam(constrained, constraints=(TypedValue(str), TypedValue(bytes))))
+        str(
+            TypeVarParam(
+                constrained,
+                owner=None,
+                constraints=(TypedValue(str), TypedValue(bytes)),
+            )
+        )
         == "~T"
     )
-    assert str(ParamSpecParam(p)) == "**P"
-    assert str(TypeVarTupleParam(ts)) == "*Ts"
+    assert str(ParamSpecParam(p, owner=None)) == "**P"
+    assert str(TypeVarTupleParam(ts, owner=None)) == "*Ts"
 
 
 def test_get_type_parameters_ignores_non_iterable_runtime_type_params() -> None:
@@ -70,12 +77,39 @@ def test_get_type_parameters_ignores_non_iterable_runtime_type_params() -> None:
     assert checker.arg_spec_cache.get_type_parameters(Weird) == []
 
 
+@skip_before((3, 12))
+def test_runtime_generic_method_annotations_use_scoped_type_param_owners() -> None:
+    checker = Checker()
+    ns: dict[str, object] = {}
+    exec(
+        """
+class Box[T]:
+    def f[U](self, x: T, y: U) -> tuple[T, U]:
+        raise NotImplementedError
+""",
+        ns,
+        ns,
+    )
+    Box = ns["Box"]
+    sig = checker.arg_spec_cache.get_argspec(Box.f)
+    assert isinstance(sig, Signature)
+    x_annotation = sig.parameters["x"].annotation
+    y_annotation = sig.parameters["y"].annotation
+    assert isinstance(x_annotation, TypeVarValue)
+    assert x_annotation.typevar_param.owner is Box
+    assert isinstance(y_annotation, TypeVarValue)
+    assert isinstance(y_annotation.typevar_param.owner, FunctionOwner)
+    assert y_annotation.typevar_param.owner.identity is Box.f
+
+
 def test_match_typevar_arguments_preserves_suffix_after_default_before_typevartuple() -> (
     None
 ):
-    default_t = TypeVarParam(TypeVar("DefaultT", default=int), default=TypedValue(int))
-    ts = TypeVarTupleParam(TypeVarTuple("Ts"))
-    u = TypeVarParam(TypeVar("U"))
+    default_t = TypeVarParam(
+        TypeVar("DefaultT", default=int), owner=None, default=TypedValue(int)
+    )
+    ts = TypeVarTupleParam(TypeVarTuple("Ts"), owner=None)
+    u = TypeVarParam(TypeVar("U"), owner=None)
 
     assert match_typevar_arguments([default_t, ts, u], [TypedValue(str)]) == [
         (default_t, TypedValue(int)),
@@ -92,9 +126,9 @@ def test_specialize_generic_type_params_preserves_suffix_with_default_prefix() -
 
     assert checker.arg_spec_cache._specialize_generic_type_params(
         [
-            TypeVarParam(default_t, default=TypedValue(int)),
-            TypeVarTupleParam(ts),
-            TypeVarParam(u),
+            TypeVarParam(default_t, owner=None, default=TypedValue(int)),
+            TypeVarTupleParam(ts, owner=None),
+            TypeVarParam(u, owner=None),
         ],
         [TypedValue(str)],
     ) == [TypedValue(int), SequenceValue(tuple, []), TypedValue(str)]

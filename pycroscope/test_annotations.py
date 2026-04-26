@@ -22,7 +22,6 @@ from .value import (
     TypedDictValue,
     TypedValue,
     TypeVarParam,
-    TypeVarValue,
     assert_is_value,
     class_owner_from_key,
 )
@@ -1209,6 +1208,14 @@ class TestCallable(TestNameCheckVisitorBase):
 
 
 class TestTypeVar(TestNameCheckVisitorBase):
+    @assert_passes(allow_import_failures=True)
+    def test_invalid_typevar_constructor_args(self):
+        from typing_extensions import TypeVar as TV
+
+        TV("Single", str)  # E: incompatible_call
+        TV("ICo", infer_variance=True, covariant=True)  # E: incompatible_call
+        TV("IContra", infer_variance=True, contravariant=True)  # E: incompatible_call
+
     @assert_passes()
     def test_bound(self):
         from typing import TypeVar
@@ -1216,10 +1223,8 @@ class TestTypeVar(TestNameCheckVisitorBase):
         from typing_extensions import Literal
 
         IntT = TypeVar("IntT", bound=int)
-        expected = TypeVarValue(TypeVarParam(IntT, bound=TypedValue(int)))
 
         def f(x: IntT) -> IntT:
-            assert_is_value(x, expected)
             print(x + 1)
             return x
 
@@ -1736,11 +1741,11 @@ class TestCustomCheck(TestNameCheckVisitorBase):
 
             def walk_values(self) -> Iterable[Value]:
                 if isinstance(self.value, TypeVar):
-                    yield TypeVarValue(TypeVarParam(self.value))
+                    yield TypeVarValue(TypeVarParam(self.value, owner=None))
 
             def substitute_typevars(self, typevars: TypeVarMap) -> "GreaterThan":
                 if isinstance(self.value, TypeVar):
-                    value = typevars.get_typevar(TypeVarParam(self.value))
+                    value = typevars.get_typevar(TypeVarParam(self.value, owner=None))
                     if isinstance(value, KnownValue) and isinstance(value.val, int):
                         return GreaterThan(value.val)
                 return self

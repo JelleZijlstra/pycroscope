@@ -31,7 +31,12 @@ import pycroscope
 if TYPE_CHECKING:
     from .relations import Relation
 
-from .annotations import make_type_param, type_from_runtime, type_from_value
+from .annotations import (
+    RuntimeAnnotationsContext,
+    make_type_param,
+    type_from_runtime,
+    type_from_value,
+)
 from .input_sig import AnySig, FullSignature, InputSigValue
 from .options import PyObjectSequenceOption
 from .relations import (
@@ -377,7 +382,10 @@ MroValue = TypedValue | AnyValue
 
 
 def direct_bases_from_values(
-    base_values: Sequence[Value], checker: "pycroscope.checker.Checker"
+    base_values: Sequence[Value],
+    checker: "pycroscope.checker.Checker",
+    *,
+    owner: ClassKey | None = None,
 ) -> tuple[MroValue, ...]:
     import pycroscope.type_object_builder as type_object_builder
 
@@ -385,8 +393,9 @@ def direct_bases_from_values(
         converted
         for base in base_values
         for converted in type_object_builder._iter_base_type_values(
-            base, checker.arg_spec_cache
+            base, checker.arg_spec_cache, owner=owner
         )
+        if owner is None or _class_key_from_value(converted) != owner
     ]
     return tuple(_replace_invalid_bases(direct_bases or [TypedValue(object)]))
 
@@ -3139,13 +3148,14 @@ def _apply_descriptor_protocol_to_method(
         and _is_method_like(initializer)
         and receiver_class.get_type() is not None
     ):
+        method_composite = (
+            policy.receiver_composite
+            if policy.receiver_composite is not None
+            else Composite(receiver_class if policy.on_class else receiver_instance)
+        )
         bound_value = UnboundMethodValue(
             attr_name=merged_attribute.name,
-            composite=(
-                policy.receiver_composite
-                if policy.receiver_composite is not None
-                else Composite(receiver_class if policy.on_class else receiver_instance)
-            ),
+            composite=method_composite,
             typevars=(
                 initializer.typevars
                 if isinstance(initializer, KnownValueWithTypeVars)
@@ -4162,6 +4172,7 @@ def _compute_type_params_from_runtime(
         except TypeError:
             continue
     return type_params
+    # return checker.arg_spec_cache.get_type_parameters(typ)
 
 
 def _replace_invalid_bases(bases: Sequence[Value]) -> Iterable[MroValue]:
@@ -4185,10 +4196,9 @@ def _extract_runtime_direct_bases(
             raw_bases = iter(typ.__bases__)
         except Exception:
             return []
-    bases = [
-        type_from_runtime(base, visitor=checker, suppress_errors=True)
-        for base in raw_bases
-    ]
+    ctx = RuntimeAnnotationsContext(owner=typ, self_key=typ, new_type_param_owner=typ)
+    with ctx.suppress_errors():
+        bases = [type_from_runtime(base, ctx=ctx) for base in raw_bases]
     if is_namedtuple_class(typ):
         bases = [_replace_tuple(base, typ, checker) for base in bases]
     return _replace_invalid_bases(bases)

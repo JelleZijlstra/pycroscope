@@ -273,7 +273,7 @@ def test_typed_value() -> None:
 
 def test_typevarmap_preserves_fixed_typevartuple_bindings() -> None:
     Ts = TypeVarTuple("Ts")
-    param = TypeVarTupleParam(Ts)
+    param = TypeVarTupleParam(Ts, owner=None)
     tv_map = TypeVarMap().with_typevartuple(
         param, ((False, TypedValue(str)), (False, TypedValue(int)))
     )
@@ -289,7 +289,7 @@ def test_typevarmap_preserves_fixed_typevartuple_bindings() -> None:
 
 def test_typevarmap_preserves_open_typevartuple_bindings() -> None:
     Ts = TypeVarTuple("Ts")
-    param = TypeVarTupleParam(Ts)
+    param = TypeVarTupleParam(Ts, owner=None)
     tv_map = TypeVarMap().with_typevartuple(param, ((True, TypedValue(str)),))
 
     assert tv_map.get_typevartuple(param) == ((True, TypedValue(str)),)
@@ -1120,7 +1120,7 @@ def test_typeform_intersection_simplification() -> None:
 
 
 def test_typevar_intersection_preserves_typevar() -> None:
-    typevar_value = TypeVarValue(TypeVarParam(typing.TypeVar("T")))
+    typevar_value = TypeVarValue(TypeVarParam(typing.TypeVar("T"), owner=None))
     narrowed_int = intersect_values(typevar_value, TypedValue(int), CTX)
     narrowed_str = intersect_values(typevar_value, TypedValue(str), CTX)
 
@@ -1131,7 +1131,7 @@ def test_typevar_intersection_preserves_typevar() -> None:
 
 
 def test_typevar_intersection_distributes_over_union() -> None:
-    typevar_value = TypeVarValue(TypeVarParam(typing.TypeVar("T")))
+    typevar_value = TypeVarValue(TypeVarParam(typing.TypeVar("T"), owner=None))
     assert intersect_values(typevar_value, TypedValue(int) | TypedValue(str), CTX) == (
         value.IntersectionValue((typevar_value, TypedValue(int)))
         | value.IntersectionValue((typevar_value, TypedValue(str)))
@@ -1142,6 +1142,7 @@ def test_constrained_typevar_intersection_simplifies() -> None:
     anystr_value = TypeVarValue(
         TypeVarParam(
             typing.TypeVar("AnyStr", str, bytes),
+            owner=None,
             constraints=(TypedValue(str), TypedValue(bytes)),
         )
     )

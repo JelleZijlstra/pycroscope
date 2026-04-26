@@ -789,7 +789,9 @@ def _signature_params_from_function_params(
                     SigParameter(
                         param.name,
                         ParameterKind.PARAM_SPEC,
-                        annotation=InputSigValue(ParamSpecParam(annotation.param_spec)),
+                        annotation=InputSigValue(
+                            ParamSpecParam(annotation.param_spec, owner=None)
+                        ),
                     )
                 )
                 pending_param = None

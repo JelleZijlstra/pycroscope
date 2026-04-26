@@ -233,7 +233,7 @@ class TestCanAssign:
                     P("x", annotation=TypedValue(int), kind=K.POSITIONAL_ONLY),
                     P(
                         "__Q",
-                        annotation=InputSigValue(ParamSpecParam(q)),
+                        annotation=InputSigValue(ParamSpecParam(q, owner=None)),
                         kind=K.PARAM_SPEC,
                     ),
                 ],

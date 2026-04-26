@@ -1370,7 +1370,7 @@ class Signature:
                 ):
                     star_kwargs_consumed = True
                     star_args_consumed = True
-                    sig = ParamSpecParam(actual_args.star_kwargs.param_spec)
+                    sig = ParamSpecParam(actual_args.star_kwargs.param_spec, owner=None)
                     composite = Composite(InputSigValue(sig))
                     bound_args[param.name] = KWARGS, composite
                 else:
@@ -2062,7 +2062,31 @@ class Signature:
                 else:
                     params.append((name, param.substitute_typevars(typevars)))
             else:
-                params.append((name, param.substitute_typevars(typevars)))
+                substituted = param.substitute_typevars(typevars)
+                # TODO: this seems to be a workaround for some poor handling of
+                # TypeVarTuple.
+                if (
+                    substituted.name.startswith("@")
+                    and substituted.kind is ParameterKind.POSITIONAL_ONLY
+                    and isinstance(substituted.annotation, TypeVarTupleBindingValue)
+                    and not any(
+                        is_many for is_many, _ in substituted.annotation.binding
+                    )
+                ):
+                    for member in substituted.annotation.binding:
+                        expanded_name = f"@expanded{len(params)}"
+                        params.append(
+                            (
+                                expanded_name,
+                                replace(
+                                    substituted,
+                                    name=expanded_name,
+                                    annotation=member[1],
+                                ),
+                            )
+                        )
+                else:
+                    params.append((name, substituted))
         params_dict = dict(params)
         return_value = self.return_value.substitute_typevars(typevars)
         bound_receiver_composite = (
@@ -2410,11 +2434,13 @@ def preprocess_args(
                 processed_args.append(
                     (
                         Composite(
-                            InputSigValue(ParamSpecParam(arg.value.param_spec)),
+                            InputSigValue(
+                                ParamSpecParam(arg.value.param_spec, owner=None)
+                            ),
                             arg.varname,
                             arg.node,
                         ),
-                        ParamSpecParam(arg.value.param_spec),
+                        ParamSpecParam(arg.value.param_spec, owner=None),
                     )
                 )
                 continue
@@ -2612,10 +2638,10 @@ def _preprocess_kwargs_no_mvv(
             ctx.on_error(f"{value} is not a mapping", detail=str(mapping_tv_map))
             return None
         key_type = mapping_tv_map.get_typevar(
-            TypeVarParam(K), AnyValue(AnySource.generic_argument)
+            TypeVarParam(K, owner=None), AnyValue(AnySource.generic_argument)
         )
         value_type = mapping_tv_map.get_typevar(
-            TypeVarParam(V), AnyValue(AnySource.generic_argument)
+            TypeVarParam(V, owner=None), AnyValue(AnySource.generic_argument)
         )
         return _preprocess_kwargs_kv_pairs(
             [KVPair(key_type, value_type, is_many=True)], ctx
@@ -3164,7 +3190,10 @@ K = TypeVar("K")
 V = TypeVar("V")
 MappingValue = GenericValue(
     collections.abc.Mapping,
-    [TypeVarValue(TypeVarParam(K)), TypeVarValue(TypeVarParam(V))],
+    [
+        TypeVarValue(TypeVarParam(K, owner=None)),
+        TypeVarValue(TypeVarParam(V, owner=None)),
+    ],
 )
 
 
@@ -3225,10 +3254,23 @@ def _typevartuple_param_index(params: Sequence[SigParameter]) -> int | None:
     indices = [
         i
         for i, param in enumerate(params)
-        if isinstance(param.annotation, TypeVarTupleValue)
+        if _callable_typevartuple_marker(param.annotation) is not None
     ]
     if len(indices) == 1:
         return indices[0]
+    return None
+
+
+def _callable_typevartuple_marker(annotation: Value) -> TypeVarTupleValue | None:
+    if isinstance(annotation, TypeVarTupleValue):
+        return annotation
+    if (
+        isinstance(annotation, TypeVarTupleBindingValue)
+        and len(annotation.binding) == 1
+        and annotation.binding[0][0]
+        and isinstance(annotation.binding[0][1], TypeVarTupleValue)
+    ):
+        return annotation.binding[0][1]
     return None
 
 
@@ -3441,8 +3483,8 @@ def _try_typevartuple_callable_relation(
             )
         captured_bounds_maps.append(tv_map)
 
-    marker_annotation = marker_param.annotation
-    assert isinstance(marker_annotation, TypeVarTupleValue), marker_annotation
+    marker_annotation = _callable_typevartuple_marker(marker_param.annotation)
+    assert marker_annotation is not None, marker_param.annotation
     captured_members = [
         (False, _widen_typevartuple_inferred_value(param.get_annotation()))
         for param in middle
@@ -4278,7 +4320,7 @@ def has_relation_var_keyword(
                 f"{kwargs_annotation} is not a mapping type", [mapping_tv_map]
             )
         key_arg = mapping_tv_map.get_typevar(
-            TypeVarParam(K), AnyValue(AnySource.generic_argument)
+            TypeVarParam(K, owner=None), AnyValue(AnySource.generic_argument)
         )
         can_assign = has_relation(key_arg, KnownValue(my_param.name), relation, ctx)
         if isinstance(can_assign, CanAssignError):
@@ -4288,7 +4330,7 @@ def has_relation_var_keyword(
             )
         bounds_maps.append(can_assign)
         value_arg = mapping_tv_map.get_typevar(
-            TypeVarParam(V), AnyValue(AnySource.generic_argument)
+            TypeVarParam(V, owner=None), AnyValue(AnySource.generic_argument)
         )
         can_assign = has_relation(value_arg, my_annotation, relation, ctx)
         if isinstance(can_assign, CanAssignError):
@@ -4312,5 +4354,5 @@ def _get_var_keyword_value_type(
     if isinstance(mapping_tv_map, CanAssignError):
         return None
     return mapping_tv_map.get_typevar(
-        TypeVarParam(V), AnyValue(AnySource.generic_argument)
+        TypeVarParam(V, owner=None), AnyValue(AnySource.generic_argument)
     )

@@ -42,7 +42,7 @@ from collections.abc import (
     Sequence,
 )
 from contextlib import AbstractContextManager
-from dataclasses import InitVar, dataclass, field
+from dataclasses import InitVar, dataclass, field, replace
 from itertools import chain
 from types import FunctionType, ModuleType
 from typing import Any, Optional, TypeGuard, TypeVar, Union
@@ -1151,7 +1151,7 @@ def _type_param_to_string(prefix: str, name: str, owner: TypeParamOwner | None) 
 @dataclass(frozen=True)
 class TypeVarParam:
     typevar: TypeVarType
-    owner: TypeParamOwner | None = None  # TODO: make required
+    owner: TypeParamOwner | None
     bound: Value | None = None
     default: Value | None = None
     constraints: Sequence[Value] = ()
@@ -1230,7 +1230,7 @@ class TypeVarParam:
 @dataclass(frozen=True)
 class ParamSpecParam:
     param_spec: ParamSpecLike
-    owner: TypeParamOwner | None = None  # TODO: make required
+    owner: TypeParamOwner | None
     default: Value | None = None
     variance: Variance = Variance.INVARIANT
 
@@ -1257,7 +1257,7 @@ class ParamSpecParam:
 @dataclass(frozen=True)
 class TypeVarTupleParam:
     typevar_tuple: TypeVarTupleLike
-    owner: TypeParamOwner | None = None  # TODO: make required
+    owner: TypeParamOwner | None
     default: Value | None = None
     variance: Variance = Variance.INVARIANT
 
@@ -1268,21 +1268,41 @@ class TypeVarTupleParam:
     def __str__(self) -> str:
         return _type_param_to_string("*", self.typevar_tuple.__name__, self.owner)
 
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, TypeVarTupleParam):
+            return NotImplemented
+        return self.typevar_tuple == other.typevar_tuple
+
+    def __hash__(self) -> int:
+        return hash(self.typevar_tuple)
+
 
 TypeParam = TypeVarParam | ParamSpecParam | TypeVarTupleParam
+
+
+def with_type_param_owner(
+    type_param: TypeParam, owner: TypeParamOwner | None
+) -> TypeParam:
+    if owner is None or type_param.owner is not None:
+        return type_param
+    if isinstance(type_param, TypeVarParam):
+        return replace(type_param, owner=owner)
+    if isinstance(type_param, ParamSpecParam):
+        return replace(type_param, owner=owner)
+    return replace(type_param, owner=owner)
 
 
 def _value_from_runtime_type_param_component(component: object) -> Value:
     if isinstance(component, Value):
         return component
     if is_instance_of_typing_name(component, "TypeVar"):
-        return TypeVarValue(TypeVarParam(component))
+        return TypeVarValue(TypeVarParam(component, owner=None))
     if is_instance_of_typing_name(component, "TypeVarTuple"):
         return TypeVarTupleValue(component)
     if is_instance_of_typing_name(component, "ParamSpec"):
         from pycroscope.input_sig import InputSigValue
 
-        return InputSigValue(ParamSpecParam(component))
+        return InputSigValue(ParamSpecParam(component, owner=None))
     if isinstance(component, tuple):
         return SequenceValue(
             tuple,
@@ -4337,10 +4357,17 @@ class CustomMapping(Protocol[K, V_co]):
 
 NominalMappingValue = GenericValue(
     collections.abc.Mapping,
-    [TypeVarValue(TypeVarParam(K)), TypeVarValue(TypeVarParam(V))],
+    [
+        TypeVarValue(TypeVarParam(K, owner=None)),
+        TypeVarValue(TypeVarParam(V, owner=None)),
+    ],
 )
 ProtocolMappingValue = GenericValue(
-    CustomMapping, [TypeVarValue(TypeVarParam(K)), TypeVarValue(TypeVarParam(V_co))]
+    CustomMapping,
+    [
+        TypeVarValue(TypeVarParam(K, owner=None)),
+        TypeVarValue(TypeVarParam(V_co, owner=None)),
+    ],
 )
 
 
@@ -4397,12 +4424,12 @@ def kv_pairs_from_mapping(
             if isinstance(can_assign, CanAssignError):
                 return can_assign
         key_type = can_assign.get_typevar(
-            TypeVarParam(K), AnyValue(AnySource.generic_argument)
+            TypeVarParam(K, owner=None), AnyValue(AnySource.generic_argument)
         )
         value_type = can_assign.get_typevar(
-            TypeVarParam(V),
+            TypeVarParam(V, owner=None),
             can_assign.get_typevar(
-                TypeVarParam(V_co), AnyValue(AnySource.generic_argument)
+                TypeVarParam(V_co, owner=None), AnyValue(AnySource.generic_argument)
             ),
         )
         return [KVPair(key_type, value_type, is_many=True)]

@@ -57,7 +57,7 @@ from .value import (
 )
 
 T = TypeVar("T")
-TParam = TypeVarParam(T)
+TParam = TypeVarParam(T, owner=None)
 NT = NewType("NT", int)
 
 

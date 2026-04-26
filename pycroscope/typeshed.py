@@ -438,7 +438,9 @@ class TypeshedFinder:
                 # too confusing, just hardcode it.
                 if typ is AbstractSet:
                     return [
-                        GenericValue(Collection, (TypeVarValue(TypeVarParam(T_co)),))
+                        GenericValue(
+                            Collection, (TypeVarValue(TypeVarParam(T_co, owner=None)),)
+                        )
                     ]
                 if typ is collections.abc.Callable:
                     return None
@@ -452,7 +454,9 @@ class TypeshedFinder:
                 fq_name = str(val.typ)
                 if fq_name == "collections.abc.Set":
                     return [
-                        GenericValue(Collection, (TypeVarValue(TypeVarParam(T_co)),))
+                        GenericValue(
+                            Collection, (TypeVarValue(TypeVarParam(T_co, owner=None)),)
+                        )
                     ]
                 elif fq_name in (
                     "typing.Callable",
