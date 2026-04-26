@@ -136,6 +136,7 @@ from .value import (
     SequenceValue,
     SubclassValue,
     SyntheticClassObjectValue,
+    SyntheticTypeFormValue,
     TypeAlias,
     TypeAliasValue,
     TypedDictEntry,
@@ -1976,13 +1977,15 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
     elif isinstance(value, MultiValuedValue):
         return unite_values(*[_type_from_value(val, ctx) for val in value.vals])
     elif isinstance(value, TypeFormValue):
-        return value
+        return value.inner_type
     elif isinstance(value, AnnotatedValue):
         self_owner = next(value.get_metadata_of_type(SelfOwnerExtension), None)
         if self_owner is not None:
             with override(ctx, "self_key", self_owner.class_key):
                 return _type_from_value(value.value, ctx)
         return _type_from_value(value.value, ctx)
+    elif isinstance(value, SyntheticTypeFormValue):
+        return value.inner_type
     elif isinstance(value, PartialValue):
         if value.operation is PartialValueOperation.SUBSCRIPT:
             return _type_from_subscripted_value(value.root, value.members, ctx)

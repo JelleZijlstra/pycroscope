@@ -15177,20 +15177,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return root_info.class_key.qualname.rsplit(".", 1)[-1]
         return None
 
-    def _is_non_instantiable_union_runtime_value(self, value: Value) -> bool:
-        if (
-            isinstance(value, PartialValue)
-            and value.operation is PartialValueOperation.PEP_613_ALIAS
-        ):
-            return False
-        value = replace_fallback(value)
-        if not isinstance(value, KnownValue):
-            return False
-        if value.val is typing.Union:
-            return True
-        origin = get_origin(value.val)
-        return origin is typing.Union or origin is types.UnionType
-
     def _check_call_no_mvv(
         self,
         node: ast.AST | None,
@@ -15232,15 +15218,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_error_if_checking(
                     node,
                     f"Cannot instantiate abstract class {callee_wrapped.name}",
-                    error_code=ErrorCode.incompatible_call,
-                )
-            return AnyValue(AnySource.error)
-
-        if self._is_non_instantiable_union_runtime_value(callee_wrapped):
-            if node is not None:
-                self._show_error_if_checking(
-                    node,
-                    "Cannot instantiate union",
                     error_code=ErrorCode.incompatible_call,
                 )
             return AnyValue(AnySource.error)

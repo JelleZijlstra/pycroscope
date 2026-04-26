@@ -3506,6 +3506,37 @@ class TypeFormValue(Value):
 
 
 @dataclass(frozen=True)
+class SyntheticTypeFormValue(Value):
+    """Represents an object that can be used in annotations,
+    but for which we do not have a runtime object."""
+
+    inner_type: Value
+    runtime_type: Value
+    node: ast.AST
+
+    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+        return SyntheticTypeFormValue(
+            self.inner_type.substitute_typevars(typevars),
+            self.runtime_type.substitute_typevars(typevars),
+            self.node,
+        )
+
+    def walk_values(self) -> Iterable[Value]:
+        yield self
+        yield from self.inner_type.walk_values()
+        yield from self.runtime_type.walk_values()
+
+    def get_fallback_value(self) -> Value:
+        return self.runtime_type
+
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
+        return self.get_fallback_value().get_type_value(ctx)
+
+    def __str__(self) -> builtins.str:
+        return f"TypeForm[{self.inner_type}] (synthetic from {self.runtime_type})"
+
+
+@dataclass(frozen=True)
 class AddPredicateExtension(Extension):
     """An :class:`Extension` used in a function return type. Used to
     indicate that the function argument named `varname` should receive
@@ -3940,6 +3971,7 @@ GradualType: typing_extensions.TypeAlias = (
     | AnnotatedValue
     | PartialValue
     | PartialCallValue
+    | SyntheticTypeFormValue
     | SuperValue
 )
 

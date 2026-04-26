@@ -48,6 +48,7 @@ from .value import (
     SuperValue,
     SyntheticClassObjectValue,
     SyntheticModuleValue,
+    SyntheticTypeFormValue,
     TypeAliasValue,
     TypedDictValue,
     TypedValue,
@@ -262,6 +263,8 @@ def _get_attribute_from_value(
             return UNINITIALIZED_VALUE, None
         case PredicateValue() | TypeFormValue():
             return _get_attribute_from_value(TypedValue(object), ctx)
+        case SyntheticTypeFormValue(runtime_type=runtime_type):
+            return _get_attribute_from_value(gradualize(runtime_type), ctx)
         case TypeVarValue():
             if (
                 root_value.typevar_param.bound is not None

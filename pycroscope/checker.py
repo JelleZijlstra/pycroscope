@@ -2103,7 +2103,11 @@ class Checker:
                             return bound.substitute_typevars(value.typevars)
             origin = safe_getattr(value.val, "__origin__", None)
             args = safe_getattr(value.val, "__args__", None)
-            if isinstance(origin, type) and isinstance(args, tuple):
+            if (
+                isinstance(origin, type)
+                and isinstance(args, tuple)
+                and origin is not types.UnionType
+            ):
                 origin_argspec = self.signature_from_value(
                     KnownValue(origin),
                     get_return_override=get_return_override,
