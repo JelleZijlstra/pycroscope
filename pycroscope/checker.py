@@ -2066,15 +2066,7 @@ class Checker:
             )
             if sig is not None:
                 return sig
-            if value.operation in (
-                PartialValueOperation.PEP_613_ALIAS,
-                PartialValueOperation.PEP_695_ALIAS,
-            ):
-                if (
-                    value.operation is PartialValueOperation.PEP_613_ALIAS
-                    and _runtime_value_is_union(value.runtime_value)
-                ):
-                    return None
+            if value.operation is PartialValueOperation.PEP_695_ALIAS:
                 return self.signature_from_value(
                     value.runtime_value,
                     get_return_override=get_return_override,

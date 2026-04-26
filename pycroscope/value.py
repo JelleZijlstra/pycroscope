@@ -939,7 +939,6 @@ class PartialValueOperation(enum.Enum):
     SUBSCRIPT = 1
     UNPACK = 2
     BITOR = 3
-    PEP_613_ALIAS = 4
     PEP_695_ALIAS = 5
 
 
@@ -963,8 +962,6 @@ class PartialValue(Value):
             case PartialValueOperation.BITOR:
                 members = " | ".join(str(member) for member in self.members)
                 return f"{self.runtime_value} (partial from {self.root} | {members})"
-            case PartialValueOperation.PEP_613_ALIAS:
-                return f"{self.runtime_value} (PEP 613 alias for {self.root})"
             case PartialValueOperation.PEP_695_ALIAS:
                 return f"{self.runtime_value} (PEP 695 alias for {self.root})"
             case _:
@@ -1000,17 +997,10 @@ class PartialValue(Value):
         yield from self.runtime_value.walk_values()
 
 
-def is_type_alias_partial_operation(operation: PartialValueOperation) -> bool:
-    return operation in (
-        PartialValueOperation.PEP_613_ALIAS,
-        PartialValueOperation.PEP_695_ALIAS,
-    )
-
-
 def get_type_alias_root(value: Value) -> "TypeAliasValue | None":
     if (
         isinstance(value, PartialValue)
-        and is_type_alias_partial_operation(value.operation)
+        and value.operation is PartialValueOperation.PEP_695_ALIAS
         and isinstance(value.root, TypeAliasValue)
     ):
         return value.root

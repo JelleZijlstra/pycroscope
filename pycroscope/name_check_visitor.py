@@ -330,7 +330,6 @@ from .value import (
     get_typevar_variance,
     is_async_iterable,
     is_iterable,
-    is_type_alias_partial_operation,
     is_union,
     iter_type_params_in_value,
     kv_pairs_from_mapping,
@@ -2721,7 +2720,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                                 value
                                 if (
                                     isinstance(value, PartialValue)
-                                    and is_type_alias_partial_operation(value.operation)
+                                    and value.operation
+                                    is PartialValueOperation.PEP_695_ALIAS
                                 )
                                 or isinstance(value, SyntheticTypeFormValue)
                                 else declared_type
@@ -3785,7 +3785,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 declared_type = defining_scope.get_declared_type(node.id)
                 if isinstance(declared_type, TypeAliasValue) and not (
                     isinstance(value, PartialValue)
-                    and is_type_alias_partial_operation(value.operation)
+                    and value.operation is PartialValueOperation.PEP_695_ALIAS
                 ):
                     value = declared_type
         if value is UNINITIALIZED_VALUE:
@@ -13241,7 +13241,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         return _specialize_type_alias_partial(
                             runtime_type_alias, members, annotation_ctx, node=node
                         )
-                    elif isinstance(runtime_type_alias, SyntheticTypeFormValue):
+                    elif isinstance(
+                        runtime_type_alias, SyntheticTypeFormValue
+                    ) and isinstance(runtime_type_alias.inner_type, TypeAliasValue):
                         return _specialize_type_alias_value(
                             runtime_type_alias.inner_type,
                             members,

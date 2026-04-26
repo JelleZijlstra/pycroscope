@@ -163,7 +163,6 @@ from .value import (
     get_single_typevartuple_param,
     get_type_alias_root,
     get_typevar_variance,
-    is_type_alias_partial_operation,
     iter_type_params_in_value,
     match_typevar_arguments,
     replace_fallback,
@@ -1991,9 +1990,6 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
             return _type_from_subscripted_value(value.root, value.members, ctx)
         if value.operation is PartialValueOperation.BITOR:
             return _type_from_bitor_value(value.root, value.members, ctx)
-        if value.operation is PartialValueOperation.PEP_613_ALIAS:
-            assert isinstance(value.root, TypeAliasValue)
-            return value.root.get_value()
         if value.operation is PartialValueOperation.PEP_695_ALIAS:
             assert isinstance(value.root, TypeAliasValue)
             return value.root
@@ -2119,13 +2115,11 @@ def _annotation_expr_from_subscripted_value(
 def _type_from_subscripted_value(
     root: Value, members: Sequence[Value], ctx: Context
 ) -> Value:
-    print("TSV", root, members)
-    if isinstance(root, PartialValue) and is_type_alias_partial_operation(
-        root.operation
+    if (
+        isinstance(root, PartialValue)
+        and root.operation is PartialValueOperation.PEP_695_ALIAS
     ):
         specialized = _specialize_type_alias_partial(root, members, ctx)
-        if root.operation is PartialValueOperation.PEP_613_ALIAS:
-            return specialized.runtime_value
         return specialized.root
 
     if isinstance(root, SyntheticTypeFormValue) and isinstance(
@@ -2584,16 +2578,13 @@ def _specialize_type_alias_partial(
     *,
     node: ast.AST | None = None,
 ) -> PartialValue:
-    assert is_type_alias_partial_operation(root.operation)
+    assert root.operation is PartialValueOperation.PEP_695_ALIAS
     alias_root = get_type_alias_root(root)
     assert alias_root is not None
     specialized_root = _specialize_type_alias_value(alias_root, members, ctx, node=node)
-    runtime_value = (
-        specialized_root.get_value()
-        if root.operation is PartialValueOperation.PEP_613_ALIAS
-        else root.runtime_value
+    return PartialValue(
+        root.operation, specialized_root, root.node, (), root.runtime_value
     )
-    return PartialValue(root.operation, specialized_root, root.node, (), runtime_value)
 
 
 def _specialize_type_alias_value(
