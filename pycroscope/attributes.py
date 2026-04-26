@@ -35,7 +35,6 @@ from .value import (
     GradualType,
     IntersectionValue,
     KnownValue,
-    KnownValueWithTypeVars,
     MultiValuedValue,
     NewTypeValue,
     OverlappingValue,
@@ -557,8 +556,6 @@ def _get_attribute_from_known_inner(
         on_class = False
     policy = ctx.get_type_object_attribute_policy(on_class=on_class, receiver=value)
     type_object_attr = tobj.get_attribute(ctx.attr, policy)
-    if isinstance(value, KnownValueWithTypeVars) and type_object_attr is not None:
-        return type_object_attr.value, type_object_attr.error
 
     # Even if there's no runtime attribute, we believe the annotation if there is one.
     if runtime_value is None:
