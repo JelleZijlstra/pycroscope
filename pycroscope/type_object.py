@@ -21,15 +21,12 @@ from collections.abc import (
 )
 from dataclasses import dataclass, replace
 from types import FunctionType
-from typing import TYPE_CHECKING, Literal, get_origin
+from typing import Literal, get_origin
 from unittest import mock
 
 from typing_extensions import assert_never
 
 import pycroscope
-
-if TYPE_CHECKING:
-    from .relations import Relation
 
 from .annotations import (
     RuntimeAnnotationsContext,
@@ -40,6 +37,8 @@ from .annotations import (
 from .input_sig import AnySig, FullSignature, InputSigValue
 from .options import PyObjectSequenceOption
 from .relations import (
+    Relation,
+    has_relation,
     infer_positional_generic_typevar_map,
     translate_generic_typevar_map,
 )
@@ -54,6 +53,7 @@ from .safe import (
     safe_issubclass,
 )
 from .signature import (
+    ANY_SIGNATURE,
     BoundMethodSignature,
     CallContext,
     Impl,
@@ -1759,8 +1759,7 @@ class TypeObject:
     def _is_compatible_with_protocol(
         self, self_val: Value, other_val: Value, ctx: CanAssignContext
     ) -> CanAssign:
-        from .relations import Relation, has_relation
-
+        """This type object is a protocol. Is other_val compatible with it?"""
         other_basic = replace_fallback(other_val)
         assert isinstance(
             other_basic, (KnownValue, TypedValue, SubclassValue)
@@ -4439,3 +4438,143 @@ def _add_synthetic_declared_symbols(
 ) -> None:
     for name, symbol in declared_symbols.items():
         symbols[name] = merge_declared_symbol(symbols.get(name), symbol)
+
+
+def is_compatible_attribute(
+    attr_name: str,
+    base_attr: TypeObjectAttribute,
+    child_attr: TypeObjectAttribute,
+    relation: Relation,
+    ctx: CanAssignContext,
+) -> CanAssign:
+    if child_attr.symbol.is_classvar and base_attr.symbol.is_instance_only:
+        return CanAssignError(
+            f"{attr_name} is an instance variable on base class {base_attr.owner}, "
+            f"but a class variable on child class {child_attr.owner}"
+        )
+    if base_attr.symbol.is_classvar and child_attr.symbol.is_instance_only:
+        return CanAssignError(
+            f"{attr_name} is a class variable on base class {base_attr.owner}, "
+            f"but an instance variable on child class {child_attr.owner}"
+        )
+
+    can_assign = _can_assign_to_base(base_attr, child_attr, relation, ctx)
+    if isinstance(can_assign, CanAssignError):
+        return CanAssignError(
+            children=[
+                CanAssignError(f"Base class: {ctx.display_value(base_attr.value)}"),
+                CanAssignError(f"Child class: {ctx.display_value(child_attr.value)}"),
+                can_assign,
+            ]
+        )
+    return can_assign
+
+
+def _extract_settable_type(setter: Value, ctx: CanAssignContext) -> Value:
+    sig = ctx.signature_from_value(setter)
+    if not isinstance(sig, Signature):
+        return AnyValue(AnySource.inference)
+    params = list(sig.parameters.values())
+    if (
+        len(params) >= 2
+        and params[0].kind
+        in (ParameterKind.POSITIONAL_ONLY, ParameterKind.POSITIONAL_OR_KEYWORD)
+        and params[1].kind
+        in (ParameterKind.POSITIONAL_ONLY, ParameterKind.POSITIONAL_OR_KEYWORD)
+    ):
+        return params[1].annotation
+    return AnyValue(AnySource.inference)
+
+
+def _can_assign_to_base(
+    base_attr: TypeObjectAttribute,
+    child_attr: TypeObjectAttribute,
+    relation: Relation,
+    ctx: CanAssignContext,
+) -> CanAssign:
+    # TODO: This is still a bit ad hoc. I think the right way to do it would be to
+    # check all three operations: get, set, and delete. For each of them, what's
+    # allowed on the base should be allowed on the child. Though we'll still need
+    # some mild special casing of callables so pycroscope sees different functions as
+    # compatible.
+    if base_attr.symbol.property_info is not None:
+        if (
+            base_attr.symbol.property_info.fset is not None
+            and base_attr.symbol.property_info.fset.initializer is not None
+        ):
+            if child_attr.symbol.property_info is not None:
+                if (
+                    child_attr.symbol.property_info.fset is None
+                    or child_attr.symbol.property_info.fset.initializer is None
+                ):
+                    return CanAssignError(
+                        "Property is settable on base class but not on child class"
+                    )
+                child_settable = _extract_settable_type(
+                    child_attr.symbol.property_info.fset.initializer, ctx=ctx
+                )
+            else:
+                if (
+                    child_attr.symbol.annotation is not None
+                    and not child_attr.symbol.is_classvar
+                    and not child_attr.symbol.is_readonly
+                ):
+                    child_settable = child_attr.symbol.annotation
+                else:
+                    # TODO: We could allow overriding a property with a settable bare attribute
+                    return CanAssignError(
+                        "Property is settable on base class but not on child class"
+                    )
+            base_settable = _extract_settable_type(
+                base_attr.symbol.property_info.fset.initializer, ctx=ctx
+            )
+            # Reversed because this is a contravariant position
+            setter_can_assign = has_relation(
+                child_settable, base_settable, relation, ctx
+            )
+            if isinstance(setter_can_assign, CanAssignError):
+                return CanAssignError(
+                    f"Setter {child_settable} for property is incompatible "
+                    f"with base class setter {base_settable}",
+                    children=[setter_can_assign],
+                )
+
+        if base_attr.symbol.property_info.fdel is not None and not (
+            child_attr.symbol.property_info is not None
+            and child_attr.symbol.property_info.fdel is not None
+        ):
+            return CanAssignError(
+                "Property is deletable on base class but not on child class"
+            )
+
+    if isinstance(base_attr.value, KnownValue):
+        if callable(base_attr.value.val):
+            callable_result = can_assign_to_base_callable(
+                base_attr.value, child_attr.value, ctx
+            )
+            if callable_result is None:
+                return {}
+            return callable_result
+    if isinstance(base_attr.value, CallableValue):
+        callable_result = can_assign_to_base_callable(
+            base_attr.value, child_attr.value, ctx
+        )
+        if callable_result is not None:
+            return callable_result
+    return has_relation(base_attr.value, child_attr.value, relation, ctx)
+
+
+def can_assign_to_base_callable(
+    base_value: Value, child_value: Value, ctx: CanAssignContext
+) -> CanAssign | None:
+    base_sig = ctx.signature_from_value(base_value)
+    if base_sig is ANY_SIGNATURE:
+        return None
+    if not isinstance(base_sig, (Signature, OverloadedSignature)):
+        return None
+    child_sig = ctx.signature_from_value(child_value)
+    if child_sig is ANY_SIGNATURE:
+        return None
+    if not isinstance(child_sig, (Signature, OverloadedSignature)):
+        return CanAssignError(f"{child_value} is not callable")
+    return base_sig.can_assign(child_sig, ctx)
