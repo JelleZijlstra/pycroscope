@@ -31,7 +31,12 @@ import pycroscope
 if TYPE_CHECKING:
     from .relations import Relation
 
-from .annotations import RuntimeAnnotationsContext, type_from_runtime, type_from_value
+from .annotations import (
+    RuntimeAnnotationsContext,
+    make_type_param,
+    type_from_runtime,
+    type_from_value,
+)
 from .input_sig import AnySig, FullSignature, InputSigValue
 from .options import PyObjectSequenceOption
 from .relations import (
@@ -4155,7 +4160,26 @@ def _extract_type_param(value: Value) -> TypeParam | None:
 def _compute_type_params_from_runtime(
     typ: type, checker: "pycroscope.checker.Checker"
 ) -> list[TypeParam]:
-    return checker.arg_spec_cache.get_type_parameters(typ)
+    runtime_type_params = safe_getattr(typ, "__type_params__", ())
+    if not runtime_type_params:
+        runtime_type_params = safe_getattr(typ, "__parameters__", ())
+    try:
+        runtime_type_params_iter = iter(runtime_type_params)
+    except TypeError:
+        return []
+    type_params: list[TypeParam] = []
+    for type_param in runtime_type_params_iter:
+        try:
+            assert checker._arg_spec_cache is not None
+            type_params.append(
+                make_type_param(
+                    type_param, ctx=pycroscope.arg_spec.AnnotationsContext(self_key=typ)
+                )
+            )
+        except TypeError:
+            continue
+    return type_params
+    # return checker.arg_spec_cache.get_type_parameters(typ)
 
 
 def _replace_invalid_bases(bases: Sequence[Value]) -> Iterable[MroValue]:
