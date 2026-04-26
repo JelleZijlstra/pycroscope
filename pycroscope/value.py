@@ -1014,6 +1014,10 @@ def get_type_alias_root(value: Value) -> "TypeAliasValue | None":
         and isinstance(value.root, TypeAliasValue)
     ):
         return value.root
+    if isinstance(value, SyntheticTypeFormValue) and isinstance(
+        value.inner_type, TypeAliasValue
+    ):
+        return value.inner_type
     if isinstance(value, TypeAliasValue):
         return value
     return None

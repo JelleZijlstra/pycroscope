@@ -297,6 +297,7 @@ from .value import (
     SubclassValue,
     SyntheticClassObjectValue,
     SyntheticModuleValue,
+    SyntheticTypeFormValue,
     SysPlatformExtension,
     SysVersionInfoExtension,
     TypeAlias,
@@ -2722,6 +2723,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                                     isinstance(value, PartialValue)
                                     and is_type_alias_partial_operation(value.operation)
                                 )
+                                or isinstance(value, SyntheticTypeFormValue)
                                 else declared_type
                             )
                             current_scope.variables[varname] = stored_value
@@ -11749,7 +11751,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        explicit_type_alias_assignment_value: PartialValue | None = None
+        explicit_type_alias_assignment_value = None
         local_type_param_polarities: dict[object, set[int]] | None = None
         class_type_param_polarities = (
             self.active_type_params.current_class_type_param_polarities()
@@ -11907,12 +11909,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         alias_evaluator, lambda type_params=type_params: type_params
                     ),
                 )
-                explicit_type_alias_assignment_value = PartialValue(
-                    PartialValueOperation.PEP_613_ALIAS,
-                    alias_root,
-                    node.value,
-                    (),
-                    _runtime_value_for_pep613_alias(alias_root),
+                explicit_type_alias_assignment_value = SyntheticTypeFormValue(
+                    inner_type=alias_root,
+                    runtime_type=AnyValue(
+                        AnySource.inference
+                    ),  # will be replaced later
+                    node=node,
                 )
             # `TypeAlias` marks this assignment as an alias declaration, not a
             # variable declaration of the marker type itself.
@@ -12050,7 +12052,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         if node.value is not None:
             if explicit_type_alias_assignment_value is not None:
-                runtime_value = explicit_type_alias_assignment_value.runtime_value
+                runtime_value = explicit_type_alias_assignment_value.runtime_type
                 with (
                     self.catch_errors(),
                     override(self, "in_type_alias_definition", True),
@@ -12059,7 +12061,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if evaluated_runtime_value != AnyValue(AnySource.error):
                     runtime_value = evaluated_runtime_value
                 explicit_type_alias_assignment_value = dataclass_replace(
-                    explicit_type_alias_assignment_value, runtime_value=runtime_value
+                    explicit_type_alias_assignment_value, runtime_type=runtime_value
                 )
                 is_yield = False
                 value = explicit_type_alias_assignment_value
@@ -12199,7 +12201,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         ann_assign_declared_type = expected_type
         if explicit_type_alias_assignment_value is not None:
-            ann_assign_declared_type = explicit_type_alias_assignment_value.root
+            ann_assign_declared_type = explicit_type_alias_assignment_value.runtime_type
         if self.scopes.scope_type() == ScopeType.class_scope and isinstance(
             node.target, ast.Name
         ):
@@ -13239,6 +13241,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         return _specialize_type_alias_partial(
                             runtime_type_alias, members, annotation_ctx, node=node
                         )
+                    elif isinstance(runtime_type_alias, SyntheticTypeFormValue):
+                        return _specialize_type_alias_value(
+                            runtime_type_alias.inner_type,
+                            members,
+                            annotation_ctx,
+                            node=node,
+                        )
                     assert isinstance(runtime_type_alias, TypeAliasValue)
                     return _specialize_type_alias_value(
                         runtime_type_alias, members, annotation_ctx, node=node
@@ -13617,7 +13626,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # behavior in value position. Ordinary values annotated with an alias type
         # should behave like their underlying runtime values.
         if _is_type_alias_specialization_symbol_composite(root_composite):
-            assert isinstance(root_composite.value, (PartialValue, TypeAliasValue))
             return root_composite.value
         return None
 

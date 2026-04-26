@@ -505,6 +505,14 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         _x3 = ListOrSetAlias()  # E: not_callable
 
     @assert_passes(allow_import_failures=True)
+    def test_cannot_specialize_parameterless_alias(self):
+        from typing import TypeAlias
+
+        TA: TypeAlias = list
+        x: TA[int] = []  # E: invalid_specialization
+        print(x)
+
+    @assert_passes(allow_import_failures=True)
     def test_implicit_tuple_alias_specialization_after_runtime_load_failure(self):
         from typing import TypeVar
 

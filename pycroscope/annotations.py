@@ -2119,6 +2119,7 @@ def _annotation_expr_from_subscripted_value(
 def _type_from_subscripted_value(
     root: Value, members: Sequence[Value], ctx: Context
 ) -> Value:
+    print("TSV", root, members)
     if isinstance(root, PartialValue) and is_type_alias_partial_operation(
         root.operation
     ):
@@ -2126,6 +2127,11 @@ def _type_from_subscripted_value(
         if root.operation is PartialValueOperation.PEP_613_ALIAS:
             return specialized.runtime_value
         return specialized.root
+
+    if isinstance(root, SyntheticTypeFormValue) and isinstance(
+        root.inner_type, TypeAliasValue
+    ):
+        return _specialize_type_alias_value(root.inner_type, members, ctx)
 
     if isinstance(root, AnnotatedValue):
         self_owner = next(root.get_metadata_of_type(SelfOwnerExtension), None)

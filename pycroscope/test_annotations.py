@@ -2484,7 +2484,7 @@ class TestTypeAlias(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_explicit_type_alias_generics_and_paramspec(self):
-        from typing import Callable, Concatenate, ParamSpec, TypeAlias, TypeVar
+        from typing import Any, Callable, Concatenate, ParamSpec, TypeAlias, TypeVar
 
         from typing_extensions import assert_type
 
@@ -2493,15 +2493,16 @@ class TestTypeAlias(TestNameCheckVisitorBase):
         T = TypeVar("T")
 
         ListAlias: TypeAlias = list
-        GenericAlias: TypeAlias = list[T]
+        GenericListAlias: TypeAlias = list[T]
         CallableAlias: TypeAlias = Callable[P, None]
         ConcatenateAlias: TypeAlias = Callable[Concatenate[int, P], R]
 
         def capybara(value: CallableAlias) -> None:
             assert_type(value, Callable[..., None])
+            assert_type(val2, list[Any])
 
         try:
-            _bad1: GenericAlias[int, int]  # E: invalid_specialization
+            _bad1: GenericListAlias[int, int]  # E: invalid_specialization
             _bad2: ConcatenateAlias[int, int]  # E: invalid_annotation
             _bad3: ListAlias[int]  # E: invalid_specialization
         except TypeError:

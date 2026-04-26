@@ -516,6 +516,21 @@ def _has_relation(
         right_inner = gradualize(right.get_fallback_value())
         return _has_relation(left, right_inner, relation, ctx, original_right=right)
 
+    # SyntheticTypeFormValue
+    if isinstance(left, SyntheticTypeFormValue):
+        if left == right:
+            return {}
+        else:
+            return CanAssignError(f"{right} is not {relation.description} {left}")
+    if isinstance(right, SyntheticTypeFormValue):
+        return _has_relation(
+            left,
+            gradualize(right.get_fallback_value()),
+            relation,
+            ctx,
+            original_right=right,
+        )
+
     # OverlappingValue
     if isinstance(left, OverlappingValue):
         if relation is Relation.ASSIGNABLE:
