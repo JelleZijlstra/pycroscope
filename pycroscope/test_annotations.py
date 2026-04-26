@@ -2497,7 +2497,7 @@ class TestTypeAlias(TestNameCheckVisitorBase):
         CallableAlias: TypeAlias = Callable[P, None]
         ConcatenateAlias: TypeAlias = Callable[Concatenate[int, P], R]
 
-        def capybara(value: CallableAlias) -> None:
+        def capybara(value: CallableAlias, val2: GenericListAlias) -> None:
             assert_type(value, Callable[..., None])
             assert_type(val2, list[Any])
 

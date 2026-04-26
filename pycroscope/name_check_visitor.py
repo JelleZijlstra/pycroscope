@@ -12201,7 +12201,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         ann_assign_declared_type = expected_type
         if explicit_type_alias_assignment_value is not None:
-            ann_assign_declared_type = explicit_type_alias_assignment_value.runtime_type
+            ann_assign_declared_type = explicit_type_alias_assignment_value.inner_type
         if self.scopes.scope_type() == ScopeType.class_scope and isinstance(
             node.target, ast.Name
         ):
