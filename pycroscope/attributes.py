@@ -610,11 +610,7 @@ def _get_attribute_from_known_inner(
         # Self for importable classes. TypeObject.get_attribute() handles many
         # Self-sensitive cases above, but not all runtime MRO fallbacks.
         if safe_isinstance(obj, type):
-            context_self_value = ctx.get_self_value()
-            if isinstance(context_self_value, KnownValueWithTypeVars):
-                self_value = context_self_value
-            else:
-                self_value = TypedValue(obj)
+            self_value = TypedValue(obj)
         else:
             self_value = ctx.get_self_value()
         runtime_value = set_self(runtime_value, self_value, type_object_attr.owner.typ)
