@@ -1706,7 +1706,9 @@ class TypeObject:
             if ctx.can_assume_compatibility(self, other):
                 return {}
             with ctx.assume_compatibility(self, other):
-                result = self._is_compatible_with_protocol(self_val, other_val, ctx)
+                result = self._is_compatible_with_protocol_v2(
+                    self_val, other_basic, relation, ctx
+                )
                 if (
                     isinstance(result, CanAssignError)
                     and other.is_thrift_enum()
@@ -1755,6 +1757,101 @@ class TypeObject:
                 f"Cannot assign protocol {other_val} to non-protocol {self}"
             )
         return expected_sig.can_assign(actual_sig, ctx)
+
+    def _is_compatible_with_protocol_v2(
+        self,
+        self_val: Value,
+        other_val: KnownValue | TypedValue | SubclassValue,
+        relation: Relation,
+        ctx: CanAssignContext,
+    ) -> CanAssign:
+        """This type object is a protocol. Is other_val compatible with it?"""
+        other_type_obj, is_class = self._get_tobj_for_protocol_rhs(other_val, ctx)
+        assert other_type_obj is not None, other_val
+        protocol_members = self.get_protocol_members()
+        bounds_maps = []
+        visitor = (
+            ctx
+            if isinstance(ctx, pycroscope.name_check_visitor.NameCheckVisitor)
+            else None
+        )
+        self_policy = AttributePolicy(
+            receiver=self_val,
+            prefer_symbolic=True,
+            self_value=other_val,
+            visitor=visitor,
+        )
+        other_policy = AttributePolicy(
+            receiver=self_val,
+            prefer_symbolic=True,
+            self_value=other_val,
+            on_class=is_class,
+            visitor=visitor,
+        )
+        for member in protocol_members:
+            expected_attr = self.get_attribute(member, self_policy)
+            actual_attr = other_type_obj.get_attribute(member, other_policy)
+            if actual_attr is None:
+                direct_attribute = ctx.get_attribute_from_value(other_val, member)
+                if direct_attribute is not UNINITIALIZED_VALUE:
+                    actual_attr = TypeObjectAttribute(
+                        name=member,
+                        value=direct_attribute,
+                        declared_value=direct_attribute,
+                        raw_value=direct_attribute,
+                        symbol=ClassSymbol(initializer=direct_attribute),
+                        runtime_symbol=None,
+                        typeshed_symbol=None,
+                        owner=other_type_obj,
+                        is_property=False,
+                        property_has_setter=False,
+                        is_metaclass_owner=False,
+                    )
+                else:
+                    return CanAssignError(
+                        f"Protocol {self} requires member {member}, "
+                        f"but {other_val} does not have it"
+                    )
+            if expected_attr is None:
+                # In static fallback mode, synthetic protocol members may not have
+                # a retrievable attribute type. Keep enforcing member presence.
+                continue
+            bounds_map = is_compatible_attribute(
+                member, expected_attr, actual_attr, relation, ctx
+            )
+            if isinstance(bounds_map, CanAssignError):
+                return CanAssignError(
+                    f"Member {member!r} of protocol {self} is incompatible with {other_val}",
+                    children=[bounds_map],
+                )
+            bounds_maps.append(bounds_map)
+        bounds_map = unify_bounds_maps(bounds_maps)
+        # Protocol members can introduce shared type-variable constraints; reject
+        # matches where those constraints cannot be solved consistently.
+        from .typevar import resolve_bounds_map
+
+        _, errors = resolve_bounds_map(bounds_map, ctx)
+        if errors:
+            return CanAssignError(
+                "Conflicting type constraints for protocol members", list(errors)
+            )
+        return bounds_map
+
+    def _get_tobj_for_protocol_rhs(
+        self, other_val: Value, ctx: CanAssignContext
+    ) -> tuple[TypeObject | None, bool]:
+        match other_val:
+            case KnownValue(val=type() as val):
+                return ctx.make_type_object(val), True
+            case KnownValue(val):
+                return ctx.make_type_object(type(val)), False
+            case TypedValue():
+                return other_val.get_type_object(ctx), False
+            case SubclassValue(typ=TypedValue() as typ):
+                return typ.get_type_object(ctx), True
+            case SubclassValue():
+                # Maybe ignore this for now?
+                return tuple[None, True]
 
     def _is_compatible_with_protocol(
         self, self_val: Value, other_val: Value, ctx: CanAssignContext
