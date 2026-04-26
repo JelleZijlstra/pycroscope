@@ -164,7 +164,6 @@ from .value import (
     bound_self_type_from_class_key,
     class_owner_from_key,
     get_single_typevartuple_param,
-    get_type_alias_root,
     get_typevar_variance,
     iter_type_params_in_value,
     match_typevar_arguments,
@@ -2330,9 +2329,6 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
             return _type_from_subscripted_value(value.root, value.members, ctx)
         if value.operation is PartialValueOperation.BITOR:
             return _type_from_bitor_value(value.root, value.members, ctx)
-        if value.operation is PartialValueOperation.PEP_695_ALIAS:
-            assert isinstance(value.root, TypeAliasValue)
-            return value.root
         return value.get_fallback_value()
     elif isinstance(value, PartialCallValue):
         type_param = make_type_param_from_value(value, ctx=ctx)
@@ -2458,13 +2454,6 @@ def _annotation_expr_from_subscripted_value(
 def _type_from_subscripted_value(
     root: Value, members: Sequence[Value], ctx: Context
 ) -> Value:
-    if (
-        isinstance(root, PartialValue)
-        and root.operation is PartialValueOperation.PEP_695_ALIAS
-    ):
-        specialized = _specialize_type_alias_partial(root, members, ctx)
-        return specialized.root
-
     if isinstance(root, SyntheticTypeFormValue) and isinstance(
         root.inner_type, TypeAliasValue
     ):
@@ -2924,22 +2913,6 @@ def _type_from_subscripted_value(
             return GenericValue(origin, typed_members)
         ctx.show_error(f"Unrecognized subscripted annotation: {root}")
         return AnyValue(AnySource.error)
-
-
-def _specialize_type_alias_partial(
-    root: PartialValue,
-    members: Sequence[Value],
-    ctx: Context,
-    *,
-    node: ast.AST | None = None,
-) -> PartialValue:
-    assert root.operation is PartialValueOperation.PEP_695_ALIAS
-    alias_root = get_type_alias_root(root)
-    assert alias_root is not None
-    specialized_root = _specialize_type_alias_value(alias_root, members, ctx, node=node)
-    return PartialValue(
-        root.operation, specialized_root, root.node, (), root.runtime_value
-    )
 
 
 def _specialize_type_alias_value(

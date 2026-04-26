@@ -2068,12 +2068,6 @@ class Checker:
             )
             if sig is not None:
                 return sig
-            if value.operation is PartialValueOperation.PEP_695_ALIAS:
-                return self.signature_from_value(
-                    value.runtime_value,
-                    get_return_override=get_return_override,
-                    get_call_attribute=get_call_attribute,
-                )
         value = replace_fallback(value)
         if isinstance(value, KnownValue):
             if (
