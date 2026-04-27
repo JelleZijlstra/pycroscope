@@ -1756,7 +1756,10 @@ class KnownValue(Value):
         elif isinstance(self.val, type):
             return f"type {get_fully_qualified_name(self.val)!r}"
         else:
-            return f"Literal[{self.val!r}]"
+            try:
+                return f"Literal[{self.val!r}]"
+            except Exception:
+                return "Literal[<unprintable>]"
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "KnownValue":
         if not typevars or not (

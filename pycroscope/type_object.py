@@ -265,6 +265,16 @@ class AttributePolicy:
             return self.get_receiver_instance(ctx)
 
 
+def instance_type_to_class_type(value: Value) -> Value:
+    match value:
+        case TypedValue():
+            return SubclassValue(value)
+        case KnownValue(val=val):
+            return SubclassValue(TypedValue(type(val)))
+        case _:
+            return AnyValue(AnySource.inference)
+
+
 def class_type_to_instance_type(value: Value, ctx: CanAssignContext) -> Value:
     match value:
         case SyntheticClassObjectValue():
@@ -1782,7 +1792,7 @@ class TypeObject:
             visitor=visitor,
         )
         other_policy = AttributePolicy(
-            receiver=self_val,
+            receiver=other_val,
             prefer_symbolic=True,
             self_value=other_val,
             on_class=is_class,
@@ -1790,32 +1800,54 @@ class TypeObject:
         )
         for member in protocol_members:
             expected_attr = self.get_attribute(member, self_policy)
-            actual_attr = other_type_obj.get_attribute(member, other_policy)
-            if actual_attr is None:
-                direct_attribute = ctx.get_attribute_from_value(other_val, member)
-                if direct_attribute is not UNINITIALIZED_VALUE:
-                    actual_attr = TypeObjectAttribute(
-                        name=member,
-                        value=direct_attribute,
-                        declared_value=direct_attribute,
-                        raw_value=direct_attribute,
-                        symbol=ClassSymbol(initializer=direct_attribute),
-                        runtime_symbol=None,
-                        typeshed_symbol=None,
-                        owner=other_type_obj,
-                        is_property=False,
-                        property_has_setter=False,
-                        is_metaclass_owner=False,
-                    )
-                else:
+            print("EXTECPED", member, expected_attr, self_policy)
+            if member == "__call__":
+                actual_sig = ctx.signature_from_value(other_val)
+                if actual_sig is None:
                     return CanAssignError(
-                        f"Protocol {self} requires member {member}, "
-                        f"but {other_val} does not have it"
+                        f"Protocol {self} requires __call__, but {other_val} is not callable"
                     )
+                actual_attr = TypeObjectAttribute(
+                    name=member,
+                    value=CallableValue(actual_sig),
+                    declared_value=CallableValue(actual_sig),
+                    raw_value=CallableValue(actual_sig),
+                    symbol=ClassSymbol(initializer=CallableValue(actual_sig)),
+                    runtime_symbol=ClassSymbol(initializer=CallableValue(actual_sig)),
+                    typeshed_symbol=None,
+                    owner=other_type_obj,
+                    is_property=False,
+                    property_has_setter=False,
+                    is_metaclass_owner=False,
+                )
+            else:
+                actual_attr = other_type_obj.get_attribute(member, other_policy)
+                if actual_attr is None:
+                    direct_attribute = ctx.get_attribute_from_value(other_val, member)
+                    if direct_attribute is not UNINITIALIZED_VALUE:
+                        actual_attr = TypeObjectAttribute(
+                            name=member,
+                            value=direct_attribute,
+                            declared_value=direct_attribute,
+                            raw_value=direct_attribute,
+                            symbol=ClassSymbol(initializer=direct_attribute),
+                            runtime_symbol=None,
+                            typeshed_symbol=None,
+                            owner=other_type_obj,
+                            is_property=False,
+                            property_has_setter=False,
+                            is_metaclass_owner=False,
+                        )
+                    else:
+                        return CanAssignError(
+                            f"Protocol {self} requires member {member}, "
+                            f"but {other_val} does not have it"
+                        )
             if expected_attr is None:
                 # In static fallback mode, synthetic protocol members may not have
                 # a retrievable attribute type. Keep enforcing member presence.
                 continue
+            print("COMPARE", member, expected_attr.value, actual_attr.value)
             bounds_map = is_compatible_attribute(
                 member, expected_attr, actual_attr, relation, ctx
             )
@@ -2876,6 +2908,7 @@ def _bind_attribute_signature(
     if self_annotation_value is None:
         self_annotation_value = receiver_value
     signature = ctx.signature_from_value(value)
+    print("BIND SIG", value, signature)
     if isinstance(signature, BoundMethodSignature):
         bound = signature.get_signature(
             ctx=ctx, self_annotation_value=self_annotation_value, preserve_impl=True
@@ -2884,8 +2917,7 @@ def _bind_attribute_signature(
             bound = signature.get_signature(ctx=ctx, preserve_impl=True)
         if bound is not None:
             return CallableValue(bound)
-        return value
-    if isinstance(signature, (Signature, OverloadedSignature)):
+    elif isinstance(signature, (Signature, OverloadedSignature)):
         if self_annotation_value is None:
             self_annotation_value = receiver_value
         bound = signature.bind_self(
@@ -2900,6 +2932,8 @@ def _bind_attribute_signature(
             )
         if bound is not None:
             return CallableValue(bound)
+    # TODO: If we can't bind we should show an error instead of just returning
+    # the original value.
     return value
 
 
@@ -3201,6 +3235,9 @@ def _apply_descriptor_protocol_to_classmethod(
         receiver = instance_receiver
     else:
         receiver = policy.get_receiver_class(ctx)
+    receiver = instance_type_to_class_type(
+        policy.get_self_value(ctx, is_metaclass=merged_attribute.is_metaclass_owner)
+    )
 
     bound_value = _bind_attribute_signature(
         value, receiver_value=instance_receiver, self_annotation_value=receiver, ctx=ctx

@@ -1229,6 +1229,28 @@ class TestSyntheticType(TestNameCheckVisitorBase):
         bad: Proto[BadClone] = BadClone()  # E: incompatible_assignment
         print(good, bad)
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_protocol_self_typevar_map_handles_classmethod_and_staticmethod_simple(
+        self,
+    ):
+        from typing import Protocol, TypeVar
+
+        from typing_extensions import Self
+
+        T_co = TypeVar("T_co", covariant=True)
+
+        class Proto(Protocol[T_co]):
+            @classmethod
+            def make(cls: type[T_co]) -> T_co: ...
+
+        class Good:
+            @classmethod
+            def make(cls) -> Self:
+                return cls()
+
+        good: Proto[Good] = Good()
+        print(good)
+
     @assert_passes()
     def test_callable_protocol_nonstandard_receiver_name(self):
         from typing import Protocol

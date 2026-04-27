@@ -2304,6 +2304,9 @@ class Signature:
                 self_annotation, self_annotation_value, Relation.ASSIGNABLE, ctx
             )
             if isinstance(tv_map, CanAssignError):
+                print(
+                    "CANNOT BIND SELF", self_annotation, self_annotation_value, tv_map
+                )
                 return None
         else:
             tv_map = TypeVarMap()
