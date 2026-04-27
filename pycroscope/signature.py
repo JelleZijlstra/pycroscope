@@ -632,6 +632,81 @@ class SigParameter:
         return formatted
 
 
+def _paramspec_anysig_tail_parameters(
+    prefix_len: int,
+) -> list[tuple[str, SigParameter]]:
+    marker = AnyValue(AnySource.ellipsis_callable)
+    var_args_name = f"@{prefix_len}"
+    var_kwargs_name = f"@{prefix_len + 1}"
+    return [
+        (
+            var_args_name,
+            SigParameter(
+                var_args_name,
+                kind=ParameterKind.VAR_POSITIONAL,
+                annotation=GenericValue(tuple, [marker]),
+            ),
+        ),
+        (
+            var_kwargs_name,
+            SigParameter(
+                var_kwargs_name,
+                kind=ParameterKind.VAR_KEYWORD,
+                annotation=GenericValue(dict, [TypedValue(str), marker]),
+            ),
+        ),
+    ]
+
+
+def _is_any_var_positional_annotation_for_tail_marking(annotation: Value) -> bool:
+    return isinstance(annotation, AnyValue) or (
+        isinstance(annotation, GenericValue)
+        and annotation.typ is tuple
+        and len(annotation.args) == 1
+        and isinstance(annotation.args[0], AnyValue)
+    )
+
+
+def _is_any_var_keyword_annotation_for_tail_marking(annotation: Value) -> bool:
+    return isinstance(annotation, AnyValue) or (
+        isinstance(annotation, GenericValue)
+        and annotation.typ is dict
+        and len(annotation.args) == 2
+        and annotation.args[0] == TypedValue(str)
+        and isinstance(annotation.args[1], AnyValue)
+    )
+
+
+def _mark_ellipsis_style_any_tail_parameters(
+    params: Sequence[SigParameter],
+) -> list[SigParameter]:
+    marked = list(params)
+    var_pos_index: int | None = None
+    var_kw_index: int | None = None
+    for i, param in enumerate(marked):
+        if param.kind is ParameterKind.VAR_POSITIONAL:
+            var_pos_index = i
+        elif param.kind is ParameterKind.VAR_KEYWORD:
+            var_kw_index = i
+    if var_pos_index is None or var_kw_index is None:
+        return marked
+
+    var_pos = marked[var_pos_index]
+    var_kw = marked[var_kw_index]
+    if not (
+        _is_any_var_positional_annotation_for_tail_marking(var_pos.get_annotation())
+        and _is_any_var_keyword_annotation_for_tail_marking(var_kw.get_annotation())
+    ):
+        return marked
+
+    marker = AnyValue(AnySource.ellipsis_callable)
+    marked[var_pos_index] = replace(var_pos, annotation=GenericValue(tuple, [marker]))
+    marked[var_kw_index] = replace(
+        var_kw, annotation=GenericValue(dict, [TypedValue(str), marker])
+    )
+    return marked
+
+
 def _has_decomposable_argument(args: Sequence[Argument]) -> bool:
     for composite, _ in args:
         value = unannotate(composite.value)
@@ -1964,30 +2039,8 @@ class Signature:
                             if not params:
                                 params.append((ELLIPSIS_PARAM.name, ELLIPSIS_PARAM))
                             else:
-                                marker = AnyValue(AnySource.ellipsis_callable)
-                                var_args_name = f"@{len(params)}"
-                                params.append(
-                                    (
-                                        var_args_name,
-                                        SigParameter(
-                                            var_args_name,
-                                            kind=ParameterKind.VAR_POSITIONAL,
-                                            annotation=GenericValue(tuple, [marker]),
-                                        ),
-                                    )
-                                )
-                                var_kwargs_name = f"@{len(params)}"
-                                params.append(
-                                    (
-                                        var_kwargs_name,
-                                        SigParameter(
-                                            var_kwargs_name,
-                                            kind=ParameterKind.VAR_KEYWORD,
-                                            annotation=GenericValue(
-                                                dict, [TypedValue(str), marker]
-                                            ),
-                                        ),
-                                    )
+                                params.extend(
+                                    _paramspec_anysig_tail_parameters(len(params))
                                 )
                         elif isinstance(new_val, ActualArguments):
                             new_param = SigParameter(
@@ -2026,7 +2079,9 @@ class Signature:
                                 if not params:
                                     params.append((ELLIPSIS_PARAM.name, ELLIPSIS_PARAM))
                                 else:
-                                    params.append((name, param))
+                                    params.extend(
+                                        _paramspec_anysig_tail_parameters(len(params))
+                                    )
                             elif isinstance(rebound, ActualArguments):
                                 new_param = SigParameter(
                                     param.name,
@@ -2193,6 +2248,7 @@ class Signature:
         if return_annotation is None:
             return_annotation = AnyValue(AnySource.unannotated)
             has_return_annotation = False
+        parameters = _mark_ellipsis_style_any_tail_parameters(list(parameters))
         param_dict: dict[str, SigParameter] = {}
         i = 0
         for param in parameters:
