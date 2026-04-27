@@ -1125,7 +1125,7 @@ class AliasOwner:
         return hash(self.identity)
 
 
-TypeParamOwner = type | ClassOwner | FunctionOwner | AliasOwner
+TypeParamOwner = type | ClassOwner | FunctionOwner | AliasOwner | Sentinel
 
 
 def _type_param_to_string(prefix: str, name: str, owner: TypeParamOwner | None) -> str:

@@ -15,7 +15,7 @@ import warnings
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from types import FunctionType, MethodType
-from typing import Any, ClassVar, Literal, NamedTuple, TypeVar, get_args, get_origin
+from typing import Any, ClassVar, NamedTuple, TypeVar, get_args, get_origin
 
 from typing_extensions import Self, Sentinel, assert_never
 
@@ -35,7 +35,13 @@ from .input_sig import (
 from .maybe_asynq import asynq
 from .node_visitor import Replacement
 from .options import IntegerOption
-from .relations import Relation, can_assign_and_used_any, has_relation
+from .relations import (
+    Relation,
+    RelationContext,
+    can_assign_and_used_any,
+    has_relation,
+    has_relation_from_ctx,
+)
 from .safe import is_instance_of_typing_name, safe_getattr, safe_str
 from .stacked_scopes import (
     NULL_CONSTRAINT,
@@ -1956,7 +1962,9 @@ class Signature:
         """Equivalent of :meth:`pycroscope.value.Value.can_assign`. Checks
         whether another ``Signature`` is compatible with this ``Signature``.
         """
-        return signatures_have_relation(self, other, Relation.ASSIGNABLE, ctx)
+        return signatures_have_relation(
+            self, other, RelationContext(Relation.ASSIGNABLE, ctx, None)
+        )
 
     def _expand_typed_dict_kwargs(self) -> "Signature":
         params: list[SigParameter] = []
@@ -2691,16 +2699,20 @@ def _preprocess_kwargs_no_mvv(
         return _preprocess_kwargs_kv_pairs(value.kv_pairs, ctx)
     else:
         mapping_tv_map = relations.get_tv_map(
-            MappingValue, value, Relation.ASSIGNABLE, ctx.can_assign_ctx
+            MappingValue,
+            value,
+            Relation.ASSIGNABLE,
+            ctx.can_assign_ctx,
+            inferables=(KParam, VParam),
         )
         if isinstance(mapping_tv_map, CanAssignError):
             ctx.on_error(f"{value} is not a mapping", detail=str(mapping_tv_map))
             return None
         key_type = mapping_tv_map.get_typevar(
-            TypeVarParam(K, owner=None), AnyValue(AnySource.generic_argument)
+            KParam, AnyValue(AnySource.generic_argument)
         )
         value_type = mapping_tv_map.get_typevar(
-            TypeVarParam(V, owner=None), AnyValue(AnySource.generic_argument)
+            VParam, AnyValue(AnySource.generic_argument)
         )
         return _preprocess_kwargs_kv_pairs(
             [KVPair(key_type, value_type, is_many=True)], ctx
@@ -3073,7 +3085,9 @@ class OverloadedSignature:
     def can_assign(
         self, other: "ConcreteSignature", ctx: CanAssignContext
     ) -> CanAssign:
-        return signatures_have_relation(self, other, Relation.ASSIGNABLE, ctx)
+        return signatures_have_relation(
+            self, other, RelationContext(Relation.ASSIGNABLE, ctx, None)
+        )
 
 
 ConcreteSignature = Signature | OverloadedSignature
@@ -3245,15 +3259,23 @@ def make_bound_method(
         assert_never(argspec)
 
 
-K = TypeVar("K")
-V = TypeVar("V")
-MappingValue = GenericValue(
-    collections.abc.Mapping,
-    [
-        TypeVarValue(TypeVarParam(K, owner=None)),
-        TypeVarValue(TypeVarParam(V, owner=None)),
-    ],
-)
+def _make_mapping_value() -> tuple[GenericValue, TypeVarParam, TypeVarParam]:
+    K = TypeVar("K")
+    V = TypeVar("V")
+    MappingValue = Sentinel("MappingValue")
+    KParam = TypeVarParam(K, owner=MappingValue)
+    VParam = TypeVarParam(V, owner=MappingValue)
+
+    return (
+        GenericValue(
+            collections.abc.Mapping, [TypeVarValue(KParam), TypeVarValue(VParam)]
+        ),
+        KParam,
+        VParam,
+    )
+
+
+MappingValue, KParam, VParam = _make_mapping_value()
 
 
 def decompose_union(
@@ -3395,10 +3417,7 @@ def _is_placeholder_typevartuple_solution(value: Value | None) -> bool:
 
 
 def _try_typevartuple_callable_relation(
-    left: Signature,
-    right: Signature,
-    relation: Literal[Relation.ASSIGNABLE, Relation.SUBTYPE],
-    ctx: CanAssignContext,
+    left: Signature, right: Signature, relation_ctx: RelationContext
 ) -> CanAssign | None:
     left_inference_map = make_inference_typevar_map(
         [param.annotation for param in left.parameters.values()]
@@ -3438,7 +3457,13 @@ def _try_typevartuple_callable_relation(
                         *expected.get_inherent_bounds(),
                     ]
                 }
-            return has_relation(actual, expected, relation, ctx)
+            return has_relation(
+                actual,
+                expected,
+                relation_ctx.relation,
+                relation_ctx.ctx,
+                relation_ctx.inferables,
+            )
 
         tuple_pattern_tv_map = _match_typevartuple_members(
             expected_members=expected_members,
@@ -3513,7 +3538,9 @@ def _try_typevartuple_callable_relation(
                 ]
             }
         else:
-            tv_map = has_relation(right_annotation, left_annotation, relation, ctx)
+            tv_map = has_relation_from_ctx(
+                right_annotation, left_annotation, relation_ctx
+            )
         if isinstance(tv_map, CanAssignError):
             return CanAssignError(
                 f"type of parameter {left_param.name!r} is incompatible", [tv_map]
@@ -3535,7 +3562,9 @@ def _try_typevartuple_callable_relation(
                 ]
             }
         else:
-            tv_map = has_relation(right_annotation, left_annotation, relation, ctx)
+            tv_map = has_relation_from_ctx(
+                right_annotation, left_annotation, relation_ctx
+            )
         if isinstance(tv_map, CanAssignError):
             return CanAssignError(
                 f"type of parameter {left_param.name!r} is incompatible", [tv_map]
@@ -3938,19 +3967,16 @@ def _has_ellipsis_style_tail(signature: ConcreteSignature) -> bool:
 
 
 def signatures_have_relation(
-    left: ConcreteSignature,
-    right: ConcreteSignature,
-    relation: Literal[Relation.ASSIGNABLE, Relation.SUBTYPE],
-    ctx: CanAssignContext,
+    left: ConcreteSignature, right: ConcreteSignature, relation_ctx: RelationContext
 ) -> CanAssign:
     if isinstance(left, OverloadedSignature):
         # A signature can be assigned if it can be assigned to all the component signatures.
         bounds_maps = []
         for sig in left.signatures:
-            can_assign = signatures_have_relation(sig, right, relation, ctx)
+            can_assign = signatures_have_relation(sig, right, relation_ctx)
             if isinstance(can_assign, CanAssignError):
                 return CanAssignError(
-                    f"{right} is not {relation.description} overload {sig}",
+                    f"{right} is not {relation_ctx.relation.description} overload {sig}",
                     [can_assign],
                 )
             bounds_maps.append(can_assign)
@@ -3962,7 +3988,7 @@ def signatures_have_relation(
         errors = []
         bounds_maps = []
         for sig in right.signatures:
-            can_assign = signatures_have_relation(left, sig, relation, ctx)
+            can_assign = signatures_have_relation(left, sig, relation_ctx)
             if isinstance(can_assign, CanAssignError):
                 errors.append(
                     CanAssignError(f"overload {sig} is incompatible", [can_assign])
@@ -4008,13 +4034,11 @@ def signatures_have_relation(
 
     their_return = right.return_value
     my_return = left.return_value
-    return_tv_map = has_relation(my_return, their_return, relation, ctx)
+    return_tv_map = has_relation_from_ctx(my_return, their_return, relation_ctx)
     if isinstance(return_tv_map, CanAssignError):
         return CanAssignError("return annotation is not compatible", [return_tv_map])
 
-    typevartuple_tv_map = _try_typevartuple_callable_relation(
-        left, right, relation, ctx
-    )
+    typevartuple_tv_map = _try_typevartuple_callable_relation(left, right, relation_ctx)
     if typevartuple_tv_map is not None:
         if isinstance(typevartuple_tv_map, CanAssignError):
             return typevartuple_tv_map
@@ -4066,7 +4090,9 @@ def signatures_have_relation(
                     )
 
                 their_annotation = their_params[i].get_annotation()
-                tv_map = has_relation(their_annotation, my_annotation, relation, ctx)
+                tv_map = has_relation_from_ctx(
+                    their_annotation, my_annotation, relation_ctx
+                )
                 if isinstance(tv_map, CanAssignError):
                     return CanAssignError(
                         "type of positional-only parameter"
@@ -4079,7 +4105,7 @@ def signatures_have_relation(
                     consumed_required_pos_only.add(their_params[i].name)
             elif args_annotation is not None:
                 new_tv_maps = has_relation_var_positional(
-                    my_param, args_annotation, relation, i - their_args_index, ctx
+                    my_param, args_annotation, i - their_args_index, relation_ctx
                 )
                 if isinstance(new_tv_maps, CanAssignError):
                     return new_tv_maps
@@ -4099,7 +4125,9 @@ def signatures_have_relation(
                 if my_param.default is not None and their_params[i].default is None:
                     return CanAssignError(f"param {my_param.name!r} has no default")
                 their_annotation = their_params[i].get_annotation()
-                tv_map = has_relation(their_annotation, my_annotation, relation, ctx)
+                tv_map = has_relation_from_ctx(
+                    their_annotation, my_annotation, relation_ctx
+                )
                 if isinstance(tv_map, CanAssignError):
                     return CanAssignError(
                         f"type of parameter {my_param.name!r} is incompatible", [tv_map]
@@ -4116,13 +4144,13 @@ def signatures_have_relation(
                 )
             elif args_annotation is not None and kwargs_annotation is not None:
                 new_tv_maps = has_relation_var_positional(
-                    my_param, args_annotation, relation, i - their_args_index, ctx
+                    my_param, args_annotation, i - their_args_index, relation_ctx
                 )
                 if isinstance(new_tv_maps, CanAssignError):
                     return new_tv_maps
                 tv_maps += new_tv_maps
                 new_tv_maps = has_relation_var_keyword(
-                    my_param, kwargs_annotation, relation, ctx
+                    my_param, kwargs_annotation, relation_ctx
                 )
                 if isinstance(new_tv_maps, CanAssignError):
                     return new_tv_maps
@@ -4140,7 +4168,9 @@ def signatures_have_relation(
                         f"keyword-only param {my_param.name!r} has no default"
                     )
                 their_annotation = their_param.get_annotation()
-                tv_map = has_relation(their_annotation, my_annotation, relation, ctx)
+                tv_map = has_relation_from_ctx(
+                    their_annotation, my_annotation, relation_ctx
+                )
                 if isinstance(tv_map, CanAssignError):
                     return CanAssignError(
                         f"type of parameter {my_param.name!r} is incompatible", [tv_map]
@@ -4149,7 +4179,7 @@ def signatures_have_relation(
                 consumed_keyword.add(their_param.name)
             elif kwargs_annotation is not None:
                 new_tv_maps = has_relation_var_keyword(
-                    my_param, kwargs_annotation, relation, ctx
+                    my_param, kwargs_annotation, relation_ctx
                 )
                 if isinstance(new_tv_maps, CanAssignError):
                     return new_tv_maps
@@ -4164,7 +4194,7 @@ def signatures_have_relation(
                 continue
             if args_annotation is None:
                 return CanAssignError("*args are not accepted")
-            tv_map = has_relation(args_annotation, my_annotation, relation, ctx)
+            tv_map = has_relation_from_ctx(args_annotation, my_annotation, relation_ctx)
             if isinstance(tv_map, CanAssignError):
                 return CanAssignError("type of *args is incompatible", [tv_map])
             tv_maps.append(tv_map)
@@ -4176,8 +4206,8 @@ def signatures_have_relation(
                 in (ParameterKind.POSITIONAL_ONLY, ParameterKind.POSITIONAL_OR_KEYWORD)
             ]
             for extra_param in extra_positional:
-                tv_map = has_relation(
-                    extra_param.get_annotation(), my_annotation, relation, ctx
+                tv_map = has_relation_from_ctx(
+                    extra_param.get_annotation(), my_annotation, relation_ctx
                 )
                 if isinstance(tv_map, CanAssignError):
                     return CanAssignError(
@@ -4194,16 +4224,18 @@ def signatures_have_relation(
                 continue
             if kwargs_annotation is None:
                 return CanAssignError("**kwargs are not accepted")
-            my_kwargs_value = _get_var_keyword_value_type(my_annotation, relation, ctx)
+            my_kwargs_value = _get_var_keyword_value_type(my_annotation, relation_ctx)
             their_kwargs_value = _get_var_keyword_value_type(
-                kwargs_annotation, relation, ctx
+                kwargs_annotation, relation_ctx
             )
             if my_kwargs_value is not None and their_kwargs_value is not None:
-                tv_map = has_relation(
-                    their_kwargs_value, my_kwargs_value, relation, ctx
+                tv_map = has_relation_from_ctx(
+                    their_kwargs_value, my_kwargs_value, relation_ctx
                 )
             else:
-                tv_map = has_relation(kwargs_annotation, my_annotation, relation, ctx)
+                tv_map = has_relation_from_ctx(
+                    kwargs_annotation, my_annotation, relation_ctx
+                )
             if isinstance(tv_map, CanAssignError):
                 return CanAssignError("type of **kwargs is incompatible", [tv_map])
             tv_maps.append(tv_map)
@@ -4217,12 +4249,12 @@ def signatures_have_relation(
             ]
             for extra_param in extra_keyword:
                 if my_kwargs_value is not None:
-                    tv_map = has_relation(
-                        extra_param.get_annotation(), my_kwargs_value, relation, ctx
+                    tv_map = has_relation_from_ctx(
+                        extra_param.get_annotation(), my_kwargs_value, relation_ctx
                     )
                 else:
-                    tv_map = has_relation(
-                        extra_param.get_annotation(), my_annotation, relation, ctx
+                    tv_map = has_relation_from_ctx(
+                        extra_param.get_annotation(), my_annotation, relation_ctx
                     )
                 if isinstance(tv_map, CanAssignError):
                     return CanAssignError(
@@ -4255,14 +4287,21 @@ def signatures_have_relation(
             )
             consumed_paramspec = True
         elif my_param.kind is ParameterKind.ELLIPSIS:
-            if relation is Relation.ASSIGNABLE or their_ellipsis is not None:
+            if (
+                relation_ctx.relation is Relation.ASSIGNABLE
+                or their_ellipsis is not None
+            ):
                 consumed_paramspec = True
-            elif relation is Relation.SUBTYPE:
+            elif relation_ctx.relation is Relation.SUBTYPE:
                 return CanAssignError(
                     f"{left} accepts arbitrary arguments but {right} does not"
                 )
+            elif relation_ctx.relation in (Relation.CONSISTENT, Relation.EQUIVALENT):
+                raise RuntimeError(
+                    "unexpected relation for signature compatibility check"
+                )
             else:
-                assert_never(relation)
+                assert_never(relation_ctx.relation)
         else:
             return CanAssignError(f"unsupported parameter kind {my_param.kind!r}")
 
@@ -4292,14 +4331,15 @@ def signatures_have_relation(
             elif param.kind is ParameterKind.PARAM_SPEC:
                 return CanAssignError(f"takes extra ParamSpec {param!r}")
             elif param.kind is ParameterKind.ELLIPSIS:
-                if relation is Relation.SUBTYPE:
-                    return CanAssignError(
-                        f"{left} does not accepts arbitrary arguments but {right} does"
-                    )
-                elif relation is Relation.ASSIGNABLE:
-                    continue
-                else:
-                    assert_never(relation)
+                match relation_ctx.relation:
+                    case Relation.SUBTYPE:
+                        return CanAssignError(
+                            f"{left} does not accept arbitrary arguments but {right} does"
+                        )
+                    case Relation.ASSIGNABLE:
+                        continue
+                    case _:
+                        assert_never(relation_ctx.relation)
             else:
                 assert_never(param.kind)
 
@@ -4309,9 +4349,8 @@ def signatures_have_relation(
 def has_relation_var_positional(
     my_param: SigParameter,
     args_annotation: Value,
-    relation: Literal[Relation.ASSIGNABLE, Relation.SUBTYPE],
     idx: int,
-    ctx: CanAssignContext,
+    relation_ctx: RelationContext,
 ) -> list[BoundsMap] | CanAssignError:
     my_annotation = my_param.get_annotation()
     if isinstance(args_annotation, SequenceValue):
@@ -4324,7 +4363,9 @@ def has_relation_var_positional(
                     f" {args_annotation} only accepts {length} values"
                 )
             their_annotation = members[idx]
-            can_assign = has_relation(their_annotation, my_annotation, relation, ctx)
+            can_assign = has_relation_from_ctx(
+                their_annotation, my_annotation, relation_ctx
+            )
             if isinstance(can_assign, CanAssignError):
                 return CanAssignError(
                     f"type of parameter {my_param.name!r} is incompatible:"
@@ -4333,12 +4374,14 @@ def has_relation_var_positional(
                 )
             return [can_assign]
 
-    iterable_arg = relations.is_iterable(args_annotation, relation, ctx)
+    iterable_arg = relations.is_iterable(
+        args_annotation, relation_ctx.relation, relation_ctx.ctx
+    )
     if isinstance(iterable_arg, CanAssignError):
         return CanAssignError(
             f"{args_annotation} is not an iterable type", [iterable_arg]
         )
-    bounds_map = has_relation(iterable_arg, my_annotation, relation, ctx)
+    bounds_map = has_relation_from_ctx(iterable_arg, my_annotation, relation_ctx)
     if isinstance(bounds_map, CanAssignError):
         return CanAssignError(
             f"type of parameter {my_param.name!r} is incompatible: "
@@ -4349,10 +4392,7 @@ def has_relation_var_positional(
 
 
 def has_relation_var_keyword(
-    my_param: SigParameter,
-    kwargs_annotation: Value,
-    relation: Literal[Relation.ASSIGNABLE, Relation.SUBTYPE],
-    ctx: CanAssignContext,
+    my_param: SigParameter, kwargs_annotation: Value, relation_ctx: RelationContext
 ) -> list[BoundsMap] | CanAssignError:
     my_annotation = my_param.get_annotation()
     bounds_maps = []
@@ -4362,7 +4402,9 @@ def has_relation_var_keyword(
                 f"parameter {my_param.name!r} is not accepted by {kwargs_annotation}"
             )
         their_annotation = kwargs_annotation.items[my_param.name].typ
-        can_assign = has_relation(their_annotation, my_annotation, relation, ctx)
+        can_assign = has_relation_from_ctx(
+            their_annotation, my_annotation, relation_ctx
+        )
         if isinstance(can_assign, CanAssignError):
             return CanAssignError(
                 f"type of parameter {my_param.name!r} is incompatible:"
@@ -4371,17 +4413,21 @@ def has_relation_var_keyword(
             )
         bounds_maps.append(can_assign)
     else:
-        mapping_tv_map = relations.get_tv_map(
-            MappingValue, kwargs_annotation, relation, ctx
+        mapping_tv_map = relations.get_tv_map_from_ctx(
+            MappingValue,
+            kwargs_annotation,
+            relation_ctx.with_inferables((KParam, VParam)),
         )
         if isinstance(mapping_tv_map, CanAssignError):
             return CanAssignError(
                 f"{kwargs_annotation} is not a mapping type", [mapping_tv_map]
             )
         key_arg = mapping_tv_map.get_typevar(
-            TypeVarParam(K, owner=None), AnyValue(AnySource.generic_argument)
+            KParam, AnyValue(AnySource.generic_argument)
         )
-        can_assign = has_relation(key_arg, KnownValue(my_param.name), relation, ctx)
+        can_assign = has_relation_from_ctx(
+            key_arg, KnownValue(my_param.name), relation_ctx
+        )
         if isinstance(can_assign, CanAssignError):
             return CanAssignError(
                 f"parameter {my_param.name!r} is not accepted by **kwargs type",
@@ -4389,9 +4435,9 @@ def has_relation_var_keyword(
             )
         bounds_maps.append(can_assign)
         value_arg = mapping_tv_map.get_typevar(
-            TypeVarParam(V, owner=None), AnyValue(AnySource.generic_argument)
+            VParam, AnyValue(AnySource.generic_argument)
         )
-        can_assign = has_relation(value_arg, my_annotation, relation, ctx)
+        can_assign = has_relation_from_ctx(value_arg, my_annotation, relation_ctx)
         if isinstance(can_assign, CanAssignError):
             return CanAssignError(
                 f"type of parameter {my_param.name!r} is incompatible: **kwargs"
@@ -4403,15 +4449,13 @@ def has_relation_var_keyword(
 
 
 def _get_var_keyword_value_type(
-    annotation: Value,
-    relation: Literal[Relation.ASSIGNABLE, Relation.SUBTYPE],
-    ctx: CanAssignContext,
+    annotation: Value, relation_ctx: RelationContext
 ) -> Value | None:
     if isinstance(annotation, TypedDictValue):
         return None
-    mapping_tv_map = relations.get_tv_map(MappingValue, annotation, relation, ctx)
+    mapping_tv_map = relations.get_tv_map_from_ctx(
+        MappingValue, annotation, relation_ctx.with_inferables((KParam, VParam))
+    )
     if isinstance(mapping_tv_map, CanAssignError):
         return None
-    return mapping_tv_map.get_typevar(
-        TypeVarParam(V, owner=None), AnyValue(AnySource.generic_argument)
-    )
+    return mapping_tv_map.get_typevar(VParam, AnyValue(AnySource.generic_argument))

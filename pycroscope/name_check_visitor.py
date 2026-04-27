@@ -149,6 +149,7 @@ from .predicates import EqualsPredicate, HasAttr, InPredicate
 from .reexport import ImplicitReexportTracker
 from .relations import (
     Relation,
+    RelationContext,
     check_hashability,
     get_tv_map,
     has_relation,
@@ -5302,7 +5303,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         except InvalidSignature:
             return
         expected_value = CallableValue(expected_signature)
-        can_assign = can_assign_to_base_callable(expected_value, post_init_value, self)
+        relation_ctx = RelationContext(Relation.ASSIGNABLE, self)
+        can_assign = can_assign_to_base_callable(
+            expected_value, post_init_value, relation_ctx
+        )
         if isinstance(can_assign, CanAssignError):
             self._show_error_if_checking(
                 post_init_node,

@@ -5,9 +5,10 @@ from typing import Literal
 from typing_extensions import Self, assert_never
 
 import pycroscope
-from pycroscope.relations import Relation
-from pycroscope.stacked_scopes import Composite
-from pycroscope.value import (
+
+from .relations import Relation, RelationContext
+from .stacked_scopes import Composite
+from .value import (
     AnySource,
     AnyValue,
     Bound,
@@ -19,6 +20,7 @@ from pycroscope.value import (
     ParamSpecParam,
     SequenceValue,
     TypedValue,
+    TypeParam,
     TypeVarMap,
     UpperBound,
     Value,
@@ -129,6 +131,7 @@ def input_sigs_have_relation(
     right: InputSig,
     relation: Literal[Relation.ASSIGNABLE, Relation.SUBTYPE],
     ctx: CanAssignContext,
+    inferables: tuple[TypeParam, ...] | None = None,
 ) -> CanAssign:
     if isinstance(left, AnySig):
         if relation is Relation.SUBTYPE:
@@ -148,10 +151,11 @@ def input_sigs_have_relation(
         elif isinstance(right, ParamSpecParam):
             return {right: [UpperBound(right, InputSigValue(left))]}
         elif isinstance(right, ActualArguments):
+            # TODO: pass inferables
             return pycroscope.signature.check_call_preprocessed(left.sig, right, ctx)
         elif isinstance(right, FullSignature):
             return pycroscope.signature.signatures_have_relation(
-                left.sig, right.sig, relation, ctx
+                left.sig, right.sig, RelationContext(relation, ctx, inferables)
             )
         else:
             assert_never(right)

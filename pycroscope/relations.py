@@ -129,7 +129,7 @@ class Relation(enum.Enum):
 
 @dataclass(frozen=True)
 class RelationContext:
-    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE]
+    relation: Relation
     ctx: CanAssignContext
     inferables: tuple[TypeParam, ...] | None = None
     original_left: GradualType | None = None
@@ -142,6 +142,9 @@ class RelationContext:
 
     def with_original_right(self, original_right: GradualType) -> "RelationContext":
         return replace(self, original_right=original_right)
+
+    def with_inferables(self, inferables: tuple[TypeParam, ...]) -> "RelationContext":
+        return replace(self, inferables=inferables)
 
     def check_relation(
         self, left: Value, right: Value, relation: Relation
@@ -289,38 +292,48 @@ def has_relation(
     ctx: CanAssignContext,
     inferables: tuple[TypeParam, ...] | None = None,
 ) -> CanAssign:
+    relation_ctx = RelationContext(relation, ctx, inferables=inferables)
+    return has_relation_from_ctx(left, right, relation_ctx)
+
+
+def has_relation_from_ctx(
+    left: Value, right: Value, relation_ctx: RelationContext
+) -> CanAssign:
     left = gradualize(left)
     right = gradualize(right)
-    cache = _get_relation_cache(ctx)
+    cache = _get_relation_cache(relation_ctx.ctx)
     key = None
     if cache is not None:
-        key = _make_relation_cache_key(left, right, relation, inferables)
+        key = _make_relation_cache_key(
+            left, right, relation_ctx.relation, relation_ctx.inferables
+        )
         cached = _get_cached_relation_result(cache, key)
         if cached is not None:
             return cached
 
-    if relation in (Relation.EQUIVALENT, Relation.CONSISTENT):
+    if relation_ctx.relation in (Relation.EQUIVALENT, Relation.CONSISTENT):
         # EQUIVALENT checks both subtype directions; CONSISTENT checks both assignable directions.
         subrelation = (
-            Relation.SUBTYPE if relation is Relation.EQUIVALENT else Relation.ASSIGNABLE
+            Relation.SUBTYPE
+            if relation_ctx.relation is Relation.EQUIVALENT
+            else Relation.ASSIGNABLE
         )
-        relation_ctx = RelationContext(subrelation, ctx, inferables=inferables)
-        result1 = _has_relation(left, right, relation_ctx)
-        result2 = _has_relation(right, left, relation_ctx)
+        inner_ctx = relation_ctx.with_relation(subrelation)
+        result1 = _has_relation(left, right, inner_ctx)
+        result2 = _has_relation(right, left, inner_ctx)
         if isinstance(result1, CanAssignError) or isinstance(result2, CanAssignError):
             children = [
                 elt for elt in (result1, result2) if isinstance(elt, CanAssignError)
             ]
             result = CanAssignError(
-                f"{left} is not {relation.description} {right}", children=children
+                f"{left} is not {relation_ctx.relation.description} {right}",
+                children=children,
             )
         else:
             result = unify_bounds_maps([result1, result2])
     else:
-        assert relation in (Relation.SUBTYPE, Relation.ASSIGNABLE)
-        result = _has_relation(
-            left, right, RelationContext(relation, ctx, inferables=inferables)
-        )
+        assert relation_ctx.relation in (Relation.SUBTYPE, Relation.ASSIGNABLE)
+        result = _has_relation(left, right, relation_ctx)
 
     if key is not None:
         assert cache is not None
@@ -948,7 +961,7 @@ def _has_relation(
         if signature is None:
             return CanAssignError(f"{right} is not a callable type")
         return pycroscope.signature.signatures_have_relation(
-            left.signature, signature, relation, ctx
+            left.signature, signature, relation_ctx
         )
 
     if isinstance(right, KnownValue):
@@ -1199,8 +1212,6 @@ def _coerce_paramspec_generic_arg_for_relation(arg: Value, *, other: Value) -> V
 def _has_relation_for_generic_arg_pair(
     left: Value, right: Value, relation_ctx: RelationContext
 ) -> CanAssign:
-    relation = relation_ctx.relation
-    ctx = relation_ctx.ctx
     assert not isinstance(left, (TypeVarParam, ParamSpecParam, TypeVarTupleParam))
     assert not isinstance(right, (TypeVarParam, ParamSpecParam, TypeVarTupleParam))
     if isinstance(left, TypeVarTupleBindingValue):
@@ -1213,12 +1224,18 @@ def _has_relation_for_generic_arg_pair(
         right, pycroscope.input_sig.InputSigValue
     ):
         return pycroscope.input_sig.input_sigs_have_relation(
-            left.input_sig, right.input_sig, relation, ctx
+            left.input_sig,
+            right.input_sig,
+            relation_ctx.relation,
+            relation_ctx.ctx,
+            relation_ctx.inferables,
         )
     if isinstance(left, pycroscope.input_sig.InputSigValue) or isinstance(
         right, pycroscope.input_sig.InputSigValue
     ):
-        return CanAssignError(f"{left} is not {relation.description} {right}")
+        return CanAssignError(
+            f"{left} is not {relation_ctx.relation.description} {right}"
+        )
     return relation_ctx.has_relation(left, right)
 
 
@@ -1570,7 +1587,6 @@ def _maybe_specify_error_for_generic(
     variance: Variance,
     relation_ctx: RelationContext,
 ) -> CanAssignError:
-    relation = relation_ctx.relation
     expected = left.get_arg(i)
     if isinstance(right, DictIncompleteValue) and left.typ in {
         dict,
@@ -2238,7 +2254,6 @@ def _has_relation_typeddict(
 def _has_relation_typeddict_dict(
     left: TypedDictValue, right: DictIncompleteValue, relation_ctx: RelationContext
 ) -> CanAssign:
-    relation = relation_ctx.relation
     ctx = relation_ctx.ctx
     bounds_maps = []
     for key, entry in left.items.items():
@@ -2306,7 +2321,18 @@ def _has_relation_typeddict_dict(
 
 
 def get_tv_map(
-    left: Value, right: Value, relation: Relation, ctx: CanAssignContext
+    left: Value,
+    right: Value,
+    relation: Relation,
+    ctx: CanAssignContext,
+    inferables: tuple[TypeParam, ...] | None = None,
+) -> TypeVarMap | CanAssignError:
+    relation_ctx = RelationContext(relation, ctx, inferables)
+    return get_tv_map_from_ctx(left, right, relation_ctx)
+
+
+def get_tv_map_from_ctx(
+    left: Value, right: Value, relation_ctx: RelationContext
 ) -> TypeVarMap | CanAssignError:
     from pycroscope.input_sig import (
         InputSigValue,
@@ -2317,18 +2343,22 @@ def get_tv_map(
     original_left = left
     left = freshen_typevars_for_inference(left)
     if isinstance(left, InputSigValue):
-        if relation not in (Relation.ASSIGNABLE, Relation.SUBTYPE):
+        if relation_ctx.relation not in (Relation.ASSIGNABLE, Relation.SUBTYPE):
             return CanAssignError(
                 "Cannot infer InputSig type variables for this relation"
             )
         bounds_map = input_sigs_have_relation(
-            assert_input_sig(left), assert_input_sig(right), relation, ctx
+            assert_input_sig(left),
+            assert_input_sig(right),
+            relation_ctx.relation,
+            relation_ctx.ctx,
+            relation_ctx.inferables,
         )
     else:
-        bounds_map = has_relation(left, right, relation, ctx)
+        bounds_map = has_relation_from_ctx(left, right, relation_ctx)
     if isinstance(bounds_map, CanAssignError):
         return bounds_map
-    resolved_tv_map, errors = resolve_bounds_map(bounds_map, ctx)
+    resolved_tv_map, errors = resolve_bounds_map(bounds_map, relation_ctx.ctx)
     if errors:
         return CanAssignError(children=list(errors))
     tv_map = resolved_tv_map
@@ -2346,7 +2376,7 @@ def is_iterable(
     value: Value, relation: Relation, ctx: CanAssignContext
 ) -> CanAssignError | Value:
     """Check whether a value is iterable."""
-    tv_map = get_tv_map(IterableValue, value, relation, ctx)
+    tv_map = get_tv_map(IterableValue, value, relation, ctx, inferables=(T_iter,))
     if isinstance(tv_map, CanAssignError):
         return tv_map
     return tv_map.get_typevar(T_iter, AnyValue(AnySource.generic_argument))

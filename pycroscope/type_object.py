@@ -38,7 +38,9 @@ from .input_sig import AnySig, FullSignature, InputSigValue
 from .options import PyObjectSequenceOption
 from .relations import (
     Relation,
+    RelationContext,
     has_relation,
+    has_relation_from_ctx,
     infer_positional_generic_typevar_map,
     translate_generic_typevar_map,
 )
@@ -63,6 +65,7 @@ from .signature import (
     SigParameter,
     as_concrete_signature,
     mark_ellipsis_style_any_tail_parameters,
+    signatures_have_relation,
 )
 from .stacked_scopes import Composite
 from .value import (
@@ -1806,6 +1809,8 @@ class TypeObject:
                     return CanAssignError(
                         f"Protocol {self} requires __call__, but {other_val} is not callable"
                     )
+                if isinstance(actual_sig, BoundMethodSignature):
+                    actual_sig = actual_sig.get_signature(ctx=ctx)
                 actual_attr = TypeObjectAttribute(
                     name=member,
                     value=CallableValue(actual_sig),
@@ -1875,7 +1880,7 @@ class TypeObject:
         return bounds_map
 
     def _get_tobj_for_protocol_rhs(
-        self, other_val: Value, ctx: CanAssignContext
+        self, other_val: KnownValue | TypedValue | SubclassValue, ctx: CanAssignContext
     ) -> tuple[TypeObject | None, bool]:
         match other_val:
             case KnownValue(val=type() as val):
@@ -1888,7 +1893,7 @@ class TypeObject:
                 return typ.get_type_object(ctx), True
             case SubclassValue():
                 # Maybe ignore this for now?
-                return tuple[None, True]
+                return (None, True)
 
     def _is_compatible_with_protocol(
         self, self_val: Value, other_val: Value, ctx: CanAssignContext
@@ -3236,10 +3241,6 @@ def _apply_descriptor_protocol_to_classmethod(
             )
 
     instance_receiver = policy.get_receiver_instance(ctx)
-    if merged_attribute.is_metaclass_owner:
-        receiver = instance_receiver
-    else:
-        receiver = policy.get_receiver_class(ctx)
     receiver = instance_type_to_class_type(
         policy.get_self_value(ctx, is_metaclass=merged_attribute.is_metaclass_owner)
     )
@@ -4598,9 +4599,9 @@ def is_compatible_attribute(
             f"but an instance variable on child class {child_attr.owner}"
         )
 
-    can_assign = _can_assign_to_base(
-        base_attr, child_attr, relation, ctx, inferables=inferables
-    )
+    relation_ctx = RelationContext(relation, ctx, inferables=inferables)
+
+    can_assign = _can_assign_to_base(base_attr, child_attr, relation_ctx)
     if isinstance(can_assign, CanAssignError):
         return CanAssignError(
             children=[
@@ -4631,10 +4632,9 @@ def _extract_settable_type(setter: Value, ctx: CanAssignContext) -> Value:
 def _can_assign_to_base(
     base_attr: TypeObjectAttribute,
     child_attr: TypeObjectAttribute,
-    relation: Relation,
-    ctx: CanAssignContext,
-    inferables: tuple[TypeParam, ...] | None = None,
+    relation_ctx: RelationContext,
 ) -> CanAssign:
+    ctx = relation_ctx.ctx
     # TODO: This is still a bit ad hoc. I think the right way to do it would be to
     # check all three operations: get, set, and delete. For each of them, what's
     # allowed on the base should be allowed on the child. Though we'll still need
@@ -4672,8 +4672,8 @@ def _can_assign_to_base(
                 base_attr.symbol.property_info.fset.initializer, ctx=ctx
             )
             # Reversed because this is a contravariant position
-            setter_can_assign = has_relation(
-                child_settable, base_settable, relation, ctx, inferables=inferables
+            setter_can_assign = has_relation_from_ctx(
+                child_settable, base_settable, relation_ctx
             )
             if isinstance(setter_can_assign, CanAssignError):
                 return CanAssignError(
@@ -4693,31 +4693,31 @@ def _can_assign_to_base(
     if isinstance(base_attr.value, KnownValue):
         if callable(base_attr.value.val):
             callable_result = can_assign_to_base_callable(
-                base_attr.value, child_attr.value, ctx
+                base_attr.value, child_attr.value, relation_ctx
             )
             if callable_result is None:
                 return {}
             return callable_result
     if isinstance(base_attr.value, CallableValue):
         callable_result = can_assign_to_base_callable(
-            base_attr.value, child_attr.value, ctx
+            base_attr.value, child_attr.value, relation_ctx
         )
         if callable_result is not None:
             return callable_result
-    return has_relation(base_attr.value, child_attr.value, relation, ctx)
+    return has_relation_from_ctx(base_attr.value, child_attr.value, relation_ctx)
 
 
 def can_assign_to_base_callable(
-    base_value: Value, child_value: Value, ctx: CanAssignContext
+    base_value: Value, child_value: Value, relation_ctx: RelationContext
 ) -> CanAssign | None:
-    base_sig = ctx.signature_from_value(base_value)
+    base_sig = relation_ctx.ctx.signature_from_value(base_value)
     if base_sig is ANY_SIGNATURE:
         return None
     if not isinstance(base_sig, (Signature, OverloadedSignature)):
         return None
-    child_sig = ctx.signature_from_value(child_value)
+    child_sig = relation_ctx.ctx.signature_from_value(child_value)
     if child_sig is ANY_SIGNATURE:
         return None
     if not isinstance(child_sig, (Signature, OverloadedSignature)):
         return CanAssignError(f"{child_value} is not callable")
-    return base_sig.can_assign(child_sig, ctx)
+    return signatures_have_relation(base_sig, child_sig, relation_ctx)
