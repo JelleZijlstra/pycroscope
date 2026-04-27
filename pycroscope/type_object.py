@@ -1849,8 +1849,14 @@ class TypeObject:
                 continue
             print("COMPARE", member, expected_attr.value, actual_attr.value)
             bounds_map = is_compatible_attribute(
-                member, expected_attr, actual_attr, relation, ctx
+                member,
+                expected_attr,
+                actual_attr,
+                relation,
+                ctx,
+                inferables=self.get_declared_type_params(),
             )
+            print("BOUNDS MAP", member, bounds_map)
             if isinstance(bounds_map, CanAssignError):
                 return CanAssignError(
                     f"Member {member!r} of protocol {self} is incompatible with {other_val}",
@@ -4580,6 +4586,7 @@ def is_compatible_attribute(
     child_attr: TypeObjectAttribute,
     relation: Relation,
     ctx: CanAssignContext,
+    inferables: tuple[TypeParam, ...] | None = None,
 ) -> CanAssign:
     if child_attr.symbol.is_classvar and base_attr.symbol.is_instance_only:
         return CanAssignError(
@@ -4592,7 +4599,9 @@ def is_compatible_attribute(
             f"but an instance variable on child class {child_attr.owner}"
         )
 
-    can_assign = _can_assign_to_base(base_attr, child_attr, relation, ctx)
+    can_assign = _can_assign_to_base(
+        base_attr, child_attr, relation, ctx, inferables=inferables
+    )
     if isinstance(can_assign, CanAssignError):
         return CanAssignError(
             children=[
@@ -4625,6 +4634,7 @@ def _can_assign_to_base(
     child_attr: TypeObjectAttribute,
     relation: Relation,
     ctx: CanAssignContext,
+    inferables: tuple[TypeParam, ...] | None = None,
 ) -> CanAssign:
     # TODO: This is still a bit ad hoc. I think the right way to do it would be to
     # check all three operations: get, set, and delete. For each of them, what's
@@ -4664,7 +4674,7 @@ def _can_assign_to_base(
             )
             # Reversed because this is a contravariant position
             setter_can_assign = has_relation(
-                child_settable, base_settable, relation, ctx
+                child_settable, base_settable, relation, ctx, inferables=inferables
             )
             if isinstance(setter_can_assign, CanAssignError):
                 return CanAssignError(

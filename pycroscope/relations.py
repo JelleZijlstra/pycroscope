@@ -151,9 +151,14 @@ def _relation_key_piece(value: object) -> tuple[str, object]:
 
 
 def _make_relation_cache_key(
-    left: Value, right: Value, relation: Relation
-) -> tuple[tuple[str, object], tuple[str, object], Relation]:
-    return (_relation_key_piece(left), _relation_key_piece(right), relation)
+    left: Value,
+    right: Value,
+    relation: Relation,
+    inferables: tuple[TypeParam, ...] | None = None,
+) -> tuple[
+    tuple[str, object], tuple[str, object], Relation, tuple[TypeParam, ...] | None
+]:
+    return (_relation_key_piece(left), _relation_key_piece(right), relation, inferables)
 
 
 def _get_cached_relation_result(
@@ -249,14 +254,18 @@ def is_subtype_with_reason(
 
 
 def has_relation(
-    left: Value, right: Value, relation: Relation, ctx: CanAssignContext
+    left: Value,
+    right: Value,
+    relation: Relation,
+    ctx: CanAssignContext,
+    inferables: tuple[TypeParam, ...] | None = None,
 ) -> CanAssign:
     left = gradualize(left)
     right = gradualize(right)
     cache = _get_relation_cache(ctx)
     key = None
     if cache is not None:
-        key = _make_relation_cache_key(left, right, relation)
+        key = _make_relation_cache_key(left, right, relation, inferables)
         cached = _get_cached_relation_result(cache, key)
         if cached is not None:
             return cached
@@ -266,8 +275,8 @@ def has_relation(
         subrelation = (
             Relation.SUBTYPE if relation is Relation.EQUIVALENT else Relation.ASSIGNABLE
         )
-        result1 = _has_relation(left, right, subrelation, ctx)
-        result2 = _has_relation(right, left, subrelation, ctx)
+        result1 = _has_relation(left, right, subrelation, ctx, inferables=inferables)
+        result2 = _has_relation(right, left, subrelation, ctx, inferables=inferables)
         if isinstance(result1, CanAssignError) or isinstance(result2, CanAssignError):
             children = [
                 elt for elt in (result1, result2) if isinstance(elt, CanAssignError)
@@ -278,7 +287,7 @@ def has_relation(
         else:
             result = unify_bounds_maps([result1, result2])
     else:
-        result = _has_relation(left, right, relation, ctx)
+        result = _has_relation(left, right, relation, ctx, inferables=inferables)
 
     if key is not None:
         assert cache is not None
@@ -318,6 +327,7 @@ def _has_relation(
     *,
     original_left: GradualType | None = None,
     original_right: GradualType | None = None,
+    inferables: tuple[TypeParam, ...] | None = None,
 ) -> CanAssign:
     if original_right is None:
         original_right = right
@@ -368,67 +378,94 @@ def _has_relation(
             return _has_relation(left, SubclassValue(right.class_type), relation, ctx)
 
     # TypeVarValue
-    if (
-        isinstance(left, TypeVarValue)
-        and not isinstance(left, InferenceVarValue)
-        and isinstance(right, TypeVarValue)
-        and not isinstance(right, InferenceVarValue)
-        and left.typevar_param.typevar is right.typevar_param.typevar
-    ):
-        return {}
-    if isinstance(left, InferenceVarValue):
-        bounds = [LowerBound(left.typevar_param, right), *left.get_inherent_bounds()]
-        return left.make_bounds_map(bounds, right, ctx)
-    if isinstance(right, InferenceVarValue):
-        bounds = [UpperBound(right.typevar_param, left), *right.get_inherent_bounds()]
-        return right.make_bounds_map(bounds, left, ctx)
-    if isinstance(left, TypeVarValue):
-        if left == right or isinstance(right, AnyValue):
+    print("INFERABLES", inferables, left, right)
+    if inferables is not None:
+        if isinstance(left, TypeVarValue):
+            if (
+                isinstance(right, TypeVarValue)
+                and left.typevar_param == right.typevar_param
+            ):
+                return {}
+            if left.typevar_param in inferables:
+                return {left.typevar_param: [LowerBound(left.typevar_param, right)]}
+            else:
+                return CanAssignError(f"Cannot assign {right} to rigid TypeVar {left}")
+        if isinstance(right, TypeVarValue):
+            if right.typevar_param in inferables:
+                return {right.typevar_param: [UpperBound(right.typevar_param, left)]}
+            else:
+                return _has_relation(
+                    left, gradualize(right.get_upper_bound_value()), relation, ctx
+                )
+    else:
+        if (
+            isinstance(left, TypeVarValue)
+            and not isinstance(left, InferenceVarValue)
+            and isinstance(right, TypeVarValue)
+            and not isinstance(right, InferenceVarValue)
+            and left.typevar_param.typevar is right.typevar_param.typevar
+        ):
             return {}
-        if isinstance(right, MultiValuedValue):
-            bounds_maps = []
-            for val in right.vals:
-                can_assign = _has_relation(left, gradualize(val), relation, ctx)
-                if isinstance(can_assign, CanAssignError):
-                    return can_assign
-                bounds_maps.append(can_assign)
-            return unify_bounds_maps(bounds_maps)
-        if isinstance(right, IntersectionValue):
-            simplified_right = intersect_multi(right.vals, ctx)
-            if not isinstance(simplified_right, IntersectionValue):
-                return _has_relation(left, simplified_right, relation, ctx)
-            bounds_maps = []
-            errors = []
-            for val in simplified_right.vals:
-                can_assign = _has_relation(left, gradualize(val), relation, ctx)
-                if isinstance(can_assign, CanAssignError):
-                    errors.append(can_assign)
-                else:
+        if isinstance(left, InferenceVarValue):
+            bounds = [
+                LowerBound(left.typevar_param, right),
+                *left.get_inherent_bounds(),
+            ]
+            return left.make_bounds_map(bounds, right, ctx)
+        if isinstance(right, InferenceVarValue):
+            bounds = [
+                UpperBound(right.typevar_param, left),
+                *right.get_inherent_bounds(),
+            ]
+            return right.make_bounds_map(bounds, left, ctx)
+        if isinstance(left, TypeVarValue):
+            if left == right or isinstance(right, AnyValue):
+                return {}
+            if isinstance(right, MultiValuedValue):
+                bounds_maps = []
+                for val in right.vals:
+                    can_assign = _has_relation(left, gradualize(val), relation, ctx)
+                    if isinstance(can_assign, CanAssignError):
+                        return can_assign
                     bounds_maps.append(can_assign)
-            if not bounds_maps:
-                return CanAssignError(
-                    f"{right} is not {relation.description} {left}", children=errors
-                )
-            return unify_bounds_maps(bounds_maps)
-        return CanAssignError(f"{right} is not {relation.description} {left}")
-    if isinstance(right, TypeVarValue):
-        if right.typevar_param.is_self and isinstance(left, MultiValuedValue):
-            bounds_maps = []
-            errors = []
-            for val in left.vals:
-                can_assign = _has_relation(gradualize(val), right, relation, ctx)
-                if isinstance(can_assign, CanAssignError):
-                    errors.append(can_assign)
-                else:
-                    bounds_maps.append(can_assign)
-            if not bounds_maps:
-                return CanAssignError(
-                    f"{right} is not {relation.description} {left}", children=errors
-                )
-            return intersect_bounds_maps(bounds_maps)
-        return _has_relation(
-            left, gradualize(right.get_upper_bound_value()), relation, ctx
-        )
+                return unify_bounds_maps(bounds_maps)
+            if isinstance(right, IntersectionValue):
+                simplified_right = intersect_multi(right.vals, ctx)
+                if not isinstance(simplified_right, IntersectionValue):
+                    return _has_relation(left, simplified_right, relation, ctx)
+                bounds_maps = []
+                errors = []
+                for val in simplified_right.vals:
+                    can_assign = _has_relation(left, gradualize(val), relation, ctx)
+                    if isinstance(can_assign, CanAssignError):
+                        errors.append(can_assign)
+                    else:
+                        bounds_maps.append(can_assign)
+                if not bounds_maps:
+                    return CanAssignError(
+                        f"{right} is not {relation.description} {left}", children=errors
+                    )
+                return unify_bounds_maps(bounds_maps)
+            return CanAssignError(f"{right} is not {relation.description} {left}")
+        if isinstance(right, TypeVarValue):
+            if right.typevar_param.is_self and isinstance(left, MultiValuedValue):
+                bounds_maps = []
+                errors = []
+                for val in left.vals:
+                    can_assign = _has_relation(gradualize(val), right, relation, ctx)
+                    if isinstance(can_assign, CanAssignError):
+                        errors.append(can_assign)
+                    else:
+                        bounds_maps.append(can_assign)
+                if not bounds_maps:
+                    return CanAssignError(
+                        f"{right} is not {relation.description} {left}", children=errors
+                    )
+                return intersect_bounds_maps(bounds_maps)
+            return _has_relation(
+                left, gradualize(right.get_upper_bound_value()), relation, ctx
+            )
+
     if isinstance(left, TypeVarTupleValue) and not isinstance(right, MultiValuedValue):
         if isinstance(right, TypeVarTupleValue) and left.typevar is right.typevar:
             return {}

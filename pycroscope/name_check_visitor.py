@@ -7499,6 +7499,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> None:
         signatures: list[Signature] = []
         transform_infos: list[DataclassTransformInfo] = []
+        function_decorators: set[FunctionDecorator] = set()
+        returns_self_on_class_access = False
         for pending in pending_block.overloads:
             signature = pending.signature
             if isinstance(signature, Signature):
@@ -7507,6 +7509,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 signatures.extend(signature.signatures)
             if pending.dataclass_transform_info is not None:
                 transform_infos.append(pending.dataclass_transform_info)
+            pending_decorators = set(pending.decorator_kinds)
+            pending_decorators.discard(FunctionDecorator.overload)
+            function_decorators.update(pending_decorators)
+            if FunctionDecorator.classmethod in pending.decorator_kinds:
+                returns_self_on_class_access = (
+                    returns_self_on_class_access
+                    or self._function_returns_self_by_node.get(pending.node, False)
+                )
         if signatures:
             value: Value = CallableValue(
                 OverloadedSignature(signatures), types.FunctionType
@@ -7521,6 +7531,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ],
                 )
             pending_block.scope.variables[pending_block.name] = value
+            if pending_block.scope.scope_type is ScopeType.class_scope:
+                type_object = self._current_synthetic_overlay_type_object()
+                if type_object is None:
+                    type_object = self.current_tobj
+                if type_object is None:
+                    return
+                self._set_synthetic_member_on_type_object(
+                    type_object,
+                    pending_block.name,
+                    initializer=value,
+                    is_method=True,
+                    function_decorators=frozenset(function_decorators),
+                    returns_self_on_class_access=returns_self_on_class_access,
+                )
 
     def _validate_overload_block(
         self,
