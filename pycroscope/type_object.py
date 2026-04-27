@@ -1668,7 +1668,7 @@ class TypeObject:
         *,
         relation: "Literal[Relation.SUBTYPE, Relation.ASSIGNABLE] | None" = None,
     ) -> CanAssign:
-        from .relations import Relation, _compare_tuple_sequences
+        from .relations import Relation, RelationContext, _compare_tuple_sequences
 
         if relation is None:
             relation = Relation.ASSIGNABLE
@@ -1682,8 +1682,7 @@ class TypeObject:
                 return _compare_tuple_sequences(
                     SequenceValue(tuple, self_tuple_members),
                     SequenceValue(tuple, other_tuple_members),
-                    relation,
-                    ctx,
+                    RelationContext(relation, ctx),
                 )
         other = other_basic.get_type_object(ctx)
         if class_keys_match(self.typ, other.typ):

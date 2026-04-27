@@ -1538,10 +1538,10 @@ class TestOverload(TestNameCheckVisitorBase):
                 return x
 
         def use(p: P) -> None:
-            assert_type(p.f(1), int)  # E: inference_failure
-            assert_type(p.f("x"), str)  # E: inference_failure
+            assert_type(p.f(1), int)
+            assert_type(p.f("x"), str)
 
-        use(C())
+        use(C())  # E: incompatible_argument
 
     @assert_passes()
     def test_missing_overload_impl_flushed_by_next_function(self):
@@ -1601,12 +1601,12 @@ class TestOverload(TestNameCheckVisitorBase):
             def f(self, x: str, /) -> str: ...
 
         class Child(Base):
-            def f(self, x: int | str, /) -> int | str:
+            def f(self, x: int | str, /) -> int | str:  # E: incompatible_override
                 return x
 
         def use(c: Child) -> None:
-            assert_type(c.f(1), int)  # E: inference_failure
-            assert_type(c.f("x"), str)  # E: inference_failure
+            assert_type(c.f(1), int | str)
+            assert_type(c.f("x"), int | str)
 
     @assert_passes()
     def test_protocol_override_on_first_overload_only(self):
