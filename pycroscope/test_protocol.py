@@ -271,16 +271,14 @@ class TestProtocol(TestNameCheckVisitorBase):
             pass
 
         class ConcreteC3(metaclass=CMeta):
-            pass
-
-        ConcreteC3.attr1 = 1
+            attr1 = 1
 
         pc1: ProtoC1 = ConcreteC1  # E: incompatible_assignment
         pc2: ProtoC2 = ConcreteC1
         pc3: ProtoC1 = ConcreteC2  # E: incompatible_assignment
-        pc4: ProtoC2 = ConcreteC2  # E: incompatible_assignment
+        pc4: ProtoC2 = ConcreteC2
         pc5: ProtoC1 = ConcreteC3  # E: incompatible_assignment
-        pc6: ProtoC2 = ConcreteC3  # E: incompatible_assignment
+        pc6: ProtoC2 = ConcreteC3
 
     @assert_passes()
     def test_protocol_class_object_call_member(self):

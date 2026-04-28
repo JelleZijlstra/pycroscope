@@ -1830,7 +1830,11 @@ class TypeObject:
                     is_metaclass_owner=False,
                 )
             else:
-                actual_attr = other_type_obj.get_attribute(member, other_policy)
+                if member == "__hash__":
+                    policy = replace(other_policy, is_special_lookup=True)
+                else:
+                    policy = other_policy
+                actual_attr = other_type_obj.get_attribute(member, policy)
                 if actual_attr is None:
                     direct_attribute = ctx.get_attribute_from_value(other_val, member)
                     if direct_attribute is not UNINITIALIZED_VALUE:
@@ -1855,6 +1859,23 @@ class TypeObject:
                             f"Protocol {self} requires member {member}, "
                             f"but {other_val} does not have it"
                         )
+                elif is_class and not actual_attr.is_metaclass_owner:
+                    actual_attr = TypeObjectAttribute(
+                        name=actual_attr.name,
+                        value=actual_attr.value,
+                        declared_value=actual_attr.declared_value,
+                        raw_value=actual_attr.raw_value,
+                        symbol=ClassSymbol(
+                            is_instance_only=True,
+                            annotation=actual_attr.symbol.annotation,
+                        ),
+                        runtime_symbol=None,
+                        typeshed_symbol=None,
+                        owner=other_type_obj,
+                        is_property=False,
+                        property_has_setter=False,
+                        is_metaclass_owner=False,
+                    )
             if expected_attr is None:
                 # In static fallback mode, synthetic protocol members may not have
                 # a retrievable attribute type. Keep enforcing member presence.
@@ -4602,7 +4623,10 @@ def is_compatible_attribute(
 
     # Maybe should be ... and child_attr.symbol.is_instance_only, but other
     # type checkers disagree.
-    if base_attr.symbol.is_classvar and not child_attr.symbol.is_classvar:
+    if base_attr.symbol.is_classvar and (
+        (not child_attr.symbol.is_classvar and child_attr.symbol.annotation is not None)
+        or child_attr.symbol.is_instance_only
+    ):
         return CanAssignError(
             f"{attr_name} is a class variable on base class {base_attr.owner}, "
             f"but an instance variable on child class {child_attr.owner}"
@@ -4726,7 +4750,11 @@ def _can_assign_to_base(
     result1 = has_relation_from_ctx(base_attr.value, child_attr.value, relation_ctx)
     if isinstance(result1, CanAssignError):
         return result1
-    if base_attr.symbol.is_writable and strict_variance:
+    if (
+        base_attr.symbol.is_writable
+        and strict_variance
+        and child_attr.symbol.annotation is not None
+    ):
         result2 = has_relation_from_ctx(child_attr.value, base_attr.value, relation_ctx)
         if isinstance(result2, CanAssignError):
             return CanAssignError(

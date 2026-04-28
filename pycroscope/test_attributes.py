@@ -271,7 +271,7 @@ class TestAttributes(TestNameCheckVisitorBase):
             class WeirdProperty:
                 value = property(None, object())  # E: incompatible_argument
 
-            maybe_ok: WantsSettable = WeirdProperty()
+            maybe_ok: WantsSettable = WeirdProperty()  # E: incompatible_assignment
             print(maybe_ok)
 
     @assert_passes(run_in_both_module_modes=True)

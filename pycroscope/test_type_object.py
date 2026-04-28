@@ -2125,10 +2125,10 @@ class TestSyntheticType(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_namedtuple_with_non_tuple_fields_still_builds_type_object(self):
-        from typing import NamedTuple, Protocol
+        from typing import NamedTuple, Protocol, ReadOnly
 
         class WantsX(Protocol):
-            x: int
+            x: ReadOnly[int]
 
         class Point(NamedTuple):
             x: int
