@@ -870,6 +870,7 @@ class TypeObject:
             ordered.append(name)
         return tuple(ordered)
 
+    # TODO: why is this doing its own weird little symbol lookup?
     def _get_synthetic_namedtuple_field_value(
         self, field_name: str, *, prefer_declared_type: bool
     ) -> Value | None:
@@ -881,7 +882,9 @@ class TypeObject:
                 and not symbol.is_initvar
                 and not symbol.is_method
             ):
-                return symbol.get_declared_type()
+                if symbol.annotation is not None:
+                    return symbol.annotation
+                return symbol.initializer
             if symbol.initializer is not None and not (
                 prefer_declared_type and not symbol.is_method
             ):

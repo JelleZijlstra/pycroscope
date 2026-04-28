@@ -4873,12 +4873,6 @@ class ClassSymbol:
             ),
         )
 
-    # TODO: I don't think these two methods should exist, they are confusing
-    def get_declared_type(self) -> Value | None:
-        if self.annotation is not None:
-            return self.annotation
-        return self.initializer
-
 
 _PROPERTY_LIKE = (
     property,
