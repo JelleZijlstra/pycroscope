@@ -82,6 +82,7 @@ nitpick_ignore = [
     ("py:class", "pycroscope.value.Variance"),
     ("py:class", "pycroscope.value.FunctionDecorator"),
     ("py:class", "typing_extensions.ParamSpec"),
+    ("py:class", "typing_extensions.Sentinel"),
     (
         "py:class",
         "dict[str, tuple[int | str | <DEFAULT> | <ARGS> | <KWARGS> | <UNKNOWN>, "
