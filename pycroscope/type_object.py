@@ -34,15 +34,13 @@ from .annotations import (
     type_from_runtime,
     type_from_value,
 )
-from .input_sig import AnySig, FullSignature, InputSigValue
+from .input_sig import FullSignature, InputSigValue
 from .options import PyObjectSequenceOption
 from .relations import (
     Relation,
     RelationContext,
     _compare_tuple_sequences,
     has_relation_from_ctx,
-    infer_positional_generic_typevar_map,
-    translate_generic_typevar_map,
 )
 from .safe import (
     is_direct_namedtuple_class,
@@ -114,7 +112,6 @@ from .value import (
     default_value_for_type_param,
     get_self_param,
     get_single_typevartuple_param,
-    get_tv_map,
     match_typevar_arguments,
     replace_fallback,
     replace_known_sequence_value,
@@ -2302,77 +2299,6 @@ def _transform_known_class_attribute(
     return ClassAttributeTransformer.transform_attribute(initializer.val, options)
 
 
-def normalize_synthetic_descriptor_attribute(
-    value: Value,
-    *,
-    owner: ClassKey | None = None,
-    is_self_returning_classmethod: bool = False,
-    unknown_descriptor_means_any: bool = True,
-) -> Value:
-    if isinstance(value, GenericValue) and value.typ is staticmethod:
-        if not value.args:
-            if unknown_descriptor_means_any:
-                return AnyValue(AnySource.inference)
-            return value
-        wrapped = next(iter(value.args))
-        if isinstance(wrapped, InputSigValue):
-            if isinstance(wrapped.input_sig, FullSignature):
-                return_annotation = (
-                    value.args[1]
-                    if len(value.args) > 1
-                    else wrapped.input_sig.sig.return_value
-                )
-                return CallableValue(
-                    replace(wrapped.input_sig.sig, return_value=return_annotation)
-                )
-            return AnyValue(AnySource.inference)
-        return wrapped
-    if isinstance(value, GenericValue) and value.typ is classmethod:
-        if not value.args:
-            if unknown_descriptor_means_any:
-                return AnyValue(AnySource.inference)
-            return value
-        wrapped = value.args[1] if len(value.args) >= 2 else value.args[0]
-        if isinstance(wrapped, InputSigValue):
-            if isinstance(wrapped.input_sig, FullSignature):
-                return_annotation = (
-                    value.args[2]
-                    if len(value.args) > 2
-                    else wrapped.input_sig.sig.return_value
-                )
-                if (
-                    is_self_returning_classmethod
-                    and isinstance(return_annotation, AnyValue)
-                    and return_annotation.source is AnySource.generic_argument
-                    and owner is not None
-                ):
-                    return_annotation = TypeVarValue(get_self_param(owner))
-                return CallableValue(
-                    replace(wrapped.input_sig.sig, return_value=return_annotation)
-                )
-            return AnyValue(AnySource.inference)
-        if isinstance(wrapped, CallableValue):
-            return_annotation = (
-                value.args[2] if len(value.args) > 2 else wrapped.signature.return_value
-            )
-            if (
-                is_self_returning_classmethod
-                and isinstance(return_annotation, AnyValue)
-                and return_annotation.source is AnySource.generic_argument
-                and owner is not None
-            ):
-                return_annotation = TypeVarValue(get_self_param(owner))
-            return CallableValue(
-                replace(wrapped.signature, return_value=return_annotation)
-            )
-        return wrapped
-    if isinstance(value, KnownValue) and isinstance(value.val, staticmethod):
-        return KnownValue(value.val.__func__)
-    if isinstance(value, KnownValue) and isinstance(value.val, classmethod):
-        return KnownValue(value.val.__func__)
-    return value
-
-
 def _class_key_and_generic_args_from_type_value(
     receiver_value: TypedValue | TypeVarValue,
 ) -> tuple[ClassKey, Sequence[Value]]:
@@ -2385,61 +2311,6 @@ def _class_key_and_generic_args_from_type_value(
         receiver_value.args if isinstance(receiver_value, GenericValue) else ()
     )
     return receiver_value.typ, generic_args
-
-
-# TODO: this whole function is dubious, replace with the existing methods on AttributePolicy
-def _receiver_type_value(
-    receiver_value: Value | None, ctx: CanAssignContext
-) -> TypedValue | TypeVarValue | None:
-    if receiver_value is None:
-        return None
-    if isinstance(receiver_value, (TypeVarValue, GenericValue)):
-        return receiver_value
-    if isinstance(receiver_value, SubclassValue):
-        return receiver_value.typ
-    if isinstance(receiver_value, SyntheticClassObjectValue):
-        return receiver_value.class_type
-    resolved = replace_fallback(receiver_value)
-    if isinstance(resolved, KnownValueWithTypeVars) and not isinstance(
-        resolved.val, type
-    ):
-        runtime_type = type(resolved.val)
-        type_params = ctx.get_type_parameters(runtime_type)
-        if not type_params:
-            return TypedValue(runtime_type)
-        return GenericValue(
-            runtime_type,
-            [
-                resolved.typevars.get_value(
-                    type_param, default_value_for_type_param(type_param)
-                )
-                for type_param in type_params
-            ],
-        )
-    if isinstance(resolved, TypedValue):
-        return resolved
-    if isinstance(resolved, TypeVarValue):
-        return resolved
-    if isinstance(resolved, GenericValue):
-        return resolved
-    if isinstance(resolved, KnownValueWithTypeVars) and isinstance(resolved.val, type):
-        type_params = ctx.get_type_parameters(resolved.val)
-        if not type_params:
-            return TypedValue(resolved.val)
-        return GenericValue(
-            resolved.val,
-            [
-                resolved.typevars.get_value(
-                    type_param, default_value_for_type_param(type_param)
-                )
-                for type_param in type_params
-            ],
-        )
-    if isinstance(resolved, KnownValue):
-        if isinstance(resolved.val, type):
-            return TypedValue(resolved.val)
-        return TypedValue(type(resolved.val))
-    return None
 
 
 def typevar_map_from_generic_args(
@@ -2456,18 +2327,6 @@ def typevar_map_from_generic_args(
             typevar, value.substitute_typevars(substitutions)
         )
     return substitutions
-
-
-def _typevar_map_from_type_value(
-    receiver_value: TypedValue | TypeVarValue, tobj: TypeObject
-) -> TypeVarMap:
-    class_key, generic_args = _class_key_and_generic_args_from_type_value(
-        receiver_value
-    )
-    if class_key == tobj.typ:
-        type_params = tobj.get_declared_type_params()
-        return typevar_map_from_generic_args(type_params, generic_args)
-    return TypeVarMap()
 
 
 def _specialize_selected_attribute(
@@ -3248,59 +3107,6 @@ def _descriptor_method_signature_any(
     return signature
 
 
-def _substitute_symbol_value(value: Value, substitutions: TypeVarMap) -> Value:
-    if not substitutions:
-        return value
-    return value.substitute_typevars(substitutions)
-
-
-def _mro_generic_args(value: MroValue) -> Sequence[Value]:
-    if isinstance(value, SequenceValue) and value.typ is tuple:
-        return (value,)
-    if isinstance(value, GenericValue):
-        return value.args
-    return ()
-
-
-def _get_symbol_owner_substitutions_from_type_objects(
-    receiver_tobj: TypeObject,
-    owner_tobj: TypeObject,
-    ctx: CanAssignContext,
-    policy: AttributePolicy,
-) -> TypeVarMap:
-    receiver_substitutions = TypeVarMap(
-        typevars={
-            get_self_param(owner_tobj.typ): policy.get_self_value(
-                ctx, is_metaclass=False
-            )
-        }
-    )
-    receiver_value = policy.get_receiver_instance(ctx)
-    if isinstance(receiver_value, (TypedValue, TypeVarValue)):
-        receiver_substitutions = receiver_substitutions.merge(
-            _typevar_map_from_type_value(receiver_value, receiver_tobj)
-        )
-    if owner_tobj is receiver_tobj:
-        return receiver_substitutions
-    owner_value = next(
-        (
-            entry.get_mro_value()
-            for entry in receiver_tobj.get_mro()
-            if entry.tobj is owner_tobj
-        ),
-        None,
-    )
-    if owner_value is None:
-        return receiver_substitutions
-    owner_value = owner_value.substitute_typevars(receiver_substitutions)
-    owner_substitutions = typevar_map_from_generic_args(
-        owner_tobj.get_declared_type_params(), _mro_generic_args(owner_value)
-    )
-    if not owner_substitutions:
-        return receiver_substitutions
-    return receiver_substitutions.merge(owner_substitutions)
-
-
 def _make_type_object_for_key(class_key: ClassKey, ctx: object) -> TypeObject | None:
     make_type_object = safe_getattr(ctx, "make_type_object", None)
     if callable(make_type_object):
@@ -3340,93 +3146,6 @@ def lookup_declared_symbol_with_owner(
     return owner_tobj.typ, symbol
 
 
-def _is_member_defined_on_class_key(
-    class_key: ClassKey, member: str, ctx: CanAssignContext
-) -> bool:
-    match = lookup_declared_symbol_with_owner(class_key, member, ctx)
-    return match is not None and not match[1].is_initvar
-
-
-def _is_property_marker_value(value: Value) -> bool:
-    value = replace_fallback(value)
-    return (
-        isinstance(value, KnownValue)
-        and isinstance(value.val, property)
-        or isinstance(value, TypedValue)
-        and value.typ is property
-    )
-
-
-def _metaclass_key_for_class(
-    class_key: ClassKey, ctx: CanAssignContext
-) -> ClassKey | None:
-    tobj = ctx.make_type_object(class_key)
-    metaclass = tobj.get_metaclass()
-    match metaclass:
-        case TypedValue():
-            return metaclass.typ
-        case AnyValue():
-            return None
-        case _:
-            assert_never(metaclass)
-
-
-def _signature_has_receiver_parameter(
-    signature: Signature,
-    self_value: Value,
-    *,
-    ctx: CanAssignContext,
-    member: str,
-    allow_any_annotation: bool = False,
-) -> bool:
-    first_parameter = next(iter(signature.parameters.values()), None)
-    if first_parameter is None or first_parameter.kind not in (
-        ParameterKind.POSITIONAL_ONLY,
-        ParameterKind.POSITIONAL_OR_KEYWORD,
-    ):
-        return False
-    annotation = replace_fallback(first_parameter.annotation)
-    if allow_any_annotation and isinstance(annotation, AnyValue):
-        return True
-    if isinstance(annotation, AnyValue):
-        return False
-    if any(
-        isinstance(subval, TypeVarValue) and subval.typevar_param.is_self
-        for subval in annotation.walk_values()
-    ):
-        return True
-    annotation_key = _receiver_key_from_value(annotation)
-    self_key = _receiver_key_from_value(self_value)
-    if annotation_key is not None and self_key is not None:
-        if annotation_key == self_key or stringify_object(
-            annotation_key
-        ) == stringify_object(self_key):
-            return True
-        if isinstance(annotation_key, ClassOwner) and isinstance(self_key, type):
-            annotation_name = annotation_key.qualname
-            return annotation_name.rsplit(".", maxsplit=1)[-1] == self_key.__name__
-        if isinstance(annotation_key, type) and isinstance(self_key, ClassOwner):
-            self_name = self_key.qualname
-            return self_name.rsplit(".", maxsplit=1)[-1] == annotation_key.__name__
-        if isinstance(annotation_key, ClassOwner) and isinstance(self_key, ClassOwner):
-            annotation_name = annotation_key.qualname
-            self_name = self_key.qualname
-            return (
-                annotation_name.rsplit(".", maxsplit=1)[-1]
-                == self_name.rsplit(".", maxsplit=1)[-1]
-            )
-        if not isinstance(annotation_key, ClassOwner) and not isinstance(
-            self_key, ClassOwner
-        ):
-            return False
-        return not isinstance(
-            get_tv_map(first_parameter.annotation, self_value, ctx), CanAssignError
-        )
-    return not isinstance(
-        get_tv_map(first_parameter.annotation, self_value, ctx), CanAssignError
-    )
-
-
 def _receiver_key_from_value(value: Value) -> ClassKey | None:
     key = _class_key_from_value(value)
     if key is not None:
@@ -3435,134 +3154,6 @@ def _receiver_key_from_value(value: Value) -> ClassKey | None:
     if isinstance(narrowed, KnownValue) and not isinstance(narrowed.val, type):
         return type(narrowed.val)
     return None
-
-
-def _class_object_value_for_key(
-    class_key: ClassKey, ctx: CanAssignContext
-) -> Value | None:
-    synthetic = _get_synthetic_class_for_key(class_key, ctx)
-    if synthetic is not None:
-        return synthetic
-    if isinstance(class_key, type):
-        return KnownValue(class_key)
-    return None
-
-
-def _bind_protocol_call_expected(
-    value: Value,
-    self_value: Value,
-    ctx: CanAssignContext,
-    *,
-    member: str,
-    protocol_self_value: Value,
-) -> Value:
-    signature = ctx.signature_from_value(value)
-    if signature is None:
-        return value
-    if member == "__call__":
-        if isinstance(signature, BoundMethodSignature):
-            return value
-        allow_any_annotation = True
-    else:
-        if isinstance(signature, BoundMethodSignature):
-            signature = signature.signature
-        allow_any_annotation = False
-    if isinstance(signature, Signature):
-        has_receiver_parameter = _signature_has_receiver_parameter(
-            signature,
-            protocol_self_value,
-            ctx=ctx,
-            member="__call__",
-            allow_any_annotation=allow_any_annotation,
-        )
-    else:
-        has_receiver_parameter = all(
-            _signature_has_receiver_parameter(
-                sig,
-                protocol_self_value,
-                ctx=ctx,
-                member="__call__",
-                allow_any_annotation=allow_any_annotation,
-            )
-            for sig in signature.signatures
-        )
-    if not has_receiver_parameter:
-        return value
-    bound = signature.bind_self(self_value=self_value, ctx=ctx)
-    if bound is not None:
-        return CallableValue(bound)
-    return value
-
-
-def _should_mark_protocol_call_tail(value: Value) -> bool:
-    return not isinstance(replace_fallback(value), GenericValue)
-
-
-def _default_protocol_receiver_annotation(
-    owner_tobj: TypeObject, symbol: ClassSymbol
-) -> Value:
-    params = owner_tobj.get_declared_type_params()
-    if params:
-        owner_value: Value = GenericValue(
-            owner_tobj.typ, [type_param_to_value(param) for param in params]
-        )
-    else:
-        owner_value = TypedValue(owner_tobj.typ)
-    if symbol.is_classmethod:
-        return SubclassValue.make(owner_value)
-    return owner_value
-
-
-def _get_first_parameter_annotation(
-    signature: Signature | OverloadedSignature,
-) -> Value | None:
-    signatures = (
-        signature.signatures
-        if isinstance(signature, OverloadedSignature)
-        else [signature]
-    )
-    for concrete in signatures:
-        parameters = list(concrete.parameters.values())
-        if parameters:
-            return parameters[0].annotation
-    return None
-
-
-def _protocol_classmethod_receiver_value(
-    receiver_value: Value, ctx: CanAssignContext
-) -> Value:
-    if not _is_definitely_class_object_value(receiver_value):
-        receiver_type = _receiver_type_value(receiver_value, ctx)
-        if receiver_type is not None:
-            return SubclassValue.make(receiver_type)
-        return receiver_value.get_type_value(ctx)
-    receiver_key = _class_key_from_value(receiver_value)
-    if receiver_key is not None:
-        class_object = _class_object_value_for_key(receiver_key, ctx)
-        if class_object is not None:
-            return class_object
-    return receiver_value.get_type_value(ctx)
-
-
-def _merge_protocol_receiver_typevars(
-    tv_map: TypeVarMap,
-    self_annotation: Value,
-    receiver_for_match: Value,
-    ctx: CanAssignContext,
-) -> TypeVarMap:
-    if not any(
-        isinstance(subvalue, TypeVarValue) for subvalue in self_annotation.walk_values()
-    ):
-        return tv_map
-    inferred = get_tv_map(self_annotation, receiver_for_match, ctx)
-    if isinstance(inferred, CanAssignError):
-        return tv_map
-    translated = translate_generic_typevar_map(self_annotation, inferred, ctx)
-    if not translated:
-        translated = infer_positional_generic_typevar_map(
-            self_annotation, receiver_for_match, ctx
-        )
-    return _merge_protocol_receiver_typevar_maps(tv_map, inferred.merge(translated))
 
 
 def _is_placeholder_typevartuple_binding(binding: Sequence[tuple[bool, Value]]) -> bool:
@@ -3574,38 +3165,6 @@ def _is_placeholder_typevartuple_binding(binding: Sequence[tuple[bool, Value]]) 
     )
 
 
-def _merge_protocol_receiver_typevar_maps(
-    existing: TypeVarMap, new: TypeVarMap
-) -> TypeVarMap:
-    merged = existing
-    for type_param, value in new.iter_typevars():
-        existing_value = merged.get_typevar(type_param)
-        if existing_value is None:
-            merged = merged.with_typevar(type_param, value)
-        elif existing_value != value:
-            merged = merged.with_typevar(
-                type_param, unite_values(existing_value, value)
-            )
-    for type_param, input_sig in new.iter_paramspecs():
-        existing_sig = merged.get_paramspec(type_param)
-        if existing_sig is None or (
-            isinstance(existing_sig, AnySig) and not isinstance(input_sig, AnySig)
-        ):
-            merged = merged.with_paramspec(type_param, input_sig)
-    for type_param, binding in new.iter_typevartuples():
-        existing_binding = merged.get_typevartuple(type_param)
-        if existing_binding is None or (
-            _is_placeholder_typevartuple_binding(existing_binding)
-            and not _is_placeholder_typevartuple_binding(binding)
-        ):
-            merged = merged.with_typevartuple(type_param, binding)
-    return merged
-
-
-def _should_use_permissive_dunder_hash(val: Value) -> bool:
-    return _is_definitely_class_object_value(val)
-
-
 def _is_definitely_class_object_value(value: Value) -> bool:
     """Return whether the value definitely represents a class object.
 
@@ -3613,6 +3172,7 @@ def _is_definitely_class_object_value(value: Value) -> bool:
     For intersections, any class-object member is enough because the intersection
     value must satisfy all member constraints at once.
     """
+    # TODO: Should be is_subtype() with type[object]?
     value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):
         return bool(value.vals) and all(
