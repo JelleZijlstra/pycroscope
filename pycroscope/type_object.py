@@ -2184,18 +2184,6 @@ def merge_declared_symbol(
     )
 
 
-def _attribute_blocks_writes(
-    access: TypeObjectAttribute, ctx: CanAssignContext
-) -> bool:
-    if not access.is_property:
-        return False
-    if access.symbol.property_info is not None:
-        return True
-    return _descriptor_has_method(access.raw_value, "__set__", ctx) or (
-        _descriptor_has_method(access.raw_value, "__delete__", ctx)
-    )
-
-
 def _class_key_from_value(value: Value) -> ClassKey | None:
     # This helper is intentionally a little broader than the abstraction we
     # ultimately want: many callers use it for "what class does this value point
