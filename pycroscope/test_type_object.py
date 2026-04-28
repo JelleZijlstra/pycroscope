@@ -1651,10 +1651,10 @@ class TestSyntheticType(TestNameCheckVisitorBase):
             def m(self, item: str, callback: Callable[[int], str]) -> str:
                 return ""
 
-        # hp1: HasPropertyProto = ConcreteHasProperty1()
+        hp1: HasPropertyProto = ConcreteHasProperty1()
         hp2: HasPropertyProto = ConcreteHasProperty2()  # E: incompatible_assignment
-        # hp4: HasPropertyProto = ConcreteHasProperty4()  # E: incompatible_assignment
-        # print(hp1, hp2, hp4)
+        hp4: HasPropertyProto = ConcreteHasProperty4()  # E: incompatible_assignment
+        print(hp1, hp2, hp4)
 
     @assert_passes(allow_import_failures=True)
     def test_recursive_protocol_classmethod_constraints(self):

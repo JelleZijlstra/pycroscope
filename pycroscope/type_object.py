@@ -106,6 +106,7 @@ from .value import (
     TypeVarMap,
     TypeVarTupleBindingValue,
     TypeVarTupleParam,
+    TypeVarTupleValue,
     TypeVarValue,
     UnboundMethodValue,
     Value,
@@ -1851,14 +1852,26 @@ class TypeObject:
                 # In static fallback mode, synthetic protocol members may not have
                 # a retrievable attribute type. Keep enforcing member presence.
                 continue
-            print("COMPARE", member, expected_attr.value, actual_attr.value)
+            if member == "__iter__":
+                print(
+                    "COMPARE",
+                    member,
+                    self,
+                    self_val,
+                    self.get_declared_type_params(),
+                    expected_attr.value,
+                    actual_attr.value,
+                )
             bounds_map = is_compatible_attribute(
                 member,
                 expected_attr,
                 actual_attr,
                 relation,
                 ctx,
-                inferables=self.get_declared_type_params(),
+                # TODO: revisit this, we should probably get inferables from the caller
+                inferables=self.get_declared_type_params()
+                + _collect_type_params(self_val),
+                strict_variance=True,
             )
             print("BOUNDS MAP", member, bounds_map)
             if isinstance(bounds_map, CanAssignError):
@@ -4587,21 +4600,34 @@ def is_compatible_attribute(
     relation: Relation,
     ctx: CanAssignContext,
     inferables: tuple[TypeParam, ...] | None = None,
+    *,
+    strict_variance: bool = False,
 ) -> CanAssign:
     if child_attr.symbol.is_classvar and base_attr.symbol.is_instance_only:
         return CanAssignError(
             f"{attr_name} is an instance variable on base class {base_attr.owner}, "
             f"but a class variable on child class {child_attr.owner}"
         )
-    if base_attr.symbol.is_classvar and child_attr.symbol.is_instance_only:
+
+    # Maybe should be ... and child_attr.symbol.is_instance_only, but other
+    # type checkers disagree.
+    if base_attr.symbol.is_classvar and not child_attr.symbol.is_classvar:
         return CanAssignError(
             f"{attr_name} is a class variable on base class {base_attr.owner}, "
             f"but an instance variable on child class {child_attr.owner}"
         )
 
+    if base_attr.symbol.is_writable and not child_attr.symbol.is_writable:
+        return CanAssignError(
+            f"{attr_name} is writable on base class {base_attr.owner}, "
+            f"but not writable on child class {child_attr.owner}"
+        )
+
     relation_ctx = RelationContext(relation, ctx, inferables=inferables)
 
-    can_assign = _can_assign_to_base(base_attr, child_attr, relation_ctx)
+    can_assign = _can_assign_to_base(
+        base_attr, child_attr, relation_ctx, strict_variance=strict_variance
+    )
     if isinstance(can_assign, CanAssignError):
         return CanAssignError(
             children=[
@@ -4633,6 +4659,8 @@ def _can_assign_to_base(
     base_attr: TypeObjectAttribute,
     child_attr: TypeObjectAttribute,
     relation_ctx: RelationContext,
+    *,
+    strict_variance: bool = False,
 ) -> CanAssign:
     ctx = relation_ctx.ctx
     # TODO: This is still a bit ad hoc. I think the right way to do it would be to
@@ -4704,7 +4732,17 @@ def _can_assign_to_base(
         )
         if callable_result is not None:
             return callable_result
-    return has_relation_from_ctx(base_attr.value, child_attr.value, relation_ctx)
+    result1 = has_relation_from_ctx(base_attr.value, child_attr.value, relation_ctx)
+    if isinstance(result1, CanAssignError):
+        return result1
+    if base_attr.symbol.is_writable and strict_variance:
+        result2 = has_relation_from_ctx(child_attr.value, base_attr.value, relation_ctx)
+        if isinstance(result2, CanAssignError):
+            return CanAssignError(
+                "Write types of attribute are incompatible", children=[result2]
+            )
+        return unify_bounds_maps([result1, result2])
+    return result1
 
 
 def can_assign_to_base_callable(
@@ -4721,3 +4759,19 @@ def can_assign_to_base_callable(
     if not isinstance(child_sig, (Signature, OverloadedSignature)):
         return CanAssignError(f"{child_value} is not callable")
     return signatures_have_relation(base_sig, child_sig, relation_ctx)
+
+
+def _collect_type_params(value: Value) -> tuple[TypeParam, ...]:
+    type_params = set()
+    for subvalue in value.walk_values():
+        if isinstance(subvalue, TypeVarValue):
+            type_params.add(subvalue.typevar_param)
+        elif isinstance(subvalue, InputSigValue) and isinstance(
+            subvalue.input_sig, ParamSpecParam
+        ):
+            type_params.add(subvalue.input_sig)
+        elif isinstance(subvalue, TypeVarTupleValue):
+            param = get_single_typevartuple_param(subvalue)
+            if param is not None:
+                type_params.add(param)
+    return tuple(type_params)

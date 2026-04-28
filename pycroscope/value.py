@@ -4843,6 +4843,12 @@ class ClassSymbol:
     def is_property(self) -> bool:
         return self.property_info is not None
 
+    @property
+    def is_writable(self) -> bool:
+        if self.property_info is not None:
+            return self.property_info.fset is not None
+        return not self.is_readonly and not self.is_final and not self.is_method
+
     def substitute_typevars(self, substitutions: TypeVarMap) -> "ClassSymbol":
         return ClassSymbol(
             annotation=(
