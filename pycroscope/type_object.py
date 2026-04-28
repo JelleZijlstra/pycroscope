@@ -1888,7 +1888,7 @@ class TypeObject:
 
     def _get_tobj_for_protocol_rhs(
         self, other_val: KnownValue | TypedValue | SubclassValue, ctx: CanAssignContext
-    ) -> tuple[TypeObject | None, bool]:
+    ) -> tuple["TypeObject | None", bool]:
         match other_val:
             case KnownValue(val=type() as val):
                 return ctx.make_type_object(val), True
