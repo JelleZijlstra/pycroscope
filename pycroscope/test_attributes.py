@@ -6,13 +6,11 @@ from typing_extensions import assert_type
 from .extensions import LiteralOnly
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes, skip_before, skip_if_not_installed
-from .type_object import normalize_synthetic_descriptor_attribute
 from .value import (
     AnnotatedValue,
     AnySource,
     AnyValue,
     CustomCheckExtension,
-    GenericValue,
     KnownValue,
     SubclassValue,
     TypedValue,
@@ -29,15 +27,6 @@ EXPECTED_ASCII_TYPEVARS = TypeVarMap(
         )
     }
 )
-
-
-def test_normalize_synthetic_descriptor_attribute_empty_args() -> None:
-    assert normalize_synthetic_descriptor_attribute(
-        GenericValue(staticmethod, [])
-    ) == AnyValue(AnySource.inference)
-    assert normalize_synthetic_descriptor_attribute(
-        GenericValue(classmethod, [])
-    ) == AnyValue(AnySource.inference)
 
 
 class TestAttributes(TestNameCheckVisitorBase):

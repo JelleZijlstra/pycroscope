@@ -4885,12 +4885,6 @@ class ClassSymbol:
             return self.annotation
         return self.initializer
 
-    def get_effective_type(self) -> Value:
-        declared_type = self.get_declared_type()
-        if declared_type is not None:
-            return declared_type
-        return AnyValue(AnySource.inference)
-
 
 _PROPERTY_LIKE = (
     property,

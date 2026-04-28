@@ -16,7 +16,6 @@ from .type_object import (
     DataclassFieldRecord,
     NamedTupleField,
     _class_key_from_value,
-    _should_use_permissive_dunder_hash,
     lookup_declared_symbol_with_owner,
 )
 from .value import (
@@ -211,18 +210,6 @@ def test_synthetic_mro_prefers_non_virtual_duplicate_base() -> None:
     assert entries[class_owner_from_key("mod.B")].is_virtual is False
     assert entries[Sequence].is_virtual is False
     assert entries[MutableSequence].is_virtual is True
-
-
-def test_permissive_dunder_hash_class_object_detection() -> None:
-    assert _should_use_permissive_dunder_hash(TypedValue(type))
-    assert _should_use_permissive_dunder_hash(GenericValue(type, [TypedValue(int)]))
-    assert not _should_use_permissive_dunder_hash(TypedValue(list))
-    assert not _should_use_permissive_dunder_hash(
-        MultiValuedValue([TypedValue(type), TypedValue(list)])
-    )
-    assert _should_use_permissive_dunder_hash(
-        IntersectionValue((TypedValue(type), TypedValue(list)))
-    )
 
 
 def test_runtime_declared_symbol_uses_annotation_expr_parsing() -> None:

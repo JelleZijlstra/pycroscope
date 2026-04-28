@@ -2368,9 +2368,6 @@ class Signature:
                 self_annotation, self_annotation_value, Relation.ASSIGNABLE, ctx
             )
             if isinstance(tv_map, CanAssignError):
-                print(
-                    "CANNOT BIND SELF", self_annotation, self_annotation_value, tv_map
-                )
                 return None
         else:
             tv_map = TypeVarMap()
@@ -4338,6 +4335,10 @@ def signatures_have_relation(
                         )
                     case Relation.ASSIGNABLE:
                         continue
+                    case Relation.EQUIVALENT | Relation.CONSISTENT:
+                        raise ValueError(
+                            "unexpected relation for signature compatibility check"
+                        )
                     case _:
                         assert_never(relation_ctx.relation)
             else:

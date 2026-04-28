@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from itertools import zip_longest
 from typing import Protocol, TypeAlias, TypeVar
 
-from typing_extensions import Sentinel
+from typing_extensions import ReadOnly, Sentinel
 
 from .analysis_lib import is_positional_only_arg_name
 from .error_code import ErrorCode
@@ -236,9 +236,9 @@ class FunctionResult:
 
 
 class Context(ErrorContext, CanAssignContext, Protocol):
-    options: Options
-    current_class_type_params: Sequence[TypeParam] | None
-    module: types.ModuleType | None
+    options: ReadOnly[Options]
+    current_class_type_params: ReadOnly[Sequence[TypeParam] | None]
+    module: ReadOnly[types.ModuleType | None]
 
     def visit_expression(self, node: ast.AST, /) -> Value:
         raise NotImplementedError

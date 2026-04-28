@@ -2150,13 +2150,14 @@ def _pack_typevartuple_generic_args(
     return packed
 
 
-def _map_relation(relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE]) -> Relation:
-    if relation is Relation.SUBTYPE:
-        return Relation.EQUIVALENT
-    elif relation is Relation.ASSIGNABLE:
-        return Relation.CONSISTENT
-    else:
-        assert_never(relation)
+def _map_relation(relation: Relation) -> Relation:
+    match relation:
+        case Relation.SUBTYPE | Relation.EQUIVALENT:
+            return Relation.EQUIVALENT
+        case Relation.ASSIGNABLE | Relation.CONSISTENT:
+            return Relation.CONSISTENT
+        case _:
+            assert_never(relation)
 
 
 def _has_relation_typeddict(

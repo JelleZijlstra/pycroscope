@@ -21,7 +21,7 @@ from collections.abc import (
 )
 from dataclasses import dataclass, replace
 from types import FunctionType
-from typing import Literal, get_origin
+from typing import get_origin
 from unittest import mock
 
 from typing_extensions import assert_never
@@ -39,7 +39,7 @@ from .options import PyObjectSequenceOption
 from .relations import (
     Relation,
     RelationContext,
-    has_relation,
+    _compare_tuple_sequences,
     has_relation_from_ctx,
     infer_positional_generic_typevar_map,
     translate_generic_typevar_map,
@@ -64,7 +64,6 @@ from .signature import (
     Signature,
     SigParameter,
     as_concrete_signature,
-    mark_ellipsis_style_any_tail_parameters,
     signatures_have_relation,
 )
 from .stacked_scopes import Composite
@@ -113,7 +112,6 @@ from .value import (
     _iter_typevar_map_items,
     _typevar_map_from_varlike_pairs,
     default_value_for_type_param,
-    freshen_typevars_for_inference,
     get_self_param,
     get_single_typevartuple_param,
     get_tv_map,
@@ -1674,12 +1672,9 @@ class TypeObject:
         other_val: KnownValue | TypedValue | SubclassValue | AnnotatedValue,
         ctx: CanAssignContext,
         *,
-        relation: "Literal[Relation.SUBTYPE, Relation.ASSIGNABLE] | None" = None,
+        relation: Relation = Relation.ASSIGNABLE,
     ) -> CanAssign:
-        from .relations import Relation, RelationContext, _compare_tuple_sequences
 
-        if relation is None:
-            relation = Relation.ASSIGNABLE
         other_basic = replace_fallback(other_val)
         if not isinstance(other_basic, (KnownValue, TypedValue, SubclassValue)):
             return CanAssignError(f"Cannot assign {other_val} to {self}")
@@ -1723,7 +1718,7 @@ class TypeObject:
             if ctx.can_assume_compatibility(self, other):
                 return {}
             with ctx.assume_compatibility(self, other):
-                result = self._is_compatible_with_protocol_v2(
+                result = self._is_compatible_with_protocol(
                     self_val, other_basic, relation, ctx
                 )
                 if (
@@ -1734,7 +1729,7 @@ class TypeObject:
                     for base in other.get_virtual_bases():
                         assert isinstance(base, TypedValue), (self, base)
                         subresult = self._is_compatible_with_protocol(
-                            self_val, base, ctx
+                            self_val, base, relation, ctx
                         )
                         if not isinstance(subresult, CanAssignError):
                             result = subresult
@@ -1775,7 +1770,7 @@ class TypeObject:
             )
         return expected_sig.can_assign(actual_sig, ctx)
 
-    def _is_compatible_with_protocol_v2(
+    def _is_compatible_with_protocol(
         self,
         self_val: Value,
         other_val: KnownValue | TypedValue | SubclassValue,
@@ -1816,6 +1811,7 @@ class TypeObject:
                     )
                 if isinstance(actual_sig, BoundMethodSignature):
                     actual_sig = actual_sig.get_signature(ctx=ctx)
+                    assert actual_sig is not None, other_val
                 actual_attr = TypeObjectAttribute(
                     name=member,
                     value=CallableValue(actual_sig),
@@ -1924,308 +1920,6 @@ class TypeObject:
             case SubclassValue():
                 # Maybe ignore this for now?
                 return (None, True)
-
-    def _is_compatible_with_protocol(
-        self, self_val: Value, other_val: Value, ctx: CanAssignContext
-    ) -> CanAssign:
-        """This type object is a protocol. Is other_val compatible with it?"""
-        other_basic = replace_fallback(other_val)
-        assert isinstance(
-            other_basic, (KnownValue, TypedValue, SubclassValue)
-        ), other_basic
-        other_type_obj = other_basic.get_type_object(ctx)
-        other_type_key = _receiver_key_from_value(other_val)
-
-        bounds_maps = []
-        protocol_members = self.get_protocol_members()
-        if len(protocol_members) > 1:
-            protocol_self_typevar_map = _collect_protocol_self_typevar_map(
-                self, protocol_members, other_val, ctx
-            )
-            actual_self_typevar_map = _collect_protocol_self_typevar_map(
-                other_type_obj, protocol_members, other_val, ctx
-            )
-        else:
-            protocol_self_typevar_map = TypeVarMap()
-            actual_self_typevar_map = TypeVarMap()
-        apply_synthetic_member_rules = (
-            isinstance(self.typ, ClassOwner)
-            and _get_synthetic_class_for_key(self.typ, ctx) is not None
-        )
-        class_object_check = _is_definitely_class_object_value(other_val)
-        for member in protocol_members:
-            is_dunder_member = member.startswith("__") and member.endswith("__")
-            use_descriptor_rules = apply_synthetic_member_rules or (
-                class_object_check and not is_dunder_member
-            )
-            # For __call__, we check compatibility with the other object itself.
-            if member == "__call__":
-                expected = UNINITIALIZED_VALUE
-                if isinstance(self.typ, ClassOwner):
-                    symbol = self.get_declared_symbol_from_mro(member, ctx)
-                    if symbol is not None:
-                        expected = symbol.get_effective_type()
-                if expected is UNINITIALIZED_VALUE:
-                    expected_signature = as_concrete_signature(
-                        ctx.signature_from_value(self_val), ctx
-                    )
-                    if expected_signature is None:
-                        expected = AnyValue(AnySource.inference)
-                    else:
-                        if _should_mark_protocol_call_tail(self_val):
-                            expected_signature = _mark_protocol_call_signature_tail(
-                                expected_signature
-                            )
-                        expected = CallableValue(expected_signature)
-                expected = _bind_protocol_call_expected(
-                    expected,
-                    other_val,
-                    ctx,
-                    member=member,
-                    protocol_self_value=self_val,
-                )
-                expected = _substitute_receiver_self_typevar(
-                    expected, other_val, other_type_obj.typ
-                )
-                if other_type_obj is not None and other_type_obj.is_protocol():
-                    sig = ctx.signature_from_value(other_val)
-                    sig = as_concrete_signature(sig, ctx)
-                    if sig is not None:
-                        actual = CallableValue(sig)
-                    else:
-                        actual = other_val
-                else:
-                    actual = other_val
-            # Hack to allow types to be hashable. This avoids a bug where type objects
-            # don't match the Hashable protocol if they define a __hash__ method themselves:
-            # we compare against the __hash__ instance method, but compared to the protocol
-            # it has an extra parameter (self).
-            # It's a little unclear to me how this is supposed to work on protocols in
-            # general: should they match against the type or the instance? PEP 544 suggests
-            # that we should perhaps have a special case for matching against class objects
-            # and modules, but that feels odd.
-            # A better solution probably first requires a rewrite of the attribute fetching
-            # system to make it more robust.
-            elif member == "__hash__" and _should_use_permissive_dunder_hash(other_val):
-                expected = ctx.get_attribute_from_value(self_val, member)
-                if expected is UNINITIALIZED_VALUE:
-                    # In static fallback mode, synthetic protocol members may not have
-                    # a retrievable attribute type. Keep enforcing member presence.
-                    expected = AnyValue(AnySource.inference)
-                expected = _substitute_receiver_self_typevar(
-                    expected, other_val, other_type_obj.typ
-                )
-                actual = AnyValue(AnySource.inference)
-            else:
-                expected_attr = self.get_attribute(
-                    member,
-                    AttributePolicy(
-                        receiver=self_val,
-                        self_value=other_val,
-                        prefer_symbolic=True,
-                        visitor=(
-                            ctx
-                            if isinstance(
-                                ctx, pycroscope.name_check_visitor.NameCheckVisitor
-                            )
-                            else None
-                        ),
-                    ),
-                )
-                if expected_attr is None:
-                    # In static fallback mode, synthetic protocol members may not have
-                    # a retrievable attribute type. Keep enforcing member presence.
-                    # TODO: really?
-                    expected = AnyValue(AnySource.inference)
-                else:
-                    expected = expected_attr.value
-                if protocol_self_typevar_map:
-                    expected = expected.substitute_typevars(protocol_self_typevar_map)
-                if _protocol_member_is_method(self, member, ctx):
-                    if expected_attr is None or expected_attr.symbol.is_classmethod:
-                        expected_bind_receiver = (
-                            _protocol_member_bind_receiver(
-                                expected_attr.symbol, other_val, ctx
-                            )
-                            if expected_attr is not None
-                            else other_val
-                        )
-                        if expected_bind_receiver is not None:
-                            expected = _bind_protocol_call_expected(
-                                expected,
-                                expected_bind_receiver,
-                                ctx,
-                                member=member,
-                                protocol_self_value=expected_bind_receiver,
-                            )
-                expected = _substitute_receiver_self_typevar(
-                    expected, other_val, other_type_obj.typ
-                )
-                actual = ctx.get_attribute_from_value(other_val, member)
-                if (
-                    class_object_check
-                    and other_type_key is not None
-                    and _should_refine_class_object_member_lookup(
-                        actual, other_type_key, member, ctx
-                    )
-                ):
-                    class_owner = _class_object_value_for_key(other_type_key, ctx)
-                    if class_owner is not None:
-                        refined_actual = ctx.get_attribute_from_value(
-                            class_owner, member
-                        )
-                        if refined_actual is not UNINITIALIZED_VALUE:
-                            actual = refined_actual
-                if actual_self_typevar_map and actual is not UNINITIALIZED_VALUE:
-                    actual = actual.substitute_typevars(actual_self_typevar_map)
-                if (
-                    actual is UNINITIALIZED_VALUE
-                    and other_type_obj is not None
-                    and other_type_obj.is_protocol()
-                    and member in other_type_obj.get_protocol_members()
-                ):
-                    actual = AnyValue(AnySource.inference)
-            if actual is UNINITIALIZED_VALUE:
-                can_assign = CanAssignError(f"{other_val} has no attribute {member!r}")
-            else:
-                if _is_callable_member_value(expected, ctx):
-                    expected = _normalize_protocol_initializer_for_relation(
-                        expected, ctx, receiver=self_val
-                    )
-                if _is_callable_member_value(actual, ctx):
-                    actual = _normalize_protocol_initializer_for_relation(
-                        actual, ctx, receiver=other_val
-                    )
-                if not use_descriptor_rules:
-                    expected = freshen_typevars_for_inference(expected)
-                    can_assign = has_relation(
-                        expected, actual, Relation.ASSIGNABLE, ctx
-                    )
-                else:
-                    actual_member_tobj = (
-                        ctx.make_type_object(other_type_key)
-                        if class_object_check and other_type_key is not None
-                        else other_type_obj
-                    )
-                    expected_access = _resolve_member_access(
-                        self,
-                        member=member,
-                        resolved_value=expected,
-                        ctx=ctx,
-                        class_object_access=False,
-                        receiver_value=other_val,
-                    )
-                    actual_access = _resolve_member_access(
-                        actual_member_tobj,
-                        member=member,
-                        resolved_value=actual,
-                        ctx=ctx,
-                        class_object_access=class_object_check,
-                        receiver_value=other_val,
-                    )
-                    if class_object_check and expected_access.symbol.is_classvar:
-                        can_assign = CanAssignError(
-                            f"Protocol member {member!r} is a ClassVar"
-                        )
-                    elif (
-                        class_object_check
-                        and not expected_access.symbol.is_classvar
-                        and not expected_access.symbol.is_method
-                        and not expected_access.is_property
-                        and not _is_callable_member_value(expected_access.value, ctx)
-                        and other_type_key is not None
-                        and not actual_access.symbol.is_classvar
-                        and not _is_member_from_metaclass(other_type_key, member, ctx)
-                    ):
-                        can_assign = CanAssignError(
-                            f"Protocol member {member!r} is an instance attribute"
-                        )
-                    elif (
-                        not class_object_check
-                        and not is_dunder_member
-                        and expected_access.symbol.is_classvar
-                        != actual_access.symbol.is_classvar
-                    ):
-                        can_assign = CanAssignError(
-                            f"ClassVar status of protocol member {member!r} conflicts"
-                        )
-                    else:
-                        expected_for_relation = expected_access.value
-                        actual_for_relation = actual_access.value
-                        expected_is_writable_data_member = (
-                            not expected_access.symbol.is_method
-                            and not expected_access.is_property
-                            and not expected_access.symbol.is_classvar
-                            and not expected_access.symbol.is_readonly
-                            and not _is_callable_member_value(
-                                expected_access.value, ctx
-                            )
-                        )
-                        expected_requires_writable = (
-                            expected_access.is_property
-                            and expected_access.property_has_setter
-                        ) or expected_is_writable_data_member
-                        if class_object_check:
-                            expected_requires_writable = False
-                        if expected_requires_writable and not _is_writable_member(
-                            actual_access, tobj=other_type_obj, ctx=ctx
-                        ):
-                            can_assign = CanAssignError(
-                                f"Protocol member {member!r} is not writable"
-                            )
-                        else:
-                            expected_for_relation = freshen_typevars_for_inference(
-                                expected_for_relation
-                            )
-                            if _is_callable_member_value(expected_for_relation, ctx):
-                                expected_for_relation = (
-                                    _normalize_protocol_initializer_for_relation(
-                                        expected_for_relation, ctx, receiver=self_val
-                                    )
-                                )
-                            if _is_callable_member_value(actual_for_relation, ctx):
-                                actual_for_relation = (
-                                    _normalize_protocol_initializer_for_relation(
-                                        actual_for_relation, ctx, receiver=other_val
-                                    )
-                                )
-                            can_assign = has_relation(
-                                expected_for_relation,
-                                actual_for_relation,
-                                Relation.ASSIGNABLE,
-                                ctx,
-                            )
-                            if (
-                                not isinstance(can_assign, CanAssignError)
-                                and expected_requires_writable
-                            ):
-                                reverse = has_relation(
-                                    actual_for_relation,
-                                    expected_for_relation,
-                                    Relation.ASSIGNABLE,
-                                    ctx,
-                                )
-                                if isinstance(reverse, CanAssignError):
-                                    can_assign = reverse
-                if isinstance(can_assign, CanAssignError):
-                    can_assign = CanAssignError(
-                        f"Value of protocol member {member!r} conflicts", [can_assign]
-                    )
-
-            if isinstance(can_assign, CanAssignError):
-                return can_assign
-            bounds_maps.append(can_assign)
-        bounds_map = unify_bounds_maps(bounds_maps)
-        # Protocol members can introduce shared type-variable constraints; reject
-        # matches where those constraints cannot be solved consistently.
-        from .typevar import resolve_bounds_map
-
-        _, errors = resolve_bounds_map(bounds_map, ctx)
-        if errors:
-            return CanAssignError(
-                "Conflicting type constraints for protocol members", list(errors)
-            )
-        return bounds_map
 
     def overrides_eq(self, self_val: Value, ctx: CanAssignContext) -> bool:
         if self.typ is type(None):
@@ -2509,18 +2203,6 @@ def merge_declared_symbol(
     )
 
 
-def _is_writable_member(
-    resolved_access: TypeObjectAttribute, tobj: TypeObject, ctx: CanAssignContext
-) -> bool:
-    if resolved_access.symbol.is_classvar or resolved_access.symbol.is_method:
-        return False
-    if resolved_access.is_property:
-        if not _attribute_blocks_writes(resolved_access, ctx):
-            return True
-        return resolved_access.property_has_setter
-    return not resolved_access.symbol.is_readonly and not tobj.is_frozen_dataclass()
-
-
 def _attribute_blocks_writes(
     access: TypeObjectAttribute, ctx: CanAssignContext
 ) -> bool:
@@ -2530,101 +2212,6 @@ def _attribute_blocks_writes(
         return True
     return _descriptor_has_method(access.raw_value, "__set__", ctx) or (
         _descriptor_has_method(access.raw_value, "__delete__", ctx)
-    )
-
-
-# TODO: why does this exist? seems to duplicate get_attribute
-def _resolve_member_access(
-    tobj: TypeObject,
-    *,
-    member: str,
-    resolved_value: Value,
-    ctx: CanAssignContext,
-    class_object_access: bool,
-    receiver_value: Value,
-) -> TypeObjectAttribute:
-    access = tobj.get_attribute(
-        member,
-        AttributePolicy(
-            receiver=receiver_value,
-            on_class=class_object_access,
-            prefer_symbolic=True,
-            visitor=(
-                ctx
-                if isinstance(ctx, pycroscope.name_check_visitor.NameCheckVisitor)
-                else None
-            ),
-        ),
-    )
-    if access is None:
-        return TypeObjectAttribute(
-            name=member,
-            value=resolved_value,
-            declared_value=resolved_value,
-            raw_value=resolved_value,
-            symbol=ClassSymbol(initializer=resolved_value),
-            runtime_symbol=ClassSymbol(initializer=resolved_value),
-            typeshed_symbol=None,
-            owner=tobj,
-            is_property=False,
-            property_has_setter=False,
-            is_metaclass_owner=False,
-        )
-    symbol = access.symbol
-    owner = access.owner
-    metaclass_owner = access.is_metaclass_owner
-    if class_object_access and not metaclass_owner:
-        property_getter, property_has_setter = None, False
-    elif symbol.property_info is not None:
-        property_has_setter = access.property_has_setter
-        if resolved_value is UNINITIALIZED_VALUE or _is_property_marker_value(
-            resolved_value
-        ):
-            property_getter = access.value
-        else:
-            policy = AttributePolicy(
-                receiver=receiver_value, on_class=class_object_access
-            )
-            property_getter = _substitute_symbol_value(
-                resolved_value,
-                _get_symbol_owner_substitutions_from_type_objects(
-                    tobj, owner, ctx=ctx, policy=policy
-                ),
-            )
-    else:
-        property_getter, property_has_setter = None, False
-    is_property = property_getter is not None
-    if class_object_access and symbol.is_property and not metaclass_owner:
-        is_property = False
-    if (
-        not class_object_access
-        and not symbol.is_classvar
-        and not is_property
-        and not symbol.is_method
-        and symbol.annotation is not None
-    ):
-        value = symbol.annotation
-    else:
-        value = property_getter if property_getter is not None else resolved_value
-    if (
-        class_object_access
-        and symbol.is_property
-        and not metaclass_owner
-        and not _is_property_marker_value(value)
-    ):
-        value = TypedValue(property)
-    return TypeObjectAttribute(
-        name=member,
-        value=value,
-        declared_value=access.declared_value,
-        raw_value=access.raw_value,
-        symbol=symbol,
-        runtime_symbol=access.runtime_symbol,
-        typeshed_symbol=access.typeshed_symbol,
-        owner=owner,
-        is_property=is_property,
-        property_has_setter=property_has_setter,
-        is_metaclass_owner=access.is_metaclass_owner,
     )
 
 
@@ -2948,7 +2535,6 @@ def _bind_attribute_signature(
     if self_annotation_value is None:
         self_annotation_value = receiver_value
     signature = ctx.signature_from_value(value)
-    print("BIND SIG", value, signature)
     if isinstance(signature, BoundMethodSignature):
         bound = signature.get_signature(
             ctx=ctx, self_annotation_value=self_annotation_value, preserve_impl=True
@@ -3761,11 +3347,6 @@ def _is_member_defined_on_class_key(
     return match is not None and not match[1].is_initvar
 
 
-def _is_member_method(class_key: ClassKey, member: str, ctx: CanAssignContext) -> bool:
-    match = lookup_declared_symbol_with_owner(class_key, member, ctx)
-    return match is not None and match[1].is_method
-
-
 def _is_property_marker_value(value: Value) -> bool:
     value = replace_fallback(value)
     return (
@@ -3774,55 +3355,6 @@ def _is_property_marker_value(value: Value) -> bool:
         or isinstance(value, TypedValue)
         and value.typ is property
     )
-
-
-def _is_callable_member_value(value: Value, ctx: CanAssignContext) -> bool:
-    if isinstance(value, CallableValue):
-        return True
-    if isinstance(value, KnownValue) and callable(value.val):
-        return True
-    signature = ctx.signature_from_value(value)
-    if isinstance(signature, (Signature, OverloadedSignature, BoundMethodSignature)):
-        return True
-    value = replace_fallback(value)
-    if isinstance(value, CallableValue):
-        return True
-    if isinstance(value, KnownValue) and callable(value.val):
-        return True
-    signature = ctx.signature_from_value(value)
-    return isinstance(signature, (Signature, OverloadedSignature, BoundMethodSignature))
-
-
-def _normalize_protocol_initializer_for_relation(
-    value: Value, ctx: CanAssignContext, receiver: Value
-) -> Value:
-    signature = ctx.signature_from_value(value)
-    if isinstance(signature, BoundMethodSignature):
-        bound = signature.get_signature(ctx=ctx)
-        if bound is None:
-            bound = signature.signature.bind_self(
-                self_value=replace_fallback(signature.self_composite.value), ctx=ctx
-            )
-        if bound is not None:
-            return CallableValue(bound)
-        return CallableValue(signature.signature)
-    if isinstance(
-        signature, (Signature, OverloadedSignature)
-    ) and _callable_value_missing_receiver(value, ctx):
-        bound = signature.bind_self(self_value=replace_fallback(receiver), ctx=ctx)
-        if bound is not None:
-            return CallableValue(bound)
-    return value
-
-
-def _protocol_member_bind_receiver(
-    symbol: ClassSymbol, receiver_value: Value, ctx: CanAssignContext
-) -> Value | None:
-    if symbol.is_staticmethod:
-        return None
-    if symbol.is_classmethod:
-        return _protocol_classmethod_receiver_value(receiver_value, ctx)
-    return receiver_value
 
 
 def _metaclass_key_for_class(
@@ -3837,43 +3369,6 @@ def _metaclass_key_for_class(
             return None
         case _:
             assert_never(metaclass)
-
-
-def _is_member_from_metaclass(
-    class_key: ClassKey, member: str, ctx: CanAssignContext
-) -> bool:
-    metaclass_key = _metaclass_key_for_class(class_key, ctx)
-    if metaclass_key is None:
-        return False
-    return _is_member_defined_on_class_key(metaclass_key, member, ctx)
-
-
-def _should_refine_class_object_member_lookup(
-    actual: Value, class_key: ClassKey, member: str, ctx: CanAssignContext
-) -> bool:
-    if _is_member_from_metaclass(class_key, member, ctx):
-        return False
-    if actual is UNINITIALIZED_VALUE:
-        return True
-    unwrapped = replace_fallback(actual)
-    if isinstance(unwrapped, AnyValue):
-        return True
-    if not _is_member_method(class_key, member, ctx):
-        return False
-    return _callable_value_missing_receiver(unwrapped, ctx)
-
-
-def _callable_value_missing_receiver(value: Value, ctx: CanAssignContext) -> bool:
-    signature = ctx.signature_from_value(value)
-    if isinstance(signature, BoundMethodSignature):
-        return True
-    if isinstance(signature, Signature):
-        return signature.bind_self(ctx=ctx) is None
-    if isinstance(signature, OverloadedSignature):
-        if not signature.signatures:
-            return True
-        return any(subsig.bind_self(ctx=ctx) is None for subsig in signature.signatures)
-    return False
 
 
 def _signature_has_receiver_parameter(
@@ -4003,110 +3498,6 @@ def _should_mark_protocol_call_tail(value: Value) -> bool:
     return not isinstance(replace_fallback(value), GenericValue)
 
 
-def _mark_protocol_call_signature_tail(
-    signature: Signature | OverloadedSignature,
-) -> Signature | OverloadedSignature:
-    if isinstance(signature, Signature):
-        marked_params = mark_ellipsis_style_any_tail_parameters(
-            list(signature.parameters.values())
-        )
-        return replace(
-            signature, parameters={param.name: param for param in marked_params}
-        )
-    marked_signatures = []
-    for sig in signature.signatures:
-        marked_params = mark_ellipsis_style_any_tail_parameters(
-            list(sig.parameters.values())
-        )
-        marked_signatures.append(
-            replace(sig, parameters={param.name: param for param in marked_params})
-        )
-    return OverloadedSignature(marked_signatures)
-
-
-def _collect_protocol_self_typevar_map(
-    tobj: TypeObject,
-    protocol_members: set[str],
-    receiver_value: Value,
-    ctx: CanAssignContext,
-) -> TypeVarMap:
-    """Collect typevar substitutions implied by receiver annotations.
-
-    This propagates `self: T` constraints across protocol members.
-    """
-    tv_map = TypeVarMap()
-    for member in sorted(protocol_members):
-        match = tobj.get_declared_symbol_with_owner(member, ctx)
-        if match is None:
-            continue
-        _, symbol = match
-        collected = _get_protocol_receiver_annotation(
-            tobj, symbol, receiver_value=receiver_value, ctx=ctx
-        )
-        if collected is None:
-            continue
-        self_annotation, receiver_for_match = collected
-        tv_map = _merge_protocol_receiver_typevars(
-            tv_map, self_annotation, receiver_for_match, ctx
-        )
-    return tv_map
-
-
-def _protocol_member_is_method(
-    tobj: TypeObject, member: str, ctx: CanAssignContext
-) -> bool:
-    match = tobj.get_declared_symbol_with_owner(member, ctx)
-    return match is not None and match[1].is_method
-
-
-def _substitute_receiver_self_typevar(
-    value: Value, receiver_value: Value, receiver_type_key: ClassKey
-) -> Value:
-    """Substitute only receiver-bound ``Self`` occurrences.
-
-    Nested ``Self`` values may belong to surrounding type arguments such as
-    ``Iterable[Self]`` and should not be rebound to the protocol receiver.
-    """
-    return value.substitute_typevars(
-        TypeVarMap(typevars={get_self_param(receiver_type_key): receiver_value})
-    )
-
-
-def _get_protocol_receiver_annotation(
-    owner_tobj: TypeObject,
-    symbol: ClassSymbol,
-    *,
-    receiver_value: Value,
-    ctx: CanAssignContext,
-) -> tuple[Value, Value] | None:
-    if symbol.is_staticmethod or symbol.initializer is None:
-        return None
-    if symbol.is_classmethod:
-        receiver_for_match = _protocol_classmethod_receiver_value(receiver_value, ctx)
-        raw_attr = replace_fallback(symbol.initializer)
-        if isinstance(raw_attr, GenericValue) and raw_attr.typ is classmethod:
-            if not raw_attr.args:
-                return None
-            return SubclassValue.make(raw_attr.args[0]), receiver_for_match
-    else:
-        receiver_for_match = receiver_value
-    callable_obj = _get_protocol_member_callable(symbol, owner=owner_tobj.typ)
-    if callable_obj is None:
-        return None
-    signature = as_concrete_signature(ctx.signature_from_value(callable_obj), ctx)
-    if signature is None:
-        return None
-    self_annotation = _get_first_parameter_annotation(signature)
-    if self_annotation is None:
-        return None
-    if (
-        isinstance(self_annotation, AnyValue)
-        and self_annotation.source is AnySource.unannotated
-    ):
-        self_annotation = _default_protocol_receiver_annotation(owner_tobj, symbol)
-    return self_annotation, receiver_for_match
-
-
 def _default_protocol_receiver_annotation(
     owner_tobj: TypeObject, symbol: ClassSymbol
 ) -> Value:
@@ -4120,29 +3511,6 @@ def _default_protocol_receiver_annotation(
     if symbol.is_classmethod:
         return SubclassValue.make(owner_value)
     return owner_value
-
-
-def _get_protocol_member_callable(
-    symbol: ClassSymbol, *, owner: ClassKey | None = None
-) -> Value | None:
-    initializer = symbol.initializer
-    if initializer is None:
-        return None
-    if symbol.is_property:
-        initializer = replace_fallback(initializer)
-        if (
-            isinstance(initializer, KnownValue)
-            and isinstance(initializer.val, property)
-            and initializer.val.fget is not None
-        ):
-            return KnownValue(initializer.val.fget)
-        return None
-    return normalize_synthetic_descriptor_attribute(
-        initializer,
-        owner=owner,
-        is_self_returning_classmethod=symbol.returns_self_on_class_access,
-        unknown_descriptor_means_any=False,
-    )
 
 
 def _get_first_parameter_annotation(

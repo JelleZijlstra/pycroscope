@@ -1,6 +1,5 @@
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Literal
 
 from typing_extensions import Self, assert_never
 
@@ -129,10 +128,12 @@ def assert_input_sig(value: Value) -> InputSig:
 def input_sigs_have_relation(
     left: InputSig,
     right: InputSig,
-    relation: Literal[Relation.ASSIGNABLE, Relation.SUBTYPE],
+    relation: Relation,
     ctx: CanAssignContext,
     inferables: tuple[TypeParam, ...] | None = None,
 ) -> CanAssign:
+    if relation not in (Relation.ASSIGNABLE, Relation.SUBTYPE):
+        raise ValueError(f"Unsupported relation: {relation}")
     if isinstance(left, AnySig):
         if relation is Relation.SUBTYPE:
             return CanAssignError("Cannot be assigned to")
