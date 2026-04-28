@@ -2588,7 +2588,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         is_instance_only: bool = False,
         is_method: bool = False,
         deprecation_message: str | None = None,
-        returns_self_on_class_access: bool = False,
         property_info: PropertyInfo | None = None,
         dataclass_field: DataclassFieldInfo | None = None,
         force_nonmember: bool = False,
@@ -2603,7 +2602,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         if enum_member_is_method:
             is_method = False
-            returns_self_on_class_access = False
         if property_info is not None and (
             synthetic_initializer is None
             or not _is_property_initializer(synthetic_initializer)
@@ -2618,7 +2616,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 is_method=is_method,
                 function_decorators=function_decorators,
                 deprecation_message=deprecation_message,
-                returns_self_on_class_access=returns_self_on_class_access,
                 property_info=property_info,
                 initializer=synthetic_initializer,
                 dataclass_field=dataclass_field,
@@ -2629,8 +2626,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self, synthetic_type: TypeObject, node: ast.ClassDef
     ) -> None:
         for method_name, (
-            function_decorators,
-            returns_self_on_class_access,
+            function_decorators
         ) in self._get_synthetic_method_symbol_flags(node).items():
             existing = synthetic_type.get_declared_symbol(method_name)
             if existing is not None and existing.is_property:
@@ -2643,7 +2639,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ClassSymbol(
                     is_method=True,
                     function_decorators=function_decorators,
-                    returns_self_on_class_access=returns_self_on_class_access,
                     initializer=initializer,
                 ),
             )
@@ -2691,7 +2686,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         is_method: bool | None = None,
         function_decorators: frozenset[FunctionDecorator],
         deprecation_message: str | None = None,
-        returns_self_on_class_access: bool | None = None,
         property_info: PropertyInfo | None = None,
         initializer: Value | None | Literal[_UNSET] = _UNSET,
         preserve_existing_initializer: bool = True,
@@ -2736,11 +2730,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 is_method=False if is_method is None else is_method,
                 function_decorators=function_decorators,
                 deprecation_message=deprecation_message,
-                returns_self_on_class_access=(
-                    False
-                    if returns_self_on_class_access is None
-                    else returns_self_on_class_access
-                ),
                 property_info=resolved_property_info,
                 initializer=resolved_initializer,
                 dataclass_field=dataclass_field,
@@ -2752,11 +2741,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             is_method=base.is_method if is_method is None else is_method,
             function_decorators=base.function_decorators | function_decorators,
             deprecation_message=deprecation_message,
-            returns_self_on_class_access=(
-                base.returns_self_on_class_access
-                if returns_self_on_class_access is None
-                else returns_self_on_class_access
-            ),
             property_info=None,
             initializer=(
                 base.initializer
@@ -2776,7 +2760,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         is_method: bool | None = None,
         function_decorators: frozenset[FunctionDecorator] = frozenset(),
         deprecation_message: str | None = None,
-        returns_self_on_class_access: bool | None = None,
         property_info: PropertyInfo | None = None,
         initializer: Value | None | Literal[_UNSET] = _UNSET,
     ) -> None:
@@ -2793,7 +2776,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 is_method=is_method,
                 function_decorators=function_decorators,
                 deprecation_message=deprecation_message,
-                returns_self_on_class_access=returns_self_on_class_access,
                 property_info=property_info,
                 initializer=initializer,
             ),
@@ -2808,7 +2790,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         annotation: Value | None = None,
         is_method: bool | None = None,
         function_decorators: frozenset[FunctionDecorator] = frozenset(),
-        returns_self_on_class_access: bool | None = None,
         property_info: PropertyInfo | None = None,
     ) -> None:
         type_object.set_declared_symbol(
@@ -2818,7 +2799,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 annotation=annotation,
                 is_method=is_method,
                 function_decorators=function_decorators,
-                returns_self_on_class_access=returns_self_on_class_access,
                 property_info=property_info,
                 initializer=initializer,
                 preserve_existing_initializer=False,
@@ -2852,12 +2832,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         is_method = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         if enum_member_is_method:
             is_method = False
-        returns_self_on_class_access = False
         function_decorators: frozenset[FunctionDecorator] = frozenset()
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            function_decorators, returns_self_on_class_access = (
-                self._synthetic_method_symbol_flags(node)
-            )
+            function_decorators = self._synthetic_method_symbol_flags(node)
         has_initializer = True
         if (
             isinstance(node, ast.AnnAssign)
@@ -2872,7 +2849,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             annotation=declared_annotation,
             is_method=is_method,
             function_decorators=function_decorators,
-            returns_self_on_class_access=returns_self_on_class_access,
         )
         if not has_initializer:
             self._update_synthetic_declared_symbol(synthetic_name, initializer=None)
@@ -2971,9 +2947,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 setter_target_name = decorator.value.id
                 break
         if setter_target_name is None:
-            function_decorators, returns_self_on_class_access = (
-                self._synthetic_method_symbol_flags(node)
-            )
+            function_decorators = self._synthetic_method_symbol_flags(node)
             self._set_complete_synthetic_class_symbol(
                 node.name,
                 initializer=function_value,
@@ -2982,7 +2956,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 is_method=True,
                 function_decorators=function_decorators,
                 deprecation_message=deprecation_message,
-                returns_self_on_class_access=returns_self_on_class_access,
             )
             return
 
@@ -4491,11 +4464,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         def _set_enum_declared_symbol(name: str, value: Value) -> None:
             self._set_synthetic_member_on_type_object(
-                synthetic_type,
-                name,
-                initializer=value,
-                is_method=False,
-                returns_self_on_class_access=False,
+                synthetic_type, name, initializer=value, is_method=False
             )
 
         for member_name, statement in _iter_enum_assignment_candidates(node):
@@ -6406,17 +6375,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _synthetic_method_symbol_flags(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> tuple[frozenset[FunctionDecorator], bool]:
-        decorator_kinds = self._function_decorator_kinds_by_node.get(node, frozenset())
-        is_classmethod = FunctionDecorator.classmethod in decorator_kinds
-        return (
-            decorator_kinds,
-            is_classmethod and self._function_returns_self_by_node.get(node, False),
-        )
+    ) -> frozenset[FunctionDecorator]:
+        return self._function_decorator_kinds_by_node.get(node, frozenset())
 
     def _get_synthetic_method_symbol_flags(
         self, node: ast.ClassDef
-    ) -> dict[str, tuple[frozenset[FunctionDecorator], bool]]:
+    ) -> dict[str, frozenset[FunctionDecorator]]:
         method_attributes = {}
         for stmt in node.body:
             if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -7503,7 +7467,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         signatures: list[Signature] = []
         transform_infos: list[DataclassTransformInfo] = []
         function_decorators: set[FunctionDecorator] = set()
-        returns_self_on_class_access = False
         for pending in pending_block.overloads:
             signature = pending.signature
             if isinstance(signature, Signature):
@@ -7515,11 +7478,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             pending_decorators = set(pending.decorator_kinds)
             pending_decorators.discard(FunctionDecorator.overload)
             function_decorators.update(pending_decorators)
-            if FunctionDecorator.classmethod in pending.decorator_kinds:
-                returns_self_on_class_access = (
-                    returns_self_on_class_access
-                    or self._function_returns_self_by_node.get(pending.node, False)
-                )
         if signatures:
             value: Value = CallableValue(
                 OverloadedSignature(signatures), types.FunctionType
@@ -7546,7 +7504,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     initializer=value,
                     is_method=True,
                     function_decorators=frozenset(function_decorators),
-                    returns_self_on_class_access=returns_self_on_class_access,
                 )
 
     def _validate_overload_block(

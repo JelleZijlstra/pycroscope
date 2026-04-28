@@ -4794,19 +4794,14 @@ class ClassSymbol:
     # TODO: How do we determine this? Does it add information over initializer/annotation?
     is_instance_only: bool = False
     is_method: bool = False
-    # TODO: not sure why this exists or why we need it
-    returns_self_on_class_access: bool = False
     property_info: PropertyInfo | None = None
     dataclass_field: DataclassFieldInfo | None = None
 
     def __post_init__(self) -> None:
-        if self.returns_self_on_class_access:
-            assert self.is_method, self
         if self.property_info is not None:
             assert not self.is_method, self
             assert not self.is_classmethod, self
             assert not self.is_staticmethod, self
-            assert not self.returns_self_on_class_access, self
         if self.is_method:
             assert self.initializer is not None, self
             assert self.property_info is None, self
@@ -4866,7 +4861,6 @@ class ClassSymbol:
             deprecation_message=self.deprecation_message,
             is_instance_only=self.is_instance_only,
             is_method=self.is_method,
-            returns_self_on_class_access=self.returns_self_on_class_access,
             property_info=(
                 self.property_info.substitute_typevars(substitutions)
                 if self.property_info is not None

@@ -2094,14 +2094,6 @@ def _merge_runtime_and_typeshed_symbol(
             runtime_symbol.is_instance_only or typeshed_symbol.is_instance_only
         ),
         is_method=runtime_symbol.is_method,
-        returns_self_on_class_access=(
-            runtime_symbol.returns_self_on_class_access
-            or (
-                typeshed_symbol.returns_self_on_class_access
-                if runtime_symbol.is_method
-                else False
-            )
-        ),
         property_info=property_info,
         initializer=_merge_symbol_type_information(
             runtime_symbol.initializer, typeshed_symbol.initializer
@@ -2164,9 +2156,6 @@ def merge_declared_symbol(
         deprecation_message=existing.deprecation_message or new.deprecation_message,
         is_instance_only=existing.is_instance_only or new.is_instance_only,
         is_method=existing.is_method or new.is_method,
-        returns_self_on_class_access=(
-            existing.returns_self_on_class_access or new.returns_self_on_class_access
-        ),
         property_info=_merge_property_info(existing.property_info, new.property_info),
         initializer=_merge_symbol_initializer(existing.initializer, new.initializer),
         dataclass_field=(
