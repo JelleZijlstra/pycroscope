@@ -201,14 +201,10 @@ class TypeObjectAttribute:
     # declared/raw split from TypeObjectAttribute.
     declared_value: Value
     raw_value: Value
-    # Legacy compatibility symbol view. Prefer runtime_symbol and
-    # typeshed_symbol when source provenance matters.
     symbol: ClassSymbol
-    runtime_symbol: ClassSymbol | None
-    typeshed_symbol: ClassSymbol | None
     owner: "TypeObject"
     is_property: bool
-    property_has_setter: bool
+    property_has_setter: bool  # TODO: do we need this?
     is_metaclass_owner: bool
     error: CanAssignError | None = None
 
@@ -1426,8 +1422,6 @@ class TypeObject:
                 declared_value=AnyValue(AnySource.inference),
                 raw_value=AnyValue(AnySource.inference),
                 symbol=ClassSymbol(initializer=AnyValue(AnySource.inference)),
-                runtime_symbol=ClassSymbol(initializer=AnyValue(AnySource.inference)),
-                typeshed_symbol=None,
                 owner=self,
                 is_property=False,
                 property_has_setter=False,
@@ -1440,8 +1434,6 @@ class TypeObject:
                 declared_value=TypedValue(dict),
                 raw_value=TypedValue(dict),
                 symbol=ClassSymbol(initializer=TypedValue(dict)),
-                runtime_symbol=ClassSymbol(initializer=TypedValue(dict)),
-                typeshed_symbol=None,
                 owner=self,
                 is_property=False,
                 property_has_setter=False,
@@ -1513,8 +1505,6 @@ class TypeObject:
                     declared_value=unknown_value,
                     raw_value=unknown_value,
                     symbol=ClassSymbol(initializer=unknown_value),
-                    runtime_symbol=ClassSymbol(initializer=unknown_value),
-                    typeshed_symbol=None,
                     owner=self,
                     is_property=False,
                     property_has_setter=False,
@@ -1815,8 +1805,6 @@ class TypeObject:
                     declared_value=CallableValue(actual_sig),
                     raw_value=CallableValue(actual_sig),
                     symbol=ClassSymbol(initializer=CallableValue(actual_sig)),
-                    runtime_symbol=ClassSymbol(initializer=CallableValue(actual_sig)),
-                    typeshed_symbol=None,
                     owner=other_type_obj,
                     is_property=False,
                     property_has_setter=False,
@@ -1837,8 +1825,6 @@ class TypeObject:
                             declared_value=direct_attribute,
                             raw_value=direct_attribute,
                             symbol=ClassSymbol(initializer=direct_attribute),
-                            runtime_symbol=None,
-                            typeshed_symbol=None,
                             owner=other_type_obj,
                             is_property=False,
                             property_has_setter=False,
@@ -1862,8 +1848,6 @@ class TypeObject:
                             is_instance_only=True,
                             annotation=actual_attr.symbol.annotation,
                         ),
-                        runtime_symbol=None,
-                        typeshed_symbol=None,
                         owner=other_type_obj,
                         is_property=False,
                         property_has_setter=False,
@@ -2299,20 +2283,6 @@ def _transform_known_class_attribute(
     return ClassAttributeTransformer.transform_attribute(initializer.val, options)
 
 
-def _class_key_and_generic_args_from_type_value(
-    receiver_value: TypedValue | TypeVarValue,
-) -> tuple[ClassKey, Sequence[Value]]:
-    if isinstance(receiver_value, TypeVarValue):
-        assert receiver_value.typevar_param.bound is not None
-        class_key = _class_key_from_value(receiver_value.typevar_param.bound)
-        assert class_key is not None
-        return class_key, ()
-    generic_args = (
-        receiver_value.args if isinstance(receiver_value, GenericValue) else ()
-    )
-    return receiver_value.typ, generic_args
-
-
 def typevar_map_from_generic_args(
     type_params: Sequence[TypeParam], generic_args: Sequence[Value]
 ) -> TypeVarMap:
@@ -2579,8 +2549,6 @@ def _make_resolved_attribute(
         declared_value=_merged_attribute_effective_value(merged_attribute),
         raw_value=_merged_attribute_lookup_value(merged_attribute),
         symbol=_merged_attribute_symbol(merged_attribute),
-        runtime_symbol=merged_attribute.runtime_symbol,
-        typeshed_symbol=merged_attribute.typeshed_symbol,
         owner=merged_attribute.owner,
         is_property=is_property,
         property_has_setter=property_has_setter,
@@ -3118,21 +3086,6 @@ def _make_type_object_for_key(class_key: ClassKey, ctx: object) -> TypeObject | 
     return None
 
 
-def _get_synthetic_class_for_key(
-    class_key: ClassKey, ctx: CanAssignContext
-) -> SyntheticClassObjectValue | None:
-    get_synthetic_class = safe_getattr(ctx, "get_synthetic_class", None)
-    if callable(get_synthetic_class):
-        synthetic = get_synthetic_class(class_key)
-        if synthetic is not None:
-            return synthetic
-    checker = _checker_ctx(ctx)
-    get_synthetic_class = safe_getattr(checker, "get_synthetic_class", None)
-    if callable(get_synthetic_class):
-        return get_synthetic_class(class_key)
-    return None
-
-
 def lookup_declared_symbol_with_owner(
     class_key: ClassKey, member: str, ctx: CanAssignContext
 ) -> tuple[ClassKey, ClassSymbol] | None:
@@ -3154,15 +3107,6 @@ def _receiver_key_from_value(value: Value) -> ClassKey | None:
     if isinstance(narrowed, KnownValue) and not isinstance(narrowed.val, type):
         return type(narrowed.val)
     return None
-
-
-def _is_placeholder_typevartuple_binding(binding: Sequence[tuple[bool, Value]]) -> bool:
-    return (
-        len(binding) == 1
-        and binding[0][0]
-        and isinstance(binding[0][1], AnyValue)
-        and binding[0][1].source is AnySource.generic_argument
-    )
 
 
 def _is_definitely_class_object_value(value: Value) -> bool:
