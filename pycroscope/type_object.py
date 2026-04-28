@@ -204,7 +204,6 @@ class TypeObjectAttribute:
     symbol: ClassSymbol
     owner: "TypeObject"
     is_property: bool
-    property_has_setter: bool  # TODO: do we need this?
     is_metaclass_owner: bool
     error: CanAssignError | None = None
 
@@ -1424,7 +1423,6 @@ class TypeObject:
                 symbol=ClassSymbol(initializer=AnyValue(AnySource.inference)),
                 owner=self,
                 is_property=False,
-                property_has_setter=False,
                 is_metaclass_owner=False,
             )
         if not policy.on_class and name == "__dict__":
@@ -1436,7 +1434,6 @@ class TypeObject:
                 symbol=ClassSymbol(initializer=TypedValue(dict)),
                 owner=self,
                 is_property=False,
-                property_has_setter=False,
                 is_metaclass_owner=False,
             )
         return None
@@ -1507,7 +1504,6 @@ class TypeObject:
                     symbol=ClassSymbol(initializer=unknown_value),
                     owner=self,
                     is_property=False,
-                    property_has_setter=False,
                     is_metaclass_owner=False,
                 )
             return None
@@ -1807,7 +1803,6 @@ class TypeObject:
                     symbol=ClassSymbol(initializer=CallableValue(actual_sig)),
                     owner=other_type_obj,
                     is_property=False,
-                    property_has_setter=False,
                     is_metaclass_owner=False,
                 )
             else:
@@ -1827,7 +1822,6 @@ class TypeObject:
                             symbol=ClassSymbol(initializer=direct_attribute),
                             owner=other_type_obj,
                             is_property=False,
-                            property_has_setter=False,
                             is_metaclass_owner=False,
                         )
                         # Don't enforce strict variance for members extracted straight
@@ -1850,7 +1844,6 @@ class TypeObject:
                         ),
                         owner=other_type_obj,
                         is_property=False,
-                        property_has_setter=False,
                         is_metaclass_owner=False,
                     )
             if expected_attr is None:
@@ -2528,7 +2521,6 @@ def _make_resolved_attribute(
     *,
     value: Value,
     is_property: bool,
-    property_has_setter: bool,
     error: CanAssignError | None = None,
 ) -> TypeObjectAttribute:
     return TypeObjectAttribute(
@@ -2539,7 +2531,6 @@ def _make_resolved_attribute(
         symbol=_merged_attribute_symbol(merged_attribute),
         owner=merged_attribute.owner,
         is_property=is_property,
-        property_has_setter=property_has_setter,
         is_metaclass_owner=merged_attribute.is_metaclass_owner,
         error=error,
     )
@@ -2552,7 +2543,6 @@ def _make_error_attribute(
         merged_attribute,
         value=AnyValue(AnySource.error),
         is_property=False,
-        property_has_setter=False,
         error=error,
     )
 
@@ -2569,7 +2559,6 @@ def _apply_descriptor_protocol_to_property(
             merged_attribute,
             value=merged_attribute.initializer or TypedValue(property),
             is_property=False,
-            property_has_setter=property_info.fset is not None,
         )
     if property_info.fget is None or property_info.fget.initializer is None:
         return _make_error_attribute(
@@ -2583,12 +2572,7 @@ def _apply_descriptor_protocol_to_property(
     )
     fget = property_info.fget.initializer
     value = _make_call(fget, (receiver_arg,), policy=policy, ctx=ctx)
-    return _make_resolved_attribute(
-        merged_attribute,
-        value=value,
-        is_property=True,
-        property_has_setter=property_info.fset is not None,
-    )
+    return _make_resolved_attribute(merged_attribute, value=value, is_property=True)
 
 
 def _make_call(
@@ -2628,9 +2612,7 @@ def _apply_descriptor_protocol_to_staticmethod(
                     f"Unrecognized staticmethod object {merged_attribute.initializer}"
                 ),
             )
-    return _make_resolved_attribute(
-        merged_attribute, value=value, is_property=False, property_has_setter=False
-    )
+    return _make_resolved_attribute(merged_attribute, value=value, is_property=False)
 
 
 def _apply_descriptor_protocol_to_classmethod(
@@ -2658,10 +2640,7 @@ def _apply_descriptor_protocol_to_classmethod(
             value = CallableValue(replace(sig.sig, return_value=return_value))
             # This is already bound, don't bind again
             return _make_resolved_attribute(
-                merged_attribute,
-                value=value,
-                is_property=False,
-                property_has_setter=False,
+                merged_attribute, value=value, is_property=False
             )
         case _:
             return _make_error_attribute(
@@ -2680,10 +2659,7 @@ def _apply_descriptor_protocol_to_classmethod(
         value, receiver_value=instance_receiver, self_annotation_value=receiver, ctx=ctx
     )
     return _make_resolved_attribute(
-        merged_attribute,
-        value=bound_value,
-        is_property=False,
-        property_has_setter=False,
+        merged_attribute, value=bound_value, is_property=False
     )
 
 
@@ -2702,10 +2678,7 @@ def _apply_descriptor_protocol_to_method(
         )
     if not is_instance_access:
         return _make_resolved_attribute(
-            merged_attribute,
-            value=initializer,
-            is_property=False,
-            property_has_setter=False,
+            merged_attribute, value=initializer, is_property=False
         )
 
     # We have to produce an UnboundMethodValue for some downstream reasons
@@ -2743,10 +2716,7 @@ def _apply_descriptor_protocol_to_method(
             initializer, receiver_value=receiver_instance, ctx=ctx
         )
     return _make_resolved_attribute(
-        merged_attribute,
-        value=bound_value,
-        is_property=False,
-        property_has_setter=False,
+        merged_attribute, value=bound_value, is_property=False
     )
 
 
@@ -2847,15 +2817,10 @@ def _apply_descriptor_protocol_to_descriptor(
         # type than the __get__ method.
         # (We still call __get__ first so we get errors from it.)
         return _make_resolved_attribute(
-            merged_attribute,
-            value=merged_attribute.annotation,
-            is_property=False,
-            property_has_setter=False,
+            merged_attribute, value=merged_attribute.annotation, is_property=False
         )
 
-    return _make_resolved_attribute(
-        merged_attribute, value=value, is_property=False, property_has_setter=False
-    )
+    return _make_resolved_attribute(merged_attribute, value=value, is_property=False)
 
 
 def _apply_descriptor_protocol(
@@ -2867,10 +2832,7 @@ def _apply_descriptor_protocol(
     )
     if transformed_value is not None:
         return _make_resolved_attribute(
-            merged_attribute,
-            value=transformed_value,
-            is_property=False,
-            property_has_setter=False,
+            merged_attribute, value=transformed_value, is_property=False
         )
 
     is_instance_access = not policy.on_class or merged_attribute.is_metaclass_owner
@@ -2916,18 +2878,12 @@ def _apply_descriptor_protocol(
         or merged_attribute.initializer is not None
     ):
         return _make_resolved_attribute(
-            merged_attribute,
-            value=merged_attribute.annotation,
-            is_property=False,
-            property_has_setter=False,
+            merged_attribute, value=merged_attribute.annotation, is_property=False
         )
 
     if merged_attribute.initializer is not None:
         return _make_resolved_attribute(
-            merged_attribute,
-            value=merged_attribute.initializer,
-            is_property=False,
-            property_has_setter=False,
+            merged_attribute, value=merged_attribute.initializer, is_property=False
         )
 
     if merged_attribute.annotation is not None:

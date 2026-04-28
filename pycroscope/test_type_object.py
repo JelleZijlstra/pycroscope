@@ -1009,7 +1009,6 @@ def test_get_attribute_prefers_metaclass_data_descriptor_on_class_access() -> No
     assert attribute is not None
     assert attribute.is_metaclass_owner
     assert attribute.is_property is False
-    assert attribute.property_has_setter is False
     assert attribute.value == TypedValue(int)
 
 

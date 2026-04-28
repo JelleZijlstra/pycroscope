@@ -14278,7 +14278,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_code=ErrorCode.incompatible_assignment,
             )
             return
-        if attr.is_property and not attr.property_has_setter:
+        if attr.symbol.property_info is not None and not attr.symbol.property_info.fset:
             self._show_error_if_checking(
                 node,
                 f"Cannot {wording} read-only property {node.attr!r}",
