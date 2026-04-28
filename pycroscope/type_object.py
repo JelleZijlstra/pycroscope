@@ -1299,6 +1299,10 @@ class TypeObject:
                     return True
         return False
 
+    def is_frozen_dataclass(self) -> bool:
+        _, frozen = self.get_dataclass_frozen_status()
+        return frozen is True
+
     def get_dataclass_frozen_status(self) -> tuple[bool, bool | None]:
         for entry in self.get_mro():
             if entry.tobj is None:
@@ -1803,7 +1807,7 @@ class TypeObject:
         )
         for member in protocol_members:
             expected_attr = self.get_attribute(member, self_policy)
-            print("EXTECPED", member, expected_attr, self_policy)
+            strict_variance = True
             if member == "__call__":
                 actual_sig = ctx.signature_from_value(other_val)
                 if actual_sig is None:
@@ -1843,6 +1847,9 @@ class TypeObject:
                             property_has_setter=False,
                             is_metaclass_owner=False,
                         )
+                        # Don't enforce strict variance for members extracted straight
+                        # from runtime attributes, we may infer an overly precise type.
+                        strict_variance = False
                     else:
                         return CanAssignError(
                             f"Protocol {self} requires member {member}, "
@@ -1852,16 +1859,6 @@ class TypeObject:
                 # In static fallback mode, synthetic protocol members may not have
                 # a retrievable attribute type. Keep enforcing member presence.
                 continue
-            if member == "__iter__":
-                print(
-                    "COMPARE",
-                    member,
-                    self,
-                    self_val,
-                    self.get_declared_type_params(),
-                    expected_attr.value,
-                    actual_attr.value,
-                )
             bounds_map = is_compatible_attribute(
                 member,
                 expected_attr,
@@ -1871,9 +1868,8 @@ class TypeObject:
                 # TODO: revisit this, we should probably get inferables from the caller
                 inferables=self.get_declared_type_params()
                 + _collect_type_params(self_val),
-                strict_variance=True,
+                strict_variance=strict_variance,
             )
-            print("BOUNDS MAP", member, bounds_map)
             if isinstance(bounds_map, CanAssignError):
                 return CanAssignError(
                     f"Member {member!r} of protocol {self} is incompatible with {other_val}",
@@ -2501,7 +2497,7 @@ def _is_writable_member(
         if not _attribute_blocks_writes(resolved_access, ctx):
             return True
         return resolved_access.property_has_setter
-    return not resolved_access.symbol.is_readonly and not _is_frozen_dataclass(tobj)
+    return not resolved_access.symbol.is_readonly and not tobj.is_frozen_dataclass()
 
 
 def _attribute_blocks_writes(
@@ -3757,11 +3753,6 @@ def _is_property_marker_value(value: Value) -> bool:
         or isinstance(value, TypedValue)
         and value.typ is property
     )
-
-
-def _is_frozen_dataclass(tobj: TypeObject) -> bool:
-    _, frozen = tobj.get_dataclass_frozen_status()
-    return frozen is True
 
 
 def _is_callable_member_value(value: Value, ctx: CanAssignContext) -> bool:

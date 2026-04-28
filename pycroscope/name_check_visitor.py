@@ -12147,6 +12147,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 symbol_qualifiers.add(Qualifier.ReadOnly)
             if is_final:
                 symbol_qualifiers.add(Qualifier.Final)
+            if (
+                self.current_tobj is not None
+                and self.current_tobj.is_frozen_dataclass()
+            ):
+                symbol_qualifiers.add(Qualifier.ReadOnly)
             is_instance_only = False
             if dataclass_field_info is not None:
                 is_instance_only = Qualifier.ClassVar not in symbol_qualifiers and (
