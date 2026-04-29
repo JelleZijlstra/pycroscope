@@ -331,6 +331,19 @@ class TestProtocol(TestNameCheckVisitorBase):
             print(generic_cb, specific_cb, bad_cb)
 
     @assert_passes()
+    def test_callable_protocol_and_lambda(self):
+        from typing import Callable, Protocol
+
+        class Proto(Protocol):
+            def __call__(self, x: int, /) -> str: ...
+
+        def capybara(p: Proto) -> None:
+            cb: Callable[[int], str] = p
+            print(cb)
+
+        capybara(lambda x: str(x))
+
+    @assert_passes()
     def test_bound_dataclass_init_matches_callable_protocol(self):
         from dataclasses import dataclass
         from typing import Protocol

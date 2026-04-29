@@ -1789,6 +1789,11 @@ class TypeObject:
         for member in protocol_members:
             expected_attr = self.get_attribute(member, self_policy)
             strict_variance = True
+            # TODO: revisit this, we should probably get inferables from the caller
+            inferables = [
+                *self.get_declared_type_params(),
+                *_collect_type_params(self_val),
+            ]
             if member == "__call__":
                 actual_sig = ctx.signature_from_value(other_val)
                 if actual_sig is None:
@@ -1808,6 +1813,11 @@ class TypeObject:
                     is_property=False,
                     is_metaclass_owner=False,
                 )
+                if isinstance(actual_sig, OverloadedSignature):
+                    for sig in actual_sig.signatures:
+                        inferables += sig.inferable_typevars
+                else:
+                    inferables += actual_sig.inferable_typevars
             else:
                 if member == "__hash__":
                     policy = replace(other_policy, is_special_lookup=True)
@@ -1859,9 +1869,7 @@ class TypeObject:
                 actual_attr,
                 relation,
                 ctx,
-                # TODO: revisit this, we should probably get inferables from the caller
-                inferables=self.get_declared_type_params()
-                + _collect_type_params(self_val),
+                inferables=tuple(inferables),
                 strict_variance=strict_variance,
             )
             if isinstance(bounds_map, CanAssignError):
