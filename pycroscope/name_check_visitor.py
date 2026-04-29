@@ -3056,16 +3056,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         return match is not None and self._is_instance_only_symbol(match[1].symbol)
 
-    def _get_instance_only_annotation_value_for_class_key(
-        self, class_key: ClassKey, attr_name: str
-    ) -> Value:
-        match = self._get_type_object_attribute_match_for_class_key(
-            class_key, attr_name
-        )
-        if match is not None and self._is_instance_only_symbol(match[1].symbol):
-            return match[1].value
-        return UNINITIALIZED_VALUE
-
     def _contains_classvar_type_parameter(self, value: Value) -> bool:
         for subval in value.walk_values():
             if isinstance(subval, TypeVarValue):
@@ -8014,7 +8004,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _is_instance_member_accessed_through_class(
         self, root_composite: Composite, attr_name: str, node: ast.AST | None = None
     ) -> bool:
-        if attr_name in {"__name__", "__qualname__", "__module__", "__doc__"}:
+        if attr_name in {
+            "__name__",
+            "__qualname__",
+            "__module__",
+            "__doc__",
+            "__annotations__",
+        }:
             return False
         call_expr: ast.AST | None = root_composite.node
         if isinstance(node, ast.Attribute):
@@ -14532,18 +14528,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 varname=root_composite.varname,
                 node=root_composite.node,
             )
-        if (
-            isinstance(node, ast.Attribute)
-            and self.current_class_key is not None
-            and self._is_current_method_receiver_node(node.value)
-            and self._is_class_object_attribute_root(root_composite.value) is True
-            and self._is_instance_only_member(self.current_class_key, attr)
-        ):
-            static_member = self._get_instance_only_annotation_value_for_class_key(
-                self.current_class_key, attr
-            )
-            if static_member is not UNINITIALIZED_VALUE:
-                return static_member
         if not is_special_lookup and self._is_instance_member_accessed_through_class(
             root_composite, attr, node
         ):

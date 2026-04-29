@@ -1223,10 +1223,12 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
     @assert_passes(run_in_both_module_modes=True)
     def test_inherited_string_annotation_accessed_through_cls(self):
+        from typing import ClassVar
+
         from typing_extensions import assert_type
 
         class Base:
-            x: "int"
+            x: "ClassVar[int]"
 
         class Child(Base):
             @classmethod
@@ -1235,14 +1237,14 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
     @assert_passes(run_in_both_module_modes=True)
     def test_inherited_generic_annotation_accessed_through_cls(self):
-        from typing import Generic, TypeVar
+        from typing import ClassVar, Generic, TypeVar
 
         from typing_extensions import assert_type
 
         T = TypeVar("T")
 
         class Base(Generic[T]):
-            x: T
+            x: ClassVar[T]
 
         class Child(Base[int]):
             @classmethod
@@ -4615,7 +4617,7 @@ class TestAnnAssign(TestNameCheckVisitorBase):
 
     @assert_passes(run_in_both_module_modes=True)
     def test_inherited_instance_only_member_substitutes_generic_base_args(self):
-        from typing import Generic, TypeVar
+        from typing import ClassVar, Generic, TypeVar
 
         from typing_extensions import assert_type
 
@@ -4623,11 +4625,14 @@ class TestAnnAssign(TestNameCheckVisitorBase):
 
         class Base(Generic[T]):
             value: T
+            class_value: ClassVar[T]
 
         class Child(Base[int]):
             @classmethod
             def class_method(cls) -> None:
-                assert_type(cls.value, int)
+                assert_type(cls.class_value, int)
+
+                cls.value  # E: undefined_attribute
 
             def method(self) -> None:
                 assert_type(self.value, int)
