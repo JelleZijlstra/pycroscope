@@ -15294,9 +15294,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             f"Call to {callee_wrapped.val} is not supported",
                             error_code=ErrorCode.incompatible_call,
                         )
-                    elif not self._should_preserve_static_call_return(
-                        callee_wrapped, return_value, result
-                    ):
+                    else:
                         return_value = KnownValue(result)
 
         return_value = self._specialize_generic_alias_call_return(
@@ -15364,72 +15362,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and should_disable_runtime_call_for_namedtuple_class(callee_obj)
             and not ClassesSafeToInstantiate.contains(callee_obj, self.options)
         )
-
-    def _should_preserve_static_constructor_return(
-        self, callee: Value, static_return_value: Value, runtime_result: object
-    ) -> bool:
-        runtime_class: type | None = None
-        callee_args: Sequence[Value]
-        if isinstance(callee, KnownValue):
-            origin = get_origin(callee.val)
-            runtime_args = get_args(callee.val)
-            if not (isinstance(origin, type) and runtime_args):
-                return False
-            runtime_class = origin
-            callee_args = [
-                TypedValue(arg) if isinstance(arg, type) else KnownValue(arg)
-                for arg in runtime_args
-            ]
-        elif not (
-            isinstance(callee, PartialValue)
-            and callee.operation is PartialValueOperation.SUBSCRIPT
-        ):
-            return False
-        else:
-            if isinstance(callee.root, KnownValue) and isinstance(
-                callee.root.val, type
-            ):
-                runtime_class = callee.root.val
-            callee_args = [
-                (
-                    TypedValue(member.val)
-                    if isinstance(member, KnownValue) and type(member.val) is type
-                    else member
-                )
-                for member in callee.members
-            ]
-        if runtime_class is None:
-            return False
-        if "__new__" not in runtime_class.__dict__:
-            return False
-        annotations = safe_getattr(
-            runtime_class.__dict__["__new__"], "__annotations__", {}
-        )
-        if "return" not in annotations:
-            return False
-
-        static_root = replace_fallback(static_return_value)
-        if isinstance(static_root, GenericValue) and isinstance(static_root.typ, type):
-            if len(static_root.args) == len(callee_args) and all(
-                static_arg == callee_arg
-                for static_arg, callee_arg in zip(static_root.args, callee_args)
-            ):
-                return False
-            return isinstance(runtime_result, static_root.typ)
-        return False
-
-    def _should_preserve_static_call_return(
-        self, callee: Value, static_return_value: Value, runtime_result: object
-    ) -> bool:
-        if self._should_preserve_static_constructor_return(
-            callee, static_return_value, runtime_result
-        ):
-            return True
-        if safe_isinstance(runtime_result, tuple) and is_namedtuple_class(
-            type(runtime_result)
-        ):
-            return not isinstance(static_return_value, AnyValue)
-        return False
 
     def _specialize_generic_alias_call_return(
         self, callee: Value, return_value: Value, node: ast.AST | None
