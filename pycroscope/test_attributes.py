@@ -679,7 +679,7 @@ class TestAttributes(TestNameCheckVisitorBase):
             assert_type(x.make(), T)
 
         def use_class(cls: type[T]) -> None:
-            assert_type(cls.peer, T)
+            assert_type(cls().peer, T)
             assert_type(cls.make(), T)
 
     @assert_passes()

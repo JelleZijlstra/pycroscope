@@ -1220,9 +1220,6 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
 
         from typing_extensions import dataclass_transform
 
-        from pycroscope import assert_is_value
-        from pycroscope.value import AnySource, AnyValue
-
         T = TypeVar("T")
 
         class DataDescriptor:
@@ -1260,9 +1257,7 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             b: DataDescriptor = DataDescriptor()
             c: ReadDescriptor[str] = ReadDescriptor[str]()
 
-        # TODO: We detect that this attribute does not exist but don't currently
-        # emit the error.
-        assert_is_value(TransformModel.a, AnyValue(AnySource.error))
+        TransformModel.a  # E: undefined_attribute
 
         assert_type(TransformModel.b, DataDescriptor)
         assert_type(TransformModel.c, list[str])

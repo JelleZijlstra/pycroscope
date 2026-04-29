@@ -11703,6 +11703,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 mutually_exclusive_qualifiers=((Qualifier.Final, Qualifier.ReadOnly),),
                 qualifier_error_code=ErrorCode.invalid_qualifier,
             )
+            if (
+                node.value is None
+                and Qualifier.ClassVar in qualifiers
+                and expected_type is None
+            ):
+                expected_type = AnyValue(AnySource.unannotated)
         if (
             should_collect_class_annotation_variance
             and local_type_param_polarities is not None
@@ -12110,8 +12116,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 symbol_qualifiers.add(Qualifier.ReadOnly)
             is_instance_only = False
             if dataclass_field_info is not None:
-                is_instance_only = Qualifier.ClassVar not in symbol_qualifiers and (
-                    Qualifier.InitVar not in symbol_qualifiers
+                has_dataclass_class_binding = node.value is not None and (
+                    field_options is None or field_options.default is not None
+                )
+                is_instance_only = (
+                    Qualifier.ClassVar not in symbol_qualifiers
+                    and (Qualifier.InitVar not in symbol_qualifiers)
+                    and not has_dataclass_class_binding
                 )
             elif is_class_annotation_without_value and not has_classvar:
                 is_instance_only = True
@@ -14640,7 +14651,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             record_reads=record_reads,
             self_value=resolved_self_value,
         )
-        result = attributes.get_attribute(ctx)
+        result, error = attributes.get_attribute_with_error(ctx)
+        if error is not None:
+            result = UNINITIALIZED_VALUE
         root_info = _attribute_root_class_info(root_composite.value)
         if (
             result is UNINITIALIZED_VALUE
@@ -14662,7 +14675,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     record_reads=record_reads,
                     self_value=resolved_self_value,
                 )
-                result = attributes.get_attribute(mangled_ctx)
+                result, error = attributes.get_attribute_with_error(mangled_ctx)
+                if error is not None:
+                    result = UNINITIALIZED_VALUE
         if result is UNINITIALIZED_VALUE and use_fallback and node is not None:
             return self._get_attribute_fallback(root_composite.value, attr, node)
         return result

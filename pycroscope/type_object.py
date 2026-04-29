@@ -2837,6 +2837,22 @@ def _apply_descriptor_protocol(
 
     is_instance_access = not policy.on_class or merged_attribute.is_metaclass_owner
 
+    is_instance_only = (
+        merged_attribute.runtime_symbol is not None
+        and merged_attribute.runtime_symbol.is_instance_only
+    ) or (
+        merged_attribute.typeshed_symbol is not None
+        and merged_attribute.typeshed_symbol.is_instance_only
+    )
+
+    if is_instance_only and not is_instance_access:
+        return _make_error_attribute(
+            merged_attribute,
+            CanAssignError(
+                f"Attribute '{merged_attribute.name}' only exists on instances, not on the class"
+            ),
+        )
+
     if merged_attribute.property_info is not None:
         return _apply_descriptor_protocol_to_property(
             merged_attribute,
