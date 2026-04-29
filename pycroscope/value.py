@@ -1125,7 +1125,7 @@ class AliasOwner:
         return hash(self.identity)
 
 
-TypeParamOwner = type | ClassOwner | FunctionOwner | AliasOwner
+TypeParamOwner = type | ClassOwner | FunctionOwner | AliasOwner | Sentinel
 
 
 def _type_param_to_string(prefix: str, name: str, owner: TypeParamOwner | None) -> str:
@@ -1756,7 +1756,10 @@ class KnownValue(Value):
         elif isinstance(self.val, type):
             return f"type {get_fully_qualified_name(self.val)!r}"
         else:
-            return f"Literal[{self.val!r}]"
+            try:
+                return f"Literal[{self.val!r}]"
+            except Exception:
+                return "Literal[<unprintable>]"
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "KnownValue":
         if not typevars or not (
@@ -4791,19 +4794,14 @@ class ClassSymbol:
     # TODO: How do we determine this? Does it add information over initializer/annotation?
     is_instance_only: bool = False
     is_method: bool = False
-    # TODO: not sure why this exists or why we need it
-    returns_self_on_class_access: bool = False
     property_info: PropertyInfo | None = None
     dataclass_field: DataclassFieldInfo | None = None
 
     def __post_init__(self) -> None:
-        if self.returns_self_on_class_access:
-            assert self.is_method, self
         if self.property_info is not None:
             assert not self.is_method, self
             assert not self.is_classmethod, self
             assert not self.is_staticmethod, self
-            assert not self.returns_self_on_class_access, self
         if self.is_method:
             assert self.initializer is not None, self
             assert self.property_info is None, self
@@ -4840,6 +4838,12 @@ class ClassSymbol:
     def is_property(self) -> bool:
         return self.property_info is not None
 
+    @property
+    def is_writable(self) -> bool:
+        if self.property_info is not None:
+            return self.property_info.fset is not None
+        return not self.is_readonly and not self.is_final and not self.is_method
+
     def substitute_typevars(self, substitutions: TypeVarMap) -> "ClassSymbol":
         return ClassSymbol(
             annotation=(
@@ -4857,7 +4861,6 @@ class ClassSymbol:
             deprecation_message=self.deprecation_message,
             is_instance_only=self.is_instance_only,
             is_method=self.is_method,
-            returns_self_on_class_access=self.returns_self_on_class_access,
             property_info=(
                 self.property_info.substitute_typevars(substitutions)
                 if self.property_info is not None
@@ -4869,18 +4872,6 @@ class ClassSymbol:
                 else None
             ),
         )
-
-    # TODO: I don't think these two methods should exist, they are confusing
-    def get_declared_type(self) -> Value | None:
-        if self.annotation is not None:
-            return self.annotation
-        return self.initializer
-
-    def get_effective_type(self) -> Value:
-        declared_type = self.get_declared_type()
-        if declared_type is not None:
-            return declared_type
-        return AnyValue(AnySource.inference)
 
 
 _PROPERTY_LIKE = (

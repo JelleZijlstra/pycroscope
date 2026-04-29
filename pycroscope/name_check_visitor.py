@@ -149,6 +149,7 @@ from .predicates import EqualsPredicate, HasAttr, InPredicate
 from .reexport import ImplicitReexportTracker
 from .relations import (
     Relation,
+    RelationContext,
     check_hashability,
     get_tv_map,
     has_relation,
@@ -232,14 +233,15 @@ from .type_object import (
     NamedTupleField,
     TypeObject,
     TypeObjectAttribute,
-    _attribute_blocks_writes,
     _class_key_from_value,
     _is_definitely_class_object_value,
     _iter_base_type_objects,
     _receiver_key_from_value,
+    can_assign_to_base_callable,
     class_keys_match,
     direct_bases_from_values,
     get_mro,
+    is_compatible_attribute,
     lookup_declared_symbol_with_owner,
     typevar_map_from_generic_args,
 )
@@ -2586,7 +2588,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         is_instance_only: bool = False,
         is_method: bool = False,
         deprecation_message: str | None = None,
-        returns_self_on_class_access: bool = False,
         property_info: PropertyInfo | None = None,
         dataclass_field: DataclassFieldInfo | None = None,
         force_nonmember: bool = False,
@@ -2601,7 +2602,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         if enum_member_is_method:
             is_method = False
-            returns_self_on_class_access = False
         if property_info is not None and (
             synthetic_initializer is None
             or not _is_property_initializer(synthetic_initializer)
@@ -2616,7 +2616,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 is_method=is_method,
                 function_decorators=function_decorators,
                 deprecation_message=deprecation_message,
-                returns_self_on_class_access=returns_self_on_class_access,
                 property_info=property_info,
                 initializer=synthetic_initializer,
                 dataclass_field=dataclass_field,
@@ -2627,8 +2626,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self, synthetic_type: TypeObject, node: ast.ClassDef
     ) -> None:
         for method_name, (
-            function_decorators,
-            returns_self_on_class_access,
+            function_decorators
         ) in self._get_synthetic_method_symbol_flags(node).items():
             existing = synthetic_type.get_declared_symbol(method_name)
             if existing is not None and existing.is_property:
@@ -2641,7 +2639,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ClassSymbol(
                     is_method=True,
                     function_decorators=function_decorators,
-                    returns_self_on_class_access=returns_self_on_class_access,
                     initializer=initializer,
                 ),
             )
@@ -2689,7 +2686,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         is_method: bool | None = None,
         function_decorators: frozenset[FunctionDecorator],
         deprecation_message: str | None = None,
-        returns_self_on_class_access: bool | None = None,
         property_info: PropertyInfo | None = None,
         initializer: Value | None | Literal[_UNSET] = _UNSET,
         preserve_existing_initializer: bool = True,
@@ -2734,11 +2730,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 is_method=False if is_method is None else is_method,
                 function_decorators=function_decorators,
                 deprecation_message=deprecation_message,
-                returns_self_on_class_access=(
-                    False
-                    if returns_self_on_class_access is None
-                    else returns_self_on_class_access
-                ),
                 property_info=resolved_property_info,
                 initializer=resolved_initializer,
                 dataclass_field=dataclass_field,
@@ -2750,11 +2741,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             is_method=base.is_method if is_method is None else is_method,
             function_decorators=base.function_decorators | function_decorators,
             deprecation_message=deprecation_message,
-            returns_self_on_class_access=(
-                base.returns_self_on_class_access
-                if returns_self_on_class_access is None
-                else returns_self_on_class_access
-            ),
             property_info=None,
             initializer=(
                 base.initializer
@@ -2774,7 +2760,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         is_method: bool | None = None,
         function_decorators: frozenset[FunctionDecorator] = frozenset(),
         deprecation_message: str | None = None,
-        returns_self_on_class_access: bool | None = None,
         property_info: PropertyInfo | None = None,
         initializer: Value | None | Literal[_UNSET] = _UNSET,
     ) -> None:
@@ -2791,7 +2776,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 is_method=is_method,
                 function_decorators=function_decorators,
                 deprecation_message=deprecation_message,
-                returns_self_on_class_access=returns_self_on_class_access,
                 property_info=property_info,
                 initializer=initializer,
             ),
@@ -2806,7 +2790,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         annotation: Value | None = None,
         is_method: bool | None = None,
         function_decorators: frozenset[FunctionDecorator] = frozenset(),
-        returns_self_on_class_access: bool | None = None,
         property_info: PropertyInfo | None = None,
     ) -> None:
         type_object.set_declared_symbol(
@@ -2816,7 +2799,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 annotation=annotation,
                 is_method=is_method,
                 function_decorators=function_decorators,
-                returns_self_on_class_access=returns_self_on_class_access,
                 property_info=property_info,
                 initializer=initializer,
                 preserve_existing_initializer=False,
@@ -2850,12 +2832,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         is_method = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         if enum_member_is_method:
             is_method = False
-        returns_self_on_class_access = False
         function_decorators: frozenset[FunctionDecorator] = frozenset()
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            function_decorators, returns_self_on_class_access = (
-                self._synthetic_method_symbol_flags(node)
-            )
+            function_decorators = self._synthetic_method_symbol_flags(node)
         has_initializer = True
         if (
             isinstance(node, ast.AnnAssign)
@@ -2870,7 +2849,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             annotation=declared_annotation,
             is_method=is_method,
             function_decorators=function_decorators,
-            returns_self_on_class_access=returns_self_on_class_access,
         )
         if not has_initializer:
             self._update_synthetic_declared_symbol(synthetic_name, initializer=None)
@@ -2969,9 +2947,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 setter_target_name = decorator.value.id
                 break
         if setter_target_name is None:
-            function_decorators, returns_self_on_class_access = (
-                self._synthetic_method_symbol_flags(node)
-            )
+            function_decorators = self._synthetic_method_symbol_flags(node)
             self._set_complete_synthetic_class_symbol(
                 node.name,
                 initializer=function_value,
@@ -2980,7 +2956,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 is_method=True,
                 function_decorators=function_decorators,
                 deprecation_message=deprecation_message,
-                returns_self_on_class_access=returns_self_on_class_access,
             )
             return
 
@@ -3240,151 +3215,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ErrorCode.incompatible_override,
                 )
                 continue
-            if child_attr.symbol.is_classvar and base_attr.symbol.is_instance_only:
-                self._show_error_if_checking(
-                    node,
-                    f"Class variable {varname} cannot override instance variable from"
-                    f" base class {base_attr.owner}",
-                    ErrorCode.incompatible_override,
-                )
-                continue
-            if base_attr.symbol.is_classvar and child_attr.symbol.is_instance_only:
-                self._show_error_if_checking(
-                    node,
-                    f"Instance variable {varname} cannot override class variable from"
-                    f" base class {base_attr.owner}",
-                    ErrorCode.incompatible_override,
-                )
-                continue
-
-            can_assign = self._can_assign_to_base(base_attr, child_attr)
+            can_assign = is_compatible_attribute(
+                varname, base_attr, child_attr, Relation.ASSIGNABLE, self
+            )
             if isinstance(can_assign, CanAssignError):
-                error = CanAssignError(
-                    children=[
-                        CanAssignError(
-                            f"Base class: {self.display_value(base_attr.value)}"
-                        ),
-                        CanAssignError(
-                            f"Child class: {self.display_value(child_attr.value)}"
-                        ),
-                        can_assign,
-                    ]
-                )
                 self._show_error_if_checking(
                     node,
                     f"Value of {varname} incompatible with base class {base_attr.owner}",
                     ErrorCode.incompatible_override,
-                    detail=str(error),
+                    detail=str(can_assign),
                 )
 
     def display_value(self, value: Value) -> str:
         return self.checker.display_value(value)
-
-    def _extract_settable_type(self, setter: Value) -> Value:
-        sig = self.signature_from_value(setter)
-        if not isinstance(sig, Signature):
-            return AnyValue(AnySource.inference)
-        params = list(sig.parameters.values())
-        if (
-            len(params) >= 2
-            and params[0].kind
-            in (ParameterKind.POSITIONAL_ONLY, ParameterKind.POSITIONAL_OR_KEYWORD)
-            and params[1].kind
-            in (ParameterKind.POSITIONAL_ONLY, ParameterKind.POSITIONAL_OR_KEYWORD)
-        ):
-            return params[1].annotation
-        return AnyValue(AnySource.inference)
-
-    def _can_assign_to_base(
-        self, base_attr: TypeObjectAttribute, child_attr: TypeObjectAttribute
-    ) -> CanAssign:
-        # TODO: This is still a bit ad hoc. I think the right way to do it would be to
-        # check all three operations: get, set, and delete. For each of them, what's
-        # allowed on the base should be allowed on the child. Though we'll still need
-        # some mild special casing of callables so pycroscope sees different functions as
-        # compatible.
-        if base_attr.symbol.property_info is not None:
-            if (
-                base_attr.symbol.property_info.fset is not None
-                and base_attr.symbol.property_info.fset.initializer is not None
-            ):
-                if child_attr.symbol.property_info is not None:
-                    if (
-                        child_attr.symbol.property_info.fset is None
-                        or child_attr.symbol.property_info.fset.initializer is None
-                    ):
-                        return CanAssignError(
-                            "Property is settable on base class but not on child class"
-                        )
-                    child_settable = self._extract_settable_type(
-                        child_attr.symbol.property_info.fset.initializer
-                    )
-                else:
-                    if (
-                        child_attr.symbol.annotation is not None
-                        and not child_attr.symbol.is_classvar
-                        and not child_attr.symbol.is_readonly
-                    ):
-                        child_settable = child_attr.symbol.annotation
-                    else:
-                        # TODO: We could allow overriding a property with a settable bare attribute
-                        return CanAssignError(
-                            "Property is settable on base class but not on child class"
-                        )
-                base_settable = self._extract_settable_type(
-                    base_attr.symbol.property_info.fset.initializer
-                )
-                # Reversed because this is a contravariant position
-                setter_can_assign = has_relation(
-                    child_settable, base_settable, Relation.ASSIGNABLE, self
-                )
-                if isinstance(setter_can_assign, CanAssignError):
-                    return CanAssignError(
-                        f"Setter {child_settable} for property is incompatible "
-                        f"with base class setter {base_settable}",
-                        children=[setter_can_assign],
-                    )
-
-            if base_attr.symbol.property_info.fdel is not None and not (
-                child_attr.symbol.property_info is not None
-                and child_attr.symbol.property_info.fdel is not None
-            ):
-                return CanAssignError(
-                    "Property is deletable on base class but not on child class"
-                )
-
-        if isinstance(base_attr.value, KnownValue):
-            if callable(base_attr.value.val):
-                callable_result = self._can_assign_to_base_callable(
-                    base_attr.value, child_attr.value
-                )
-                if callable_result is None:
-                    return {}
-                return callable_result
-        if isinstance(base_attr.value, CallableValue):
-            callable_result = self._can_assign_to_base_callable(
-                base_attr.value, child_attr.value
-            )
-            if callable_result is not None:
-                return callable_result
-        return has_relation(
-            base_attr.value, child_attr.value, Relation.ASSIGNABLE, self
-        )
-
-    def _can_assign_to_base_callable(
-        self, base_value: Value, child_value: Value
-    ) -> CanAssign | None:
-        base_sig = self.signature_from_value(base_value)
-        if base_sig is ANY_SIGNATURE:
-            return None
-        if not isinstance(base_sig, (Signature, OverloadedSignature)):
-            return None
-        child_sig = self.signature_from_value(child_value)
-        if child_sig is ANY_SIGNATURE:
-            return None
-        if not isinstance(child_sig, (Signature, OverloadedSignature)):
-            return CanAssignError(f"{child_value} is not callable")
-        return base_sig.can_assign(child_sig, self)
 
     def _check_for_class_variable_redefinition(
         self, varname: str, node: ast.AST
@@ -4621,11 +4464,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         def _set_enum_declared_symbol(name: str, value: Value) -> None:
             self._set_synthetic_member_on_type_object(
-                synthetic_type,
-                name,
-                initializer=value,
-                is_method=False,
-                returns_self_on_class_access=False,
+                synthetic_type, name, initializer=value, is_method=False
             )
 
         for member_name, statement in _iter_enum_assignment_candidates(node):
@@ -5432,7 +5271,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         except InvalidSignature:
             return
         expected_value = CallableValue(expected_signature)
-        can_assign = self._can_assign_to_base_callable(expected_value, post_init_value)
+        relation_ctx = RelationContext(Relation.ASSIGNABLE, self)
+        can_assign = can_assign_to_base_callable(
+            expected_value, post_init_value, relation_ctx
+        )
         if isinstance(can_assign, CanAssignError):
             self._show_error_if_checking(
                 post_init_node,
@@ -6533,17 +6375,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _synthetic_method_symbol_flags(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> tuple[frozenset[FunctionDecorator], bool]:
-        decorator_kinds = self._function_decorator_kinds_by_node.get(node, frozenset())
-        is_classmethod = FunctionDecorator.classmethod in decorator_kinds
-        return (
-            decorator_kinds,
-            is_classmethod and self._function_returns_self_by_node.get(node, False),
-        )
+    ) -> frozenset[FunctionDecorator]:
+        return self._function_decorator_kinds_by_node.get(node, frozenset())
 
     def _get_synthetic_method_symbol_flags(
         self, node: ast.ClassDef
-    ) -> dict[str, tuple[frozenset[FunctionDecorator], bool]]:
+    ) -> dict[str, frozenset[FunctionDecorator]]:
         method_attributes = {}
         for stmt in node.body:
             if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -7629,6 +7466,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> None:
         signatures: list[Signature] = []
         transform_infos: list[DataclassTransformInfo] = []
+        function_decorators: set[FunctionDecorator] = set()
         for pending in pending_block.overloads:
             signature = pending.signature
             if isinstance(signature, Signature):
@@ -7637,6 +7475,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 signatures.extend(signature.signatures)
             if pending.dataclass_transform_info is not None:
                 transform_infos.append(pending.dataclass_transform_info)
+            pending_decorators = set(pending.decorator_kinds)
+            pending_decorators.discard(FunctionDecorator.overload)
+            function_decorators.update(pending_decorators)
         if signatures:
             value: Value = CallableValue(
                 OverloadedSignature(signatures), types.FunctionType
@@ -7651,6 +7492,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ],
                 )
             pending_block.scope.variables[pending_block.name] = value
+            if pending_block.scope.scope_type is ScopeType.class_scope:
+                type_object = self._current_synthetic_overlay_type_object()
+                if type_object is None:
+                    type_object = self.current_tobj
+                if type_object is None:
+                    return
+                self._set_synthetic_member_on_type_object(
+                    type_object,
+                    pending_block.name,
+                    initializer=value,
+                    is_method=True,
+                    function_decorators=frozenset(function_decorators),
+                )
 
     def _validate_overload_block(
         self,
@@ -12249,6 +12103,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 symbol_qualifiers.add(Qualifier.ReadOnly)
             if is_final:
                 symbol_qualifiers.add(Qualifier.Final)
+            if (
+                self.current_tobj is not None
+                and self.current_tobj.is_frozen_dataclass()
+            ):
+                symbol_qualifiers.add(Qualifier.ReadOnly)
             is_instance_only = False
             if dataclass_field_info is not None:
                 is_instance_only = Qualifier.ClassVar not in symbol_qualifiers and (
@@ -14376,14 +14235,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_code=ErrorCode.incompatible_assignment,
             )
             return
-        if attr.is_property and _attribute_blocks_writes(attr, self):
-            if not attr.property_has_setter:
-                self._show_error_if_checking(
-                    node,
-                    f"Cannot {wording} read-only property {node.attr!r}",
-                    error_code=ErrorCode.incompatible_assignment,
-                )
-                return
+        if attr.symbol.property_info is not None and not attr.symbol.property_info.fset:
+            self._show_error_if_checking(
+                node,
+                f"Cannot {wording} read-only property {node.attr!r}",
+                error_code=ErrorCode.incompatible_assignment,
+            )
+            return
         self._check_deprecated_property_setter(node, root)
         if (
             attr.symbol.is_readonly

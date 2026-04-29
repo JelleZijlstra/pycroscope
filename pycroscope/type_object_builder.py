@@ -164,6 +164,11 @@ CUSTOM_SYMBOLS: dict[ClassKey, dict[str, ClassSymbol]] = {
 }
 
 
+def _is_frozen_dataclass(typ: type) -> bool:
+    params = safe_getattr(typ, "__dataclass_params__", None)
+    return params is not None and getattr(params, "frozen", False) is True
+
+
 def _get_runtime_dataclass_fields(typ: type) -> tuple[DataclassFieldRecord, ...]:
     dataclass_fields = safe_getattr(typ, "__dataclass_fields__", None)
     if not isinstance(dataclass_fields, Mapping):
@@ -553,6 +558,8 @@ def _symbol_from_runtime_annotation(annotation: object, owner: type) -> ClassSym
     with ctx.suppress_errors():
         expr = annotation_expr_from_runtime(annotation, ctx=ctx)
         typ, qualifiers = expr.maybe_unqualify(_CLASS_SYMBOL_ALLOWED_QUALIFIERS)
+    if _is_frozen_dataclass(owner):
+        qualifiers.add(Qualifier.ReadOnly)
     return ClassSymbol(annotation=typ, qualifiers=frozenset(qualifiers))
 
 

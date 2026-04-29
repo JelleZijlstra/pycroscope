@@ -16,7 +16,6 @@ from .type_object import (
     DataclassFieldRecord,
     NamedTupleField,
     _class_key_from_value,
-    _should_use_permissive_dunder_hash,
     lookup_declared_symbol_with_owner,
 )
 from .value import (
@@ -211,18 +210,6 @@ def test_synthetic_mro_prefers_non_virtual_duplicate_base() -> None:
     assert entries[class_owner_from_key("mod.B")].is_virtual is False
     assert entries[Sequence].is_virtual is False
     assert entries[MutableSequence].is_virtual is True
-
-
-def test_permissive_dunder_hash_class_object_detection() -> None:
-    assert _should_use_permissive_dunder_hash(TypedValue(type))
-    assert _should_use_permissive_dunder_hash(GenericValue(type, [TypedValue(int)]))
-    assert not _should_use_permissive_dunder_hash(TypedValue(list))
-    assert not _should_use_permissive_dunder_hash(
-        MultiValuedValue([TypedValue(type), TypedValue(list)])
-    )
-    assert _should_use_permissive_dunder_hash(
-        IntersectionValue((TypedValue(type), TypedValue(list)))
-    )
 
 
 def test_runtime_declared_symbol_uses_annotation_expr_parsing() -> None:
@@ -1022,7 +1009,6 @@ def test_get_attribute_prefers_metaclass_data_descriptor_on_class_access() -> No
     assert attribute is not None
     assert attribute.is_metaclass_owner
     assert attribute.is_property is False
-    assert attribute.property_has_setter is False
     assert attribute.value == TypedValue(int)
 
 
@@ -1228,6 +1214,28 @@ class TestSyntheticType(TestNameCheckVisitorBase):
         good: Proto[Good] = Good()
         bad: Proto[BadClone] = BadClone()  # E: incompatible_assignment
         print(good, bad)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_protocol_self_typevar_map_handles_classmethod_and_staticmethod_simple(
+        self,
+    ):
+        from typing import Protocol, TypeVar
+
+        from typing_extensions import Self
+
+        T_co = TypeVar("T_co", covariant=True)
+
+        class Proto(Protocol[T_co]):
+            @classmethod
+            def make(cls: type[T_co]) -> T_co: ...
+
+        class Good:
+            @classmethod
+            def make(cls) -> Self:
+                return cls()
+
+        good: Proto[Good] = Good()
+        print(good)
 
     @assert_passes()
     def test_callable_protocol_nonstandard_receiver_name(self):
@@ -2105,8 +2113,10 @@ class TestSyntheticType(TestNameCheckVisitorBase):
     def test_namedtuple_with_non_tuple_fields_still_builds_type_object(self):
         from typing import NamedTuple, Protocol
 
+        from typing_extensions import ReadOnly
+
         class WantsX(Protocol):
-            x: int
+            x: ReadOnly[int]
 
         class Point(NamedTuple):
             x: int

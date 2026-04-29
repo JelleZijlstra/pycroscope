@@ -127,6 +127,38 @@ class Relation(enum.Enum):
             assert_never(self)
 
 
+@dataclass(frozen=True)
+class RelationContext:
+    relation: Relation
+    ctx: CanAssignContext
+    inferables: tuple[TypeParam, ...] | None = None
+    original_left: GradualType | None = None
+    original_right: GradualType | None = None
+
+    def with_relation(
+        self, relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE]
+    ) -> "RelationContext":
+        return replace(self, relation=relation, original_left=None, original_right=None)
+
+    def with_original_right(self, original_right: GradualType) -> "RelationContext":
+        return replace(self, original_right=original_right)
+
+    def with_inferables(self, inferables: tuple[TypeParam, ...]) -> "RelationContext":
+        return replace(self, inferables=inferables)
+
+    def check_relation(
+        self, left: Value, right: Value, relation: Relation
+    ) -> CanAssign:
+        return has_relation(left, right, relation, self.ctx, inferables=self.inferables)
+
+    def has_relation(self, left: Value, right: Value) -> CanAssign:
+        return _has_relation(
+            gradualize(left),
+            gradualize(right),
+            replace(self, original_left=None, original_right=None),
+        )
+
+
 _RELATION_CACHE_MAX_SIZE = 200_000
 _RELATION_CACHE_EMPTY = object()
 
@@ -151,9 +183,14 @@ def _relation_key_piece(value: object) -> tuple[str, object]:
 
 
 def _make_relation_cache_key(
-    left: Value, right: Value, relation: Relation
-) -> tuple[tuple[str, object], tuple[str, object], Relation]:
-    return (_relation_key_piece(left), _relation_key_piece(right), relation)
+    left: Value,
+    right: Value,
+    relation: Relation,
+    inferables: tuple[TypeParam, ...] | None = None,
+) -> tuple[
+    tuple[str, object], tuple[str, object], Relation, tuple[TypeParam, ...] | None
+]:
+    return (_relation_key_piece(left), _relation_key_piece(right), relation, inferables)
 
 
 def _get_cached_relation_result(
@@ -249,36 +286,54 @@ def is_subtype_with_reason(
 
 
 def has_relation(
-    left: Value, right: Value, relation: Relation, ctx: CanAssignContext
+    left: Value,
+    right: Value,
+    relation: Relation,
+    ctx: CanAssignContext,
+    inferables: tuple[TypeParam, ...] | None = None,
+) -> CanAssign:
+    relation_ctx = RelationContext(relation, ctx, inferables=inferables)
+    return has_relation_from_ctx(left, right, relation_ctx)
+
+
+def has_relation_from_ctx(
+    left: Value, right: Value, relation_ctx: RelationContext
 ) -> CanAssign:
     left = gradualize(left)
     right = gradualize(right)
-    cache = _get_relation_cache(ctx)
+    cache = _get_relation_cache(relation_ctx.ctx)
     key = None
     if cache is not None:
-        key = _make_relation_cache_key(left, right, relation)
+        key = _make_relation_cache_key(
+            left, right, relation_ctx.relation, relation_ctx.inferables
+        )
         cached = _get_cached_relation_result(cache, key)
         if cached is not None:
             return cached
 
-    if relation in (Relation.EQUIVALENT, Relation.CONSISTENT):
+    if relation_ctx.relation in (Relation.EQUIVALENT, Relation.CONSISTENT):
         # EQUIVALENT checks both subtype directions; CONSISTENT checks both assignable directions.
         subrelation = (
-            Relation.SUBTYPE if relation is Relation.EQUIVALENT else Relation.ASSIGNABLE
+            Relation.SUBTYPE
+            if relation_ctx.relation is Relation.EQUIVALENT
+            else Relation.ASSIGNABLE
         )
-        result1 = _has_relation(left, right, subrelation, ctx)
-        result2 = _has_relation(right, left, subrelation, ctx)
+        inner_ctx = relation_ctx.with_relation(subrelation)
+        result1 = _has_relation(left, right, inner_ctx)
+        result2 = _has_relation(right, left, inner_ctx)
         if isinstance(result1, CanAssignError) or isinstance(result2, CanAssignError):
             children = [
                 elt for elt in (result1, result2) if isinstance(elt, CanAssignError)
             ]
             result = CanAssignError(
-                f"{left} is not {relation.description} {right}", children=children
+                f"{left} is not {relation_ctx.relation.description} {right}",
+                children=children,
             )
         else:
             result = unify_bounds_maps([result1, result2])
     else:
-        result = _has_relation(left, right, relation, ctx)
+        assert relation_ctx.relation in (Relation.SUBTYPE, Relation.ASSIGNABLE)
+        result = _has_relation(left, right, relation_ctx)
 
     if key is not None:
         assert cache is not None
@@ -311,18 +366,18 @@ def _specialized_synthetic_class_type(
 
 
 def _has_relation(
-    left: GradualType,
-    right: GradualType,
-    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
-    ctx: CanAssignContext,
-    *,
-    original_left: GradualType | None = None,
-    original_right: GradualType | None = None,
+    left: GradualType, right: GradualType, relation_ctx: RelationContext
 ) -> CanAssign:
+    relation = relation_ctx.relation
+    ctx = relation_ctx.ctx
+    inferables = relation_ctx.inferables
+    original_left = relation_ctx.original_left
+    original_right = relation_ctx.original_right
     if original_right is None:
         original_right = right
     if original_left is None:
         original_left = left
+    relation_ctx = replace(relation_ctx, original_left=None, original_right=None)
     if isinstance(left, KnownValue):
         left = replace_known_sequence_value(left, ctx)
     if isinstance(right, KnownValue):
@@ -335,21 +390,19 @@ def _has_relation(
             return _has_relation(
                 SubclassValue(_specialized_synthetic_class_type(left, ctx)),
                 right,
-                relation,
-                ctx,
+                relation_ctx,
             )
         return CanAssignError(f"{right} is not {relation.description} {left}")
     if isinstance(right, SyntheticClassObjectValue):
         if isinstance(right.class_type, TypedDictValue):
             if isinstance(left, SubclassValue):
                 return CanAssignError(f"{right} is not {relation.description} {left}")
-            return _has_relation(left, TypedValue(type), relation, ctx)
+            return _has_relation(left, TypedValue(type), relation_ctx)
         if isinstance(left, SubclassValue) and isinstance(right.class_type, TypedValue):
             return _has_relation(
                 left,
                 SubclassValue(_specialized_synthetic_class_type(right, ctx)),
-                relation,
-                ctx,
+                relation_ctx,
             )
         if isinstance(left, CallableValue):
             signature = ctx.signature_from_value(right)
@@ -359,76 +412,102 @@ def _has_relation(
                 signature = signature.get_signature(ctx=ctx)
                 if signature is None:
                     return CanAssignError(f"{right} is not a callable type")
-            return _has_relation(left, CallableValue(signature), relation, ctx)
+            return _has_relation(left, CallableValue(signature), relation_ctx)
         elif isinstance(left, TypedValue) and left.get_type_object(
             ctx
         ).is_assignable_to_type(type):
             return {}
         else:
-            return _has_relation(left, SubclassValue(right.class_type), relation, ctx)
+            return _has_relation(left, SubclassValue(right.class_type), relation_ctx)
 
     # TypeVarValue
-    if (
-        isinstance(left, TypeVarValue)
-        and not isinstance(left, InferenceVarValue)
-        and isinstance(right, TypeVarValue)
-        and not isinstance(right, InferenceVarValue)
-        and left.typevar_param.typevar is right.typevar_param.typevar
-    ):
-        return {}
-    if isinstance(left, InferenceVarValue):
-        bounds = [LowerBound(left.typevar_param, right), *left.get_inherent_bounds()]
-        return left.make_bounds_map(bounds, right, ctx)
-    if isinstance(right, InferenceVarValue):
-        bounds = [UpperBound(right.typevar_param, left), *right.get_inherent_bounds()]
-        return right.make_bounds_map(bounds, left, ctx)
-    if isinstance(left, TypeVarValue):
-        if left == right or isinstance(right, AnyValue):
+    if inferables is not None:
+        if isinstance(left, TypeVarValue):
+            if (
+                isinstance(right, TypeVarValue)
+                and left.typevar_param == right.typevar_param
+            ):
+                return {}
+            if left.typevar_param in inferables:
+                return {left.typevar_param: [LowerBound(left.typevar_param, right)]}
+            else:
+                return CanAssignError(f"Cannot assign {right} to rigid TypeVar {left}")
+        if isinstance(right, TypeVarValue):
+            if right.typevar_param in inferables:
+                return {right.typevar_param: [UpperBound(right.typevar_param, left)]}
+            else:
+                return _has_relation(
+                    left, gradualize(right.get_upper_bound_value()), relation_ctx
+                )
+    else:
+        if (
+            isinstance(left, TypeVarValue)
+            and not isinstance(left, InferenceVarValue)
+            and isinstance(right, TypeVarValue)
+            and not isinstance(right, InferenceVarValue)
+            and left.typevar_param.typevar is right.typevar_param.typevar
+        ):
             return {}
-        if isinstance(right, MultiValuedValue):
-            bounds_maps = []
-            for val in right.vals:
-                can_assign = _has_relation(left, gradualize(val), relation, ctx)
-                if isinstance(can_assign, CanAssignError):
-                    return can_assign
-                bounds_maps.append(can_assign)
-            return unify_bounds_maps(bounds_maps)
-        if isinstance(right, IntersectionValue):
-            simplified_right = intersect_multi(right.vals, ctx)
-            if not isinstance(simplified_right, IntersectionValue):
-                return _has_relation(left, simplified_right, relation, ctx)
-            bounds_maps = []
-            errors = []
-            for val in simplified_right.vals:
-                can_assign = _has_relation(left, gradualize(val), relation, ctx)
-                if isinstance(can_assign, CanAssignError):
-                    errors.append(can_assign)
-                else:
+        if isinstance(left, InferenceVarValue):
+            bounds = [
+                LowerBound(left.typevar_param, right),
+                *left.get_inherent_bounds(),
+            ]
+            return left.make_bounds_map(bounds, right, ctx)
+        if isinstance(right, InferenceVarValue):
+            bounds = [
+                UpperBound(right.typevar_param, left),
+                *right.get_inherent_bounds(),
+            ]
+            return right.make_bounds_map(bounds, left, ctx)
+        if isinstance(left, TypeVarValue):
+            if left == right or isinstance(right, AnyValue):
+                return {}
+            if isinstance(right, MultiValuedValue):
+                bounds_maps = []
+                for val in right.vals:
+                    can_assign = _has_relation(left, gradualize(val), relation_ctx)
+                    if isinstance(can_assign, CanAssignError):
+                        return can_assign
                     bounds_maps.append(can_assign)
-            if not bounds_maps:
-                return CanAssignError(
-                    f"{right} is not {relation.description} {left}", children=errors
-                )
-            return unify_bounds_maps(bounds_maps)
-        return CanAssignError(f"{right} is not {relation.description} {left}")
-    if isinstance(right, TypeVarValue):
-        if right.typevar_param.is_self and isinstance(left, MultiValuedValue):
-            bounds_maps = []
-            errors = []
-            for val in left.vals:
-                can_assign = _has_relation(gradualize(val), right, relation, ctx)
-                if isinstance(can_assign, CanAssignError):
-                    errors.append(can_assign)
-                else:
-                    bounds_maps.append(can_assign)
-            if not bounds_maps:
-                return CanAssignError(
-                    f"{right} is not {relation.description} {left}", children=errors
-                )
-            return intersect_bounds_maps(bounds_maps)
-        return _has_relation(
-            left, gradualize(right.get_upper_bound_value()), relation, ctx
-        )
+                return unify_bounds_maps(bounds_maps)
+            if isinstance(right, IntersectionValue):
+                simplified_right = intersect_multi(right.vals, ctx)
+                if not isinstance(simplified_right, IntersectionValue):
+                    return _has_relation(left, simplified_right, relation_ctx)
+                bounds_maps = []
+                errors = []
+                for val in simplified_right.vals:
+                    can_assign = _has_relation(left, gradualize(val), relation_ctx)
+                    if isinstance(can_assign, CanAssignError):
+                        errors.append(can_assign)
+                    else:
+                        bounds_maps.append(can_assign)
+                if not bounds_maps:
+                    return CanAssignError(
+                        f"{right} is not {relation.description} {left}", children=errors
+                    )
+                return unify_bounds_maps(bounds_maps)
+            return CanAssignError(f"{right} is not {relation.description} {left}")
+        if isinstance(right, TypeVarValue):
+            if right.typevar_param.is_self and isinstance(left, MultiValuedValue):
+                bounds_maps = []
+                errors = []
+                for val in left.vals:
+                    can_assign = _has_relation(gradualize(val), right, relation_ctx)
+                    if isinstance(can_assign, CanAssignError):
+                        errors.append(can_assign)
+                    else:
+                        bounds_maps.append(can_assign)
+                if not bounds_maps:
+                    return CanAssignError(
+                        f"{right} is not {relation.description} {left}", children=errors
+                    )
+                return intersect_bounds_maps(bounds_maps)
+            return _has_relation(
+                left, gradualize(right.get_upper_bound_value()), relation_ctx
+            )
+
     if isinstance(left, TypeVarTupleValue) and not isinstance(right, MultiValuedValue):
         if isinstance(right, TypeVarTupleValue) and left.typevar is right.typevar:
             return {}
@@ -467,25 +546,25 @@ def _has_relation(
                 return {}
             with ctx.aliases_assume_compatibility(left, right):
                 left_inner = gradualize(left.get_value())
-                return _has_relation(left_inner, right, relation, ctx)
+                return _has_relation(left_inner, right, relation_ctx)
         left_inner = gradualize(left.get_value())
-        return _has_relation(left_inner, right, relation, ctx)
+        return _has_relation(left_inner, right, relation_ctx)
     if isinstance(right, TypeAliasValue):
         right_inner = gradualize(right.get_value())
-        return _has_relation(left, right_inner, relation, ctx)
+        return _has_relation(left, right_inner, relation_ctx)
 
     # Partial values
     if isinstance(left, (PartialValue, PartialCallValue)):
         left_inner = gradualize(left.get_fallback_value())
-        return _has_relation(left_inner, right, relation, ctx)
+        return _has_relation(left_inner, right, relation_ctx)
     if isinstance(right, (PartialValue, PartialCallValue)):
         right_inner = gradualize(right.get_fallback_value())
-        return _has_relation(left, right_inner, relation, ctx, original_right=right)
+        return _has_relation(left, right_inner, relation_ctx.with_original_right(right))
 
     # AnnotatedValue
     if isinstance(left, AnnotatedValue):
         left_inner = gradualize(left.value)
-        can_assign = _has_relation(left_inner, right, relation, ctx)
+        can_assign = _has_relation(left_inner, right, relation_ctx)
         if isinstance(can_assign, CanAssignError):
             return can_assign
         bounds_maps = [can_assign]
@@ -498,7 +577,7 @@ def _has_relation(
     if isinstance(right, AnnotatedValue):
         right_inner = gradualize(right.value)
         can_assign = _has_relation(
-            left, right_inner, relation, ctx, original_right=right
+            left, right_inner, relation_ctx.with_original_right(right)
         )
         if isinstance(can_assign, CanAssignError):
             return can_assign
@@ -515,7 +594,7 @@ def _has_relation(
         return _can_assign_type_form(left.inner_type, right, ctx)
     if isinstance(right, TypeFormValue):
         right_inner = gradualize(right.get_fallback_value())
-        return _has_relation(left, right_inner, relation, ctx, original_right=right)
+        return _has_relation(left, right_inner, relation_ctx.with_original_right(right))
 
     # SyntheticTypeFormValue
     if isinstance(left, SyntheticTypeFormValue):
@@ -527,9 +606,7 @@ def _has_relation(
         return _has_relation(
             left,
             gradualize(right.get_fallback_value()),
-            relation,
-            ctx,
-            original_right=right,
+            relation_ctx.with_original_right(right),
         )
 
     # OverlappingValue
@@ -541,7 +618,7 @@ def _has_relation(
         return CanAssignError(f"{right} is not {relation.description} {left}")
     if isinstance(right, OverlappingValue):
         right_inner = gradualize(right.get_fallback_value())
-        return _has_relation(left, right_inner, relation, ctx, original_right=right)
+        return _has_relation(left, right_inner, relation_ctx.with_original_right(right))
 
     # NewTypeValue
     if isinstance(left, NewTypeValue):
@@ -556,21 +633,21 @@ def _has_relation(
             return CanAssignError(f"{right} is not {relation.description} {left}")
     if isinstance(right, NewTypeValue):
         right_inner = gradualize(right.value)
-        return _has_relation(left, right_inner, relation, ctx, original_right=right)
+        return _has_relation(left, right_inner, relation_ctx.with_original_right(right))
 
     # IntersectionValue
     if isinstance(left, IntersectionValue):
         # Try to simplify first
         left = intersect_multi(left.vals, ctx)
         if not isinstance(left, IntersectionValue):
-            return _has_relation(left, original_right, relation, ctx)
+            return _has_relation(left, original_right, relation_ctx)
         if isinstance(right, IntersectionValue):
             right = intersect_multi(right.vals, ctx)
         # Must be a subtype of all the members
         bounds_maps = []
         errors = []
         for val in left.vals:
-            can_assign = _has_relation(gradualize(val), original_right, relation, ctx)
+            can_assign = _has_relation(gradualize(val), original_right, relation_ctx)
             if isinstance(can_assign, CanAssignError):
                 errors.append(can_assign)
             else:
@@ -583,7 +660,7 @@ def _has_relation(
     if isinstance(right, IntersectionValue):
         right = intersect_multi(right.vals, ctx)
         if not isinstance(right, IntersectionValue):
-            return _has_relation(original_left, right, relation, ctx)
+            return _has_relation(original_left, right, relation_ctx)
         if isinstance(left, MultiValuedValue):
             # For expected unions, first test each union arm against the whole
             # intersection. Decomposing the right side too early can lose
@@ -592,7 +669,7 @@ def _has_relation(
             bounds_maps = []
             errors = []
             for val in left.vals:
-                can_assign = _has_relation(gradualize(val), right, relation, ctx)
+                can_assign = _has_relation(gradualize(val), right, relation_ctx)
                 if isinstance(can_assign, CanAssignError):
                     errors.append(can_assign)
                 else:
@@ -606,7 +683,7 @@ def _has_relation(
         bounds_maps = []
         errors = []
         for val in right.vals:
-            can_assign = _has_relation(original_left, gradualize(val), relation, ctx)
+            can_assign = _has_relation(original_left, gradualize(val), relation_ctx)
             if isinstance(can_assign, CanAssignError):
                 errors.append(can_assign)
             else:
@@ -626,14 +703,14 @@ def _has_relation(
     # MultiValuedValue
     if isinstance(left, MultiValuedValue):
         if isinstance(right, MultiValuedValue):
-            return _has_relation_union(left, right.vals, relation, ctx)
+            return _has_relation_union(left, right.vals, relation_ctx)
         else:
             # right is a subtype if it's a subtype of any of the members
             bounds_maps = []
             errors = []
             for val in left.vals:
                 val = gradualize(val)
-                can_assign = _has_relation(val, original_right, relation, ctx)
+                can_assign = _has_relation(val, original_right, relation_ctx)
                 if isinstance(can_assign, CanAssignError):
                     errors.append(can_assign)
                 else:
@@ -642,7 +719,7 @@ def _has_relation(
                 # Try decomposing the right
                 decomposed = right.decompose()
                 if decomposed is not None:
-                    can_assign = _has_relation_union(left, decomposed, relation, ctx)
+                    can_assign = _has_relation_union(left, decomposed, relation_ctx)
                     if not isinstance(can_assign, CanAssignError):
                         return can_assign
                     # Fall back to the original error
@@ -655,7 +732,7 @@ def _has_relation(
         bounds_maps = []
         for val in right.vals:
             val = gradualize(val)
-            can_assign = _has_relation(original_left, val, relation, ctx)
+            can_assign = _has_relation(original_left, val, relation_ctx)
             if isinstance(can_assign, CanAssignError):
                 # Adding an additional layer here isn't helpful
                 return can_assign
@@ -724,7 +801,7 @@ def _has_relation(
     if isinstance(left, (ParamSpecArgsValue, ParamSpecKwargsValue)):
         return CanAssignError(f"{right} is not {relation.description} {left}")
     if isinstance(right, (ParamSpecArgsValue, ParamSpecKwargsValue)):
-        return has_relation(left, right.get_fallback_value(), relation, ctx)
+        return relation_ctx.has_relation(left, right.get_fallback_value())
 
     # UnboundMethodValue
     if isinstance(left, UnboundMethodValue):
@@ -732,13 +809,13 @@ def _has_relation(
             return {}
         sig = left.get_signature(ctx)
         if sig is not None:
-            return _has_relation(CallableValue(sig), right, relation, ctx)
+            return _has_relation(CallableValue(sig), right, relation_ctx)
         return CanAssignError(f"{right} is not {relation.description} {left}")
     if isinstance(right, UnboundMethodValue):
         sig = right.get_signature(ctx)
         if sig is None:
             return CanAssignError(f"{right} is not {relation.description} {left}")
-        return _has_relation(left, CallableValue(sig), relation, ctx)
+        return _has_relation(left, CallableValue(sig), relation_ctx)
 
     if left is HashableProtoValue:
         # Protocol doesn't deal well with type.__hash__ at the moment, so to make
@@ -787,7 +864,7 @@ def _has_relation(
     # SubclassValue
     if isinstance(left, SubclassValue):
         if isinstance(right, SubclassValue):
-            return _has_relation(left.typ, right.typ, relation, ctx)
+            return _has_relation(left.typ, right.typ, relation_ctx)
         elif isinstance(right, KnownValue):
             if not safe_isinstance(right.val, type):
                 return CanAssignError(f"{right} is not a type")
@@ -846,7 +923,7 @@ def _has_relation(
                     return CanAssignError(
                         f"{right} is not {relation.description} {left}"
                     )
-                return _has_relation(left, rigid_subclass, relation, ctx)
+                return _has_relation(left, rigid_subclass, relation_ctx)
             else:
                 assert_never(right.typ)
         else:
@@ -856,7 +933,7 @@ def _has_relation(
     if isinstance(left, TypedValue):
         left_tobj = left.get_type_object(ctx)
         if left_tobj.is_thrift_enum() and isinstance(right, (TypedValue, KnownValue)):
-            return _has_relation_thrift_enum(left, right, relation, ctx)
+            return _has_relation_thrift_enum(left, right, relation_ctx)
 
     # KnownValue
     if isinstance(left, KnownValue):
@@ -864,7 +941,7 @@ def _has_relation(
         if isinstance(left.val, FunctionType):
             signature = ctx.get_signature(left.val)
             if signature is not None:
-                return _has_relation(CallableValue(signature), right, relation, ctx)
+                return _has_relation(CallableValue(signature), right, relation_ctx)
         if isinstance(right, KnownValue):
             if left.val is right.val:
                 return {}
@@ -884,7 +961,7 @@ def _has_relation(
         if signature is None:
             return CanAssignError(f"{right} is not a callable type")
         return pycroscope.signature.signatures_have_relation(
-            left.signature, signature, relation, ctx
+            left.signature, signature, relation_ctx
         )
 
     if isinstance(right, KnownValue):
@@ -899,7 +976,7 @@ def _has_relation(
         return {}
     if isinstance(left, SequenceValue):
         if isinstance(right, SequenceValue):
-            return _has_relation_sequence(left, right, relation, ctx)
+            return _has_relation_sequence(left, right, relation_ctx)
         if (
             relation is Relation.ASSIGNABLE
             and left.typ is not tuple
@@ -919,7 +996,7 @@ def _has_relation(
                         f"{right} may be empty and cannot satisfy"
                         f" known-non-empty {left}"
                     )
-                can_assign = has_relation(member, right_member, relation, ctx)
+                can_assign = relation_ctx.has_relation(member, right_member)
                 if isinstance(can_assign, CanAssignError):
                     return CanAssignError(
                         f"{right} is not {relation.description} {left}", [can_assign]
@@ -959,9 +1036,9 @@ def _has_relation(
 
     if isinstance(left, TypedDictValue):
         if isinstance(right, TypedDictValue):
-            return _has_relation_typeddict(left, right, relation, ctx)
+            return _has_relation_typeddict(left, right, relation_ctx)
         if isinstance(right, DictIncompleteValue):
-            return _has_relation_typeddict_dict(left, right, relation, ctx)
+            return _has_relation_typeddict_dict(left, right, relation_ctx)
         return CanAssignError(f"{right} is not {relation.description} {left}")
 
     if isinstance(left, GenericValue):
@@ -1063,9 +1140,8 @@ def _has_relation(
                         can_assign = _has_relation_for_generic_arg(
                             my_arg,
                             their_arg,
-                            relation,
                             variance,
-                            ctx,
+                            relation_ctx,
                             strict_invariant=strict_invariant,
                         )
                         if isinstance(can_assign, CanAssignError):
@@ -1074,9 +1150,8 @@ def _has_relation(
                                 comparison_left,
                                 right,
                                 can_assign,
-                                relation,
                                 variance,
-                                ctx,
+                                relation_ctx,
                             )
                         bounds_maps.append(can_assign)
                     if not bounds_maps:
@@ -1135,10 +1210,7 @@ def _coerce_paramspec_generic_arg_for_relation(arg: Value, *, other: Value) -> V
 
 
 def _has_relation_for_generic_arg_pair(
-    left: Value,
-    right: Value,
-    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
-    ctx: CanAssignContext,
+    left: Value, right: Value, relation_ctx: RelationContext
 ) -> CanAssign:
     assert not isinstance(left, (TypeVarParam, ParamSpecParam, TypeVarTupleParam))
     assert not isinstance(right, (TypeVarParam, ParamSpecParam, TypeVarTupleParam))
@@ -1152,13 +1224,19 @@ def _has_relation_for_generic_arg_pair(
         right, pycroscope.input_sig.InputSigValue
     ):
         return pycroscope.input_sig.input_sigs_have_relation(
-            left.input_sig, right.input_sig, relation, ctx
+            left.input_sig,
+            right.input_sig,
+            relation_ctx.relation,
+            relation_ctx.ctx,
+            relation_ctx.inferables,
         )
     if isinstance(left, pycroscope.input_sig.InputSigValue) or isinstance(
         right, pycroscope.input_sig.InputSigValue
     ):
-        return CanAssignError(f"{left} is not {relation.description} {right}")
-    return has_relation(left, right, relation, ctx)
+        return CanAssignError(
+            f"{left} is not {relation_ctx.relation.description} {right}"
+        )
+    return relation_ctx.has_relation(left, right)
 
 
 def _get_generic_annotation(annotation: Value) -> tuple[GenericValue, bool] | None:
@@ -1287,25 +1365,25 @@ def _get_exact_typevar_bindings(left: Value, right: Value) -> TypeVarMap:
 def _has_relation_for_generic_arg(
     left: Value,
     right: Value,
-    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
     variance: Variance,
-    ctx: CanAssignContext,
+    relation_ctx: RelationContext,
     *,
     strict_invariant: bool = True,
 ) -> CanAssign:
+    relation = relation_ctx.relation
     if variance is Variance.COVARIANT:
-        return _has_relation_for_generic_arg_pair(left, right, relation, ctx)
+        return _has_relation_for_generic_arg_pair(left, right, relation_ctx)
     if variance is Variance.CONTRAVARIANT:
-        return _has_relation_for_generic_arg_pair(right, left, relation, ctx)
+        return _has_relation_for_generic_arg_pair(right, left, relation_ctx)
 
-    forward = _has_relation_for_generic_arg_pair(left, right, relation, ctx)
+    forward = _has_relation_for_generic_arg_pair(left, right, relation_ctx)
     if isinstance(forward, CanAssignError):
         return forward
     if relation is Relation.ASSIGNABLE and (
         not strict_invariant or _allows_forward_only_invariant_rhs(right)
     ):
         return forward
-    backward = _has_relation_for_generic_arg_pair(right, left, relation, ctx)
+    backward = _has_relation_for_generic_arg_pair(right, left, relation_ctx)
     if isinstance(backward, CanAssignError):
         return backward
     return unify_bounds_maps([forward, backward])
@@ -1467,15 +1545,12 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
 
 
 def _has_relation_union(
-    left: GradualType,
-    right_vals: Iterable[Value],
-    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
-    ctx: CanAssignContext,
+    left: GradualType, right_vals: Iterable[Value], relation_ctx: RelationContext
 ) -> CanAssign:
     bounds_maps = []
     for val in right_vals:
         val = gradualize(val)
-        can_assign = _has_relation(left, val, relation, ctx)
+        can_assign = _has_relation(left, val, relation_ctx)
         if isinstance(can_assign, CanAssignError):
             # Adding an additional layer here isn't helpful
             return can_assign
@@ -1484,11 +1559,10 @@ def _has_relation_union(
 
 
 def _has_relation_thrift_enum(
-    left: TypedValue,
-    right: TypedValue | KnownValue,
-    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
-    ctx: CanAssignContext,
+    left: TypedValue, right: TypedValue | KnownValue, relation_ctx: RelationContext
 ) -> CanAssign:
+    relation = relation_ctx.relation
+    ctx = relation_ctx.ctx
     if isinstance(right, KnownValue):
         if not isinstance(right.val, int):
             return CanAssignError(f"{right} is not an int")
@@ -1510,9 +1584,8 @@ def _maybe_specify_error_for_generic(
     left: GenericValue,
     right: Value,
     error: CanAssignError,
-    relation: Relation,
     variance: Variance,
-    ctx: CanAssignContext,
+    relation_ctx: RelationContext,
 ) -> CanAssignError:
     expected = left.get_arg(i)
     if isinstance(right, DictIncompleteValue) and left.typ in {
@@ -1522,14 +1595,14 @@ def _maybe_specify_error_for_generic(
     }:
         if i == 0:
             for pair in reversed(right.kv_pairs):
-                can_assign = has_relation(expected, pair.key, relation, ctx)
+                can_assign = relation_ctx.has_relation(expected, pair.key)
                 if isinstance(can_assign, CanAssignError):
                     return CanAssignError(
                         f"In key of key-value pair {pair}", [can_assign]
                     )
         elif i == 1:
             for pair in reversed(right.kv_pairs):
-                can_assign = has_relation(expected, pair.value, relation, ctx)
+                can_assign = relation_ctx.has_relation(expected, pair.value)
                 if isinstance(can_assign, CanAssignError):
                     return CanAssignError(
                         f"In value of key-value pair {pair}", [can_assign]
@@ -1541,12 +1614,12 @@ def _maybe_specify_error_for_generic(
     }:
         if i == 0:
             for key in right.items:
-                can_assign = has_relation(expected, KnownValue(key), relation, ctx)
+                can_assign = relation_ctx.has_relation(expected, KnownValue(key))
                 if isinstance(can_assign, CanAssignError):
                     return CanAssignError(f"In TypedDict key {key!r}", [can_assign])
         elif i == 1:
             for key, entry in right.items.items():
-                can_assign = has_relation(expected, entry.typ, relation, ctx)
+                can_assign = relation_ctx.has_relation(expected, entry.typ)
                 if isinstance(can_assign, CanAssignError):
                     return CanAssignError(f"In TypedDict key {key!r}", [can_assign])
     elif isinstance(right, SequenceValue) and left.typ in {
@@ -1560,7 +1633,7 @@ def _maybe_specify_error_for_generic(
         collections.abc.Collection,
     }:
         for i, (_, key) in enumerate(right.members):
-            can_assign = has_relation(expected, key, relation, ctx)
+            can_assign = relation_ctx.has_relation(expected, key)
             if isinstance(can_assign, CanAssignError):
                 return CanAssignError(f"In element {i}", [can_assign])
 
@@ -1669,11 +1742,9 @@ class _LazySequenceValue(Value):
 
 
 def _has_relation_lazy_sequence(
-    a: _LazySequenceValue,
-    b: _LazySequenceValue,
-    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
-    ctx: CanAssignContext,
+    a: _LazySequenceValue, b: _LazySequenceValue, relation_ctx: RelationContext
 ) -> CanAssign:
+    relation = relation_ctx.relation
     """Check the relation between two sequences A and B.
 
     Sequences can contain either single values (Single, represented in examples as "int")
@@ -1750,7 +1821,7 @@ def _has_relation_lazy_sequence(
     if a[0][0] is False and b[0][0] is False:
         # If so, check whether they're compatible
         can_assign = _has_relation(
-            gradualize(a[0][1]), gradualize(b[0][1]), relation, ctx
+            gradualize(a[0][1]), gradualize(b[0][1]), relation_ctx
         )
         if isinstance(can_assign, CanAssignError):
             if a.start_idx == b.start_idx:
@@ -1760,15 +1831,13 @@ def _has_relation_lazy_sequence(
             return CanAssignError(
                 f"Elements at {text} are not compatible", [can_assign]
             )
-        return _has_relation_lazy_sequence(
-            a.slice_left(), b.slice_left(), relation, ctx
-        )
+        return _has_relation_lazy_sequence(a.slice_left(), b.slice_left(), relation_ctx)
 
     # Do both have a Single element on the right?
     if a[-1][0] is False and b[-1][0] is False:
         # If so, check whether they're compatible
         can_assign = _has_relation(
-            gradualize(a[-1][1]), gradualize(b[-1][1]), relation, ctx
+            gradualize(a[-1][1]), gradualize(b[-1][1]), relation_ctx
         )
         if isinstance(can_assign, CanAssignError):
             a_end = len(a.seq.members) + a.end_idx - 1
@@ -1781,33 +1850,33 @@ def _has_relation_lazy_sequence(
                 f"Elements at {text} are not compatible", [can_assign]
             )
         return _has_relation_lazy_sequence(
-            a.slice_right(), b.slice_right(), relation, ctx
+            a.slice_right(), b.slice_right(), relation_ctx
         )
 
     # Do both have a Many on the left and also on the right?
     if a[0][0] is True and b[0][0] is True and a[-1][0] is True and b[-1][0] is True:
         can_assign = _has_relation(
-            gradualize(a[0][1]), gradualize(b[0][1]), relation, ctx
+            gradualize(a[0][1]), gradualize(b[0][1]), relation_ctx
         )
         if isinstance(can_assign, CanAssignError):
             # If the leftmost Many in a is not compatible, assume it's empty
             # and continue.
-            return _has_relation_lazy_sequence(a.slice_left(), b, relation, ctx)
+            return _has_relation_lazy_sequence(a.slice_left(), b, relation_ctx)
         else:
             # If the leftmost Many is compatible, we can succeed in three ways:
             # 1. Consume A's leftmost and continue. (Example: A = (*object, *int), B = (*object,))
             can_assign1 = _has_relation_lazy_sequence(
-                a.slice_left(), b.slice_left(), relation, ctx
+                a.slice_left(), b.slice_left(), relation_ctx
             )
             if not isinstance(can_assign1, CanAssignError):
                 return can_assign1
             # 2. Consume B's leftmost and continue. (Example: A = (*object,), B = (*object, *int))
-            can_assign2 = _has_relation_lazy_sequence(a.slice_left(), b, relation, ctx)
+            can_assign2 = _has_relation_lazy_sequence(a.slice_left(), b, relation_ctx)
             if not isinstance(can_assign2, CanAssignError):
                 return can_assign2
             # 3. Consume both leftmost and continue.
             # (Example: A = (*object, int, *int), B = (*object, int, *int))
-            can_assign3 = _has_relation_lazy_sequence(a, b.slice_left(), relation, ctx)
+            can_assign3 = _has_relation_lazy_sequence(a, b.slice_left(), relation_ctx)
             if not isinstance(can_assign3, CanAssignError):
                 return can_assign3
             return CanAssignError(
@@ -1832,7 +1901,7 @@ def _has_relation_lazy_sequence(
     if b[-1][0] and not a[-1][0]:
         b_decomposed = [b_dd for b_d in b_decomposed for b_dd in b_d.decompose_right()]
 
-    return _has_relation_lazy_seq_multi(a_decomposed, b_decomposed, relation, ctx)
+    return _has_relation_lazy_seq_multi(a_decomposed, b_decomposed, relation_ctx)
 
 
 def _is_unbounded_any_lazy_sequence(seq: _LazySequenceValue) -> bool:
@@ -1845,16 +1914,16 @@ def _is_unbounded_any_lazy_sequence(seq: _LazySequenceValue) -> bool:
 def _has_relation_lazy_seq_multi(
     a_iter: Iterable[_LazySequenceValue],
     b_iter: Iterable[_LazySequenceValue],
-    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
-    ctx: CanAssignContext,
+    relation_ctx: RelationContext,
 ) -> CanAssign:
+    relation = relation_ctx.relation
     bounds_maps = []
     a_iter = list(a_iter)
     for b in b_iter:
         errors = []
         inner_bounds_maps = []
         for a in a_iter:
-            can_assign = _has_relation_lazy_sequence(a, b, relation, ctx)
+            can_assign = _has_relation_lazy_sequence(a, b, relation_ctx)
             if isinstance(can_assign, CanAssignError):
                 errors.append(can_assign)
             else:
@@ -1869,11 +1938,10 @@ def _has_relation_lazy_seq_multi(
 
 
 def _has_relation_sequence(
-    left: SequenceValue,
-    right: SequenceValue,
-    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
-    ctx: CanAssignContext,
+    left: SequenceValue, right: SequenceValue, relation_ctx: RelationContext
 ) -> CanAssign:
+    relation = relation_ctx.relation
+    ctx = relation_ctx.ctx
     # TypeObject.can_assign() does the nominal/container-level compatibility check
     # for all sequences. For tuple/tuple, it also already performs the full
     # element-by-element comparison via _compare_tuple_sequences(); preserve that
@@ -1895,23 +1963,20 @@ def _has_relation_sequence(
     if left.typ is tuple and right.typ is tuple:
         return can_assign
 
-    return _compare_tuple_sequences(left, right, relation, ctx)
+    return _compare_tuple_sequences(left, right, relation_ctx)
 
 
 def _compare_tuple_sequences(
-    left: SequenceValue,
-    right: SequenceValue,
-    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
-    ctx: CanAssignContext,
+    left: SequenceValue, right: SequenceValue, relation_ctx: RelationContext
 ) -> CanAssign:
     captured_typevartuple = _try_capture_single_typevartuple_sequence(
-        left, right, relation, ctx
+        left, right, relation_ctx
     )
     if captured_typevartuple is not None:
         return captured_typevartuple
 
     return _has_relation_lazy_sequence(
-        _LazySequenceValue(left), _LazySequenceValue(right), relation, ctx
+        _LazySequenceValue(left), _LazySequenceValue(right), relation_ctx
     )
 
 
@@ -1940,11 +2005,11 @@ def _widen_typevartuple_bound_member(value: Value) -> Value:
 def _capture_typevartuple_bounds_from_side(
     template: SequenceValue,
     actual: SequenceValue,
-    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
-    ctx: CanAssignContext,
+    relation_ctx: RelationContext,
     *,
     use_upper_bound: bool,
 ) -> CanAssign | None:
+    relation = relation_ctx.relation
     typevartuple_entries = [
         (i, member)
         for i, (is_many, member) in enumerate(template.members)
@@ -1971,7 +2036,7 @@ def _capture_typevartuple_bounds_from_side(
     for i in range(prefix):
         expected = template.members[i][1]
         got = actual.members[i][1]
-        bounds = _has_relation(gradualize(expected), gradualize(got), relation, ctx)
+        bounds = _has_relation(gradualize(expected), gradualize(got), relation_ctx)
         if isinstance(bounds, CanAssignError):
             return bounds
         bounds_maps.append(bounds)
@@ -1979,7 +2044,7 @@ def _capture_typevartuple_bounds_from_side(
     for i in range(1, suffix + 1):
         expected = template.members[-i][1]
         got = actual.members[-i][1]
-        bounds = _has_relation(gradualize(expected), gradualize(got), relation, ctx)
+        bounds = _has_relation(gradualize(expected), gradualize(got), relation_ctx)
         if isinstance(bounds, CanAssignError):
             return bounds
         bounds_maps.append(bounds)
@@ -2010,21 +2075,18 @@ def _capture_typevartuple_bounds_from_side(
 
 
 def _try_capture_single_typevartuple_sequence(
-    left: SequenceValue,
-    right: SequenceValue,
-    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
-    ctx: CanAssignContext,
+    left: SequenceValue, right: SequenceValue, relation_ctx: RelationContext
 ) -> CanAssign | None:
     # tuple[*Ts] compared to a concrete tuple is common in generic call
     # inference. Capture this directly to avoid losing constraints in
     # many-path tuple decomposition.
     left_capture = _capture_typevartuple_bounds_from_side(
-        left, right, relation, ctx, use_upper_bound=False
+        left, right, relation_ctx, use_upper_bound=False
     )
     if left_capture is not None:
         return left_capture
     return _capture_typevartuple_bounds_from_side(
-        right, left, relation, ctx, use_upper_bound=True
+        right, left, relation_ctx, use_upper_bound=True
     )
 
 
@@ -2088,21 +2150,20 @@ def _pack_typevartuple_generic_args(
     return packed
 
 
-def _map_relation(relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE]) -> Relation:
-    if relation is Relation.SUBTYPE:
-        return Relation.EQUIVALENT
-    elif relation is Relation.ASSIGNABLE:
-        return Relation.CONSISTENT
-    else:
-        assert_never(relation)
+def _map_relation(relation: Relation) -> Relation:
+    match relation:
+        case Relation.SUBTYPE | Relation.EQUIVALENT:
+            return Relation.EQUIVALENT
+        case Relation.ASSIGNABLE | Relation.CONSISTENT:
+            return Relation.CONSISTENT
+        case _:
+            assert_never(relation)
 
 
 def _has_relation_typeddict(
-    left: TypedDictValue,
-    right: TypedDictValue,
-    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
-    ctx: CanAssignContext,
+    left: TypedDictValue, right: TypedDictValue, relation_ctx: RelationContext
 ) -> CanAssign:
+    relation = relation_ctx.relation
     bounds_maps = []
     for key, entry in left.items.items():
         if key not in right.items:
@@ -2113,7 +2174,7 @@ def _has_relation_typeddict(
                 return CanAssignError(f"Mutable key {key} is missing in {right}")
             extra_keys_type = gradualize(right.extra_keys or TypedValue(object))
             can_assign = _has_relation(
-                gradualize(entry.typ), extra_keys_type, relation, ctx
+                gradualize(entry.typ), extra_keys_type, relation_ctx
             )
             if isinstance(can_assign, CanAssignError):
                 return CanAssignError(
@@ -2137,7 +2198,9 @@ def _has_relation_typeddict(
             else:
                 relation_to_use = _map_relation(relation)
 
-            can_assign = has_relation(entry.typ, their_entry.typ, relation_to_use, ctx)
+            can_assign = relation_ctx.check_relation(
+                entry.typ, their_entry.typ, relation_to_use
+            )
             if isinstance(can_assign, CanAssignError):
                 return CanAssignError(
                     f"Types for key {key} are incompatible", children=[can_assign]
@@ -2159,8 +2222,8 @@ def _has_relation_typeddict(
             relation_to_use = _map_relation(relation)
         else:
             relation_to_use = relation
-        can_assign = has_relation(
-            left.extra_keys, their_entry.typ, relation_to_use, ctx
+        can_assign = relation_ctx.check_relation(
+            left.extra_keys, their_entry.typ, relation_to_use
         )
         if isinstance(can_assign, CanAssignError):
             return CanAssignError(
@@ -2178,8 +2241,8 @@ def _has_relation_typeddict(
         else:
             relation_to_use = _map_relation(relation)
         their_extra_keys = right.extra_keys or TypedValue(object)
-        can_assign = has_relation(
-            left.extra_keys, their_extra_keys, relation_to_use, ctx
+        can_assign = relation_ctx.check_relation(
+            left.extra_keys, their_extra_keys, relation_to_use
         )
         if isinstance(can_assign, CanAssignError):
             return CanAssignError(
@@ -2190,11 +2253,9 @@ def _has_relation_typeddict(
 
 
 def _has_relation_typeddict_dict(
-    left: TypedDictValue,
-    right: DictIncompleteValue,
-    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
-    ctx: CanAssignContext,
+    left: TypedDictValue, right: DictIncompleteValue, relation_ctx: RelationContext
 ) -> CanAssign:
+    ctx = relation_ctx.ctx
     bounds_maps = []
     for key, entry in left.items.items():
         their_value = right.get_value(KnownValue(key), ctx)
@@ -2203,7 +2264,7 @@ def _has_relation_typeddict_dict(
                 return CanAssignError(f"Key {key} is missing in {right}")
             else:
                 continue
-        can_assign = has_relation(entry.typ, their_value, relation, ctx)
+        can_assign = relation_ctx.has_relation(entry.typ, their_value)
         if isinstance(can_assign, CanAssignError):
             return CanAssignError(
                 f"Types for key {key} are incompatible", children=[can_assign]
@@ -2221,8 +2282,8 @@ def _has_relation_typeddict_dict(
                             f" TypedDict {left}"
                         )
                     elif left.extra_keys is not None:
-                        can_assign = has_relation(
-                            left.extra_keys, pair.value, relation, ctx
+                        can_assign = relation_ctx.has_relation(
+                            left.extra_keys, pair.value
                         )
                         if isinstance(can_assign, CanAssignError):
                             return CanAssignError(
@@ -2235,7 +2296,7 @@ def _has_relation_typeddict_dict(
                             f"Key {key_type.val!r} is not allowed in TypedDict {left}"
                         )
             else:
-                can_assign = has_relation(TypedValue(str), key_type, relation, ctx)
+                can_assign = relation_ctx.has_relation(TypedValue(str), key_type)
                 if isinstance(can_assign, CanAssignError):
                     return CanAssignError(
                         f"Type for key {pair.key} is not a string",
@@ -2246,9 +2307,7 @@ def _has_relation_typeddict_dict(
                         f"Key {pair.key} is not allowed in closed TypedDict" f" {left}"
                     )
                 elif left.extra_keys is not None:
-                    can_assign = has_relation(
-                        left.extra_keys, pair.value, relation, ctx
-                    )
+                    can_assign = relation_ctx.has_relation(left.extra_keys, pair.value)
                     if isinstance(can_assign, CanAssignError):
                         return CanAssignError(
                             f"Type for extra key {pair.key} is incompatible",
@@ -2263,7 +2322,18 @@ def _has_relation_typeddict_dict(
 
 
 def get_tv_map(
-    left: Value, right: Value, relation: Relation, ctx: CanAssignContext
+    left: Value,
+    right: Value,
+    relation: Relation,
+    ctx: CanAssignContext,
+    inferables: tuple[TypeParam, ...] | None = None,
+) -> TypeVarMap | CanAssignError:
+    relation_ctx = RelationContext(relation, ctx, inferables)
+    return get_tv_map_from_ctx(left, right, relation_ctx)
+
+
+def get_tv_map_from_ctx(
+    left: Value, right: Value, relation_ctx: RelationContext
 ) -> TypeVarMap | CanAssignError:
     from pycroscope.input_sig import (
         InputSigValue,
@@ -2274,18 +2344,22 @@ def get_tv_map(
     original_left = left
     left = freshen_typevars_for_inference(left)
     if isinstance(left, InputSigValue):
-        if relation not in (Relation.ASSIGNABLE, Relation.SUBTYPE):
+        if relation_ctx.relation not in (Relation.ASSIGNABLE, Relation.SUBTYPE):
             return CanAssignError(
                 "Cannot infer InputSig type variables for this relation"
             )
         bounds_map = input_sigs_have_relation(
-            assert_input_sig(left), assert_input_sig(right), relation, ctx
+            assert_input_sig(left),
+            assert_input_sig(right),
+            relation_ctx.relation,
+            relation_ctx.ctx,
+            relation_ctx.inferables,
         )
     else:
-        bounds_map = has_relation(left, right, relation, ctx)
+        bounds_map = has_relation_from_ctx(left, right, relation_ctx)
     if isinstance(bounds_map, CanAssignError):
         return bounds_map
-    resolved_tv_map, errors = resolve_bounds_map(bounds_map, ctx)
+    resolved_tv_map, errors = resolve_bounds_map(bounds_map, relation_ctx.ctx)
     if errors:
         return CanAssignError(children=list(errors))
     tv_map = resolved_tv_map
@@ -2303,7 +2377,7 @@ def is_iterable(
     value: Value, relation: Relation, ctx: CanAssignContext
 ) -> CanAssignError | Value:
     """Check whether a value is iterable."""
-    tv_map = get_tv_map(IterableValue, value, relation, ctx)
+    tv_map = get_tv_map(IterableValue, value, relation, ctx, inferables=(T_iter,))
     if isinstance(tv_map, CanAssignError):
         return tv_map
     return tv_map.get_typevar(T_iter, AnyValue(AnySource.generic_argument))

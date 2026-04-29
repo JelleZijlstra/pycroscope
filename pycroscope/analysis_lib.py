@@ -104,6 +104,9 @@ class _FakeLoader:
         return self.source
 
 
+_counter = 0
+
+
 def make_module(
     code_str: str, extra_scope: Mapping[str, object] = {}
 ) -> types.ModuleType:
@@ -111,7 +114,9 @@ def make_module(
     # Make the name unique to avoid clobbering the overloads dict
     # from pycroscope.extensions.overload.
     token = secrets.token_hex()
-    module_name = f"<test input {secrets.token_hex()}>"
+    global _counter
+    _counter += 1
+    module_name = f"@testmod{_counter}"
     filename = f"{token}.py"
     mod = types.ModuleType(module_name)
     scope = mod.__dict__

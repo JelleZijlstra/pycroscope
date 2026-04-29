@@ -1,8 +1,8 @@
 # static analysis: ignore
 from collections.abc import Sequence
+from typing import Literal
 
-from pycroscope.relations import Relation
-
+from .relations import Relation, RelationContext
 from .signature import (
     ELLIPSIS_PARAM,
     ConcreteSignature,
@@ -20,6 +20,7 @@ from .value import (
     AnnotatedValue,
     AnySource,
     AnyValue,
+    CanAssign,
     CanAssignError,
     GenericValue,
     KnownValue,
@@ -55,13 +56,21 @@ def test_stringify() -> None:
     assert str(overload) == "overloaded (() -> str, (x: int) -> int)"
 
 
+def _sigs_have_relation(
+    left: ConcreteSignature,
+    right: ConcreteSignature,
+    relation: Literal[Relation.ASSIGNABLE, Relation.SUBTYPE],
+) -> CanAssign:
+    return signatures_have_relation(left, right, RelationContext(relation, CTX))
+
+
 class TestCanAssign:
     def can(self, left: ConcreteSignature, right: ConcreteSignature) -> None:
         tv_map = left.can_assign(right, CTX)
         assert not isinstance(
             tv_map, CanAssignError
         ), f"cannot assign {right} to {left} due to {tv_map}"
-        tv_map = signatures_have_relation(left, right, Relation.ASSIGNABLE, CTX)
+        tv_map = _sigs_have_relation(left, right, Relation.ASSIGNABLE)
         assert not isinstance(
             tv_map, CanAssignError
         ), f"cannot assign {right} to {left} due to {tv_map}"
@@ -69,7 +78,7 @@ class TestCanAssign:
     def cannot(self, left: ConcreteSignature, right: ConcreteSignature) -> None:
         tv_map = left.can_assign(right, CTX)
         assert isinstance(tv_map, CanAssignError), f"can assign {right} to {left}"
-        tv_map = signatures_have_relation(left, right, Relation.ASSIGNABLE, CTX)
+        tv_map = _sigs_have_relation(left, right, Relation.ASSIGNABLE)
         assert isinstance(tv_map, CanAssignError), f"can assign {right} to {left}"
 
     def test_return_value(self) -> None:
@@ -1538,10 +1547,10 @@ class TestOverload(TestNameCheckVisitorBase):
                 return x
 
         def use(p: P) -> None:
-            assert_type(p.f(1), int)  # E: inference_failure
-            assert_type(p.f("x"), str)  # E: inference_failure
+            assert_type(p.f(1), int)
+            assert_type(p.f("x"), str)
 
-        use(C())
+        use(C())  # E: incompatible_argument
 
     @assert_passes()
     def test_missing_overload_impl_flushed_by_next_function(self):
@@ -1601,12 +1610,12 @@ class TestOverload(TestNameCheckVisitorBase):
             def f(self, x: str, /) -> str: ...
 
         class Child(Base):
-            def f(self, x: int | str, /) -> int | str:
+            def f(self, x: int | str, /) -> int | str:  # E: incompatible_override
                 return x
 
         def use(c: Child) -> None:
-            assert_type(c.f(1), int)  # E: inference_failure
-            assert_type(c.f("x"), str)  # E: inference_failure
+            assert_type(c.f(1), int | str)
+            assert_type(c.f("x"), int | str)
 
     @assert_passes()
     def test_protocol_override_on_first_overload_only(self):

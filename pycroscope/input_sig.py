@@ -1,13 +1,13 @@
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Literal
 
 from typing_extensions import Self, assert_never
 
 import pycroscope
-from pycroscope.relations import Relation
-from pycroscope.stacked_scopes import Composite
-from pycroscope.value import (
+
+from .relations import Relation, RelationContext
+from .stacked_scopes import Composite
+from .value import (
     AnySource,
     AnyValue,
     Bound,
@@ -19,6 +19,7 @@ from pycroscope.value import (
     ParamSpecParam,
     SequenceValue,
     TypedValue,
+    TypeParam,
     TypeVarMap,
     UpperBound,
     Value,
@@ -127,9 +128,12 @@ def assert_input_sig(value: Value) -> InputSig:
 def input_sigs_have_relation(
     left: InputSig,
     right: InputSig,
-    relation: Literal[Relation.ASSIGNABLE, Relation.SUBTYPE],
+    relation: Relation,
     ctx: CanAssignContext,
+    inferables: tuple[TypeParam, ...] | None = None,
 ) -> CanAssign:
+    if relation not in (Relation.ASSIGNABLE, Relation.SUBTYPE):
+        raise ValueError(f"Unsupported relation: {relation}")
     if isinstance(left, AnySig):
         if relation is Relation.SUBTYPE:
             return CanAssignError("Cannot be assigned to")
@@ -148,10 +152,11 @@ def input_sigs_have_relation(
         elif isinstance(right, ParamSpecParam):
             return {right: [UpperBound(right, InputSigValue(left))]}
         elif isinstance(right, ActualArguments):
+            # TODO: pass inferables
             return pycroscope.signature.check_call_preprocessed(left.sig, right, ctx)
         elif isinstance(right, FullSignature):
             return pycroscope.signature.signatures_have_relation(
-                left.sig, right.sig, relation, ctx
+                left.sig, right.sig, RelationContext(relation, ctx, inferables)
             )
         else:
             assert_never(right)

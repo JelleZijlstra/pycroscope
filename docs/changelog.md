@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix overload-only callable protocol methods so protocol compatibility checks use the declared overload set instead of the runtime overload placeholder.
+- Fix callable signature compatibility for syntactic `*args: Any, **kwargs: Any` tails and `ParamSpec[...]`, so callable protocols interoperate with fixed signatures more consistently.
 - Drop restrictions against redefined and function-local `type` statements.
 - Support `typing_extensions.Sentinel` and (on Python 3.15+) `builtins.sentinel`, as specified by PEP 661.
 - Clean up treatment of attributes to be more consistent and reliable. The `TreatClassAttributesAsAny` configuration is no longer supported.
