@@ -106,6 +106,7 @@ from .value import (
     SubclassValue,
     SuperValue,
     SyntheticClassObjectValue,
+    SyntheticModuleValue,
     SyntheticTypeFormValue,
     TypeAliasValue,
     TypedDictEntry,
@@ -114,6 +115,7 @@ from .value import (
     TypeFormValue,
     TypeVarParam,
     TypeVarValue,
+    UnboundMethodValue,
     Value,
     assert_is_value,
     class_owner_from_key,
@@ -219,16 +221,17 @@ def _extract_getitem_type_args(
     return None
 
 
-def _generic_alias_or_stfv(base: type, args: Value, ctx: CallContext) -> Value:
+def _generic_alias_or_stfv(base: ClassKey, args: Value, ctx: CallContext) -> Value:
     type_args = _extract_getitem_type_args(args, ctx)
     if type_args is None:
         return TypedValue(types.GenericAlias)
-    if all_of_type(type_args, KnownValue):
+    if isinstance(base, type) and all_of_type(type_args, KnownValue):
         args_tuple = tuple(arg.val for arg in type_args)
         return_val = KnownValue(types.GenericAlias(base, args_tuple))
     else:
         return_val = TypedValue(types.GenericAlias)
     type_forms = []
+    # TODO: match up with type params
     for arg in type_args:
         type_form = _type_from_typeform_arg(arg, ctx)
         if type_form == AnyValue(AnySource.error):
@@ -237,14 +240,70 @@ def _generic_alias_or_stfv(base: type, args: Value, ctx: CallContext) -> Value:
     return SyntheticTypeFormValue(GenericValue(base, type_forms), return_val, ctx.node)
 
 
+def _call(
+    callee: Value, args: Sequence[Value | Composite], ctx: CallContext
+) -> ImplReturn | Value:
+    return ctx.visitor.check_call(
+        ctx.node,
+        callee,
+        [Composite(val) if not isinstance(val, Composite) else val for val in args],
+    )
+
+
 def _getitem_impl(ctx: CallContext) -> ImplReturn | Value:
     a = ctx.vars["a"]
     b = ctx.vars["b"]
 
     def inner(val: SimpleType, original_val: Value) -> ImplReturn | Value:
         match val:
+            case AnyValue():
+                return AnyValue(AnySource.from_another)
             case KnownValue(val=val) if val is type:
                 return _generic_alias_or_stfv(type, b, ctx)
+            case (
+                SyntheticModuleValue()
+                | TypeFormValue()
+                | PredicateValue()
+                | UnboundMethodValue()
+            ):
+                ctx.show_error(
+                    f"{val} is not subscriptable",
+                    ErrorCode.unsupported_operation,
+                    arg="a",
+                )
+                return AnyValue(AnySource.error)
+            case SyntheticClassObjectValue(class_type=class_type):
+                tobj = class_type.get_type_object(ctx.visitor)
+                if tobj.get_declared_type_params():
+                    return _generic_alias_or_stfv(class_type.typ, b, ctx)
+
+                cgi = tobj.get_attribute(
+                    "__class_getitem__",
+                    AttributePolicy(
+                        on_class=True, receiver=original_val, visitor=ctx.visitor
+                    ),
+                )
+                if cgi is not None:
+                    return _call(
+                        cgi.value, [ctx.composites["a"], ctx.composites["b"]], ctx
+                    )
+                gi = tobj.get_attribute(
+                    "__getitem__",
+                    AttributePolicy(
+                        on_class=True,
+                        receiver=original_val,
+                        visitor=ctx.visitor,
+                        is_special_lookup=True,
+                    ),
+                )
+                if gi is not None:
+                    return _call(gi.value, [ctx.composites["b"]], ctx)
+                ctx.show_error(
+                    f"{val} is not subscriptable",
+                    ErrorCode.unsupported_operation,
+                    arg="a",
+                )
+                return AnyValue(AnySource.error)
             case _:
                 return AnyValue(AnySource.inference)
 
@@ -4082,7 +4141,10 @@ DEFAULT_ARGSPECS_WITH_CACHE_CALLABLES = {
 
 
 def uses_default_argspecs_with_cache(obj: object) -> bool:
-    return obj in DEFAULT_ARGSPECS_WITH_CACHE_CALLABLES
+    try:
+        return obj in DEFAULT_ARGSPECS_WITH_CACHE_CALLABLES
+    except Exception:
+        return False
 
 
 def get_default_argspecs_with_cache(

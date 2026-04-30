@@ -2202,7 +2202,7 @@ class TestRegex(TestNameCheckVisitorBase):
 
 class TestOperatorGetItem(TestNameCheckVisitorBase):
     @assert_passes()
-    def test_operator_getitem(self):
+    def test_type(self):
         from operator import getitem
         from types import GenericAlias
         from unittest.mock import ANY
@@ -2225,3 +2225,52 @@ class TestOperatorGetItem(TestNameCheckVisitorBase):
             assert_type(getitem(type, x), GenericAlias)
             assert_type(getitem(type, 1), Literal[type_1])  # E: invalid_annotation
             assert_is_value(getitem(type, int), stfv)
+
+    @assert_passes()
+    def test_synthetic_class(self):
+        from operator import getitem
+        from typing import Any, Generic, TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        def capybara(obj):
+            class Bare:
+                pass
+
+            getitem(Bare, 1)  # E: unsupported_operation
+
+            class Gen(Generic[T]):
+                pass
+
+            getitem(Gen, 1)  # E: invalid_annotation
+            x: getitem(Gen, int) = obj
+            assert_type(x, Gen[int])
+            y: Gen = x  # E: missing_generic_parameters
+            assert_type(y, Gen[Any])
+
+            class HasCGI:
+                def __class_getitem__(cls, item: int) -> int:
+                    return 42
+
+            assert_type(getitem(HasCGI, 1), int)
+            getitem(HasCGI, "x")  # E: incompatible_argument
+
+            class HasGI:
+                def __getitem__(self, item: int) -> int:
+                    return 42
+
+            # TODO: this errors for the wrong reason, we bind it wrong.
+            # Should be unsupported_operation.
+            getitem(HasGI, 1)  # E: incompatible_call
+
+            class Meta(type):
+                def __getitem__(self, item: int) -> int:
+                    return 42
+
+            class HasMeta(metaclass=Meta):
+                pass
+
+            assert_type(getitem(HasMeta, 1), int)
+            getitem(HasMeta, "x")  # E: incompatible_argument
