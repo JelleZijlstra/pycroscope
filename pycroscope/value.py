@@ -3520,7 +3520,7 @@ class SyntheticTypeFormValue(Value):
 
     inner_type: Value
     runtime_type: Value
-    node: ast.AST
+    node: ast.AST | None
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         return SyntheticTypeFormValue(

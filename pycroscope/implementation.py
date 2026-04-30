@@ -3,8 +3,10 @@ import builtins
 import collections
 import collections.abc
 import inspect
+import operator
 import re
 import sys
+import types
 import typing
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import replace
@@ -39,6 +41,7 @@ from .relations import (
     is_equivalent_with_reason,
 )
 from .safe import (
+    all_of_type,
     hasattr_static,
     is_instance_of_typing_name,
     is_typing_name,
@@ -99,9 +102,11 @@ from .value import (
     PredicateValue,
     Qualifier,
     SequenceValue,
+    SimpleType,
     SubclassValue,
     SuperValue,
     SyntheticClassObjectValue,
+    SyntheticTypeFormValue,
     TypeAliasValue,
     TypedDictEntry,
     TypedDictValue,
@@ -151,8 +156,99 @@ def flatten_unions(
     return ImplReturn.unite_impl_rets(results)
 
 
+def call_on_simple(
+    callback: Callable[[SimpleType, Value], ImplReturn | Value],
+    value: Value,
+    ctx: CallContext,
+) -> ImplReturn | Value:
+    fallback = replace_fallback(value)
+    match fallback:
+        case MultiValuedValue(vals=vals):
+            if not vals:
+                return NO_RETURN_VALUE
+            results = [
+                clean_up_implementation_fn_return(call_on_simple(callback, val, ctx))
+                for val in vals
+            ]
+            return ImplReturn.unite_impl_rets(results)
+        case IntersectionValue(vals=vals):
+            if not vals:
+                return call_on_simple(callback, TypedValue(object), ctx)
+            results = []
+            errors = []
+            for val in vals:
+                with ctx.visitor.catch_errors() as caught:
+                    result = call_on_simple(callback, val, ctx)
+                if caught:
+                    errors.extend(caught)
+                else:
+                    results.append(clean_up_implementation_fn_return(result))
+            if results:
+                return ImplReturn.intersect_impl_rets(results, ctx.visitor)
+            else:
+                ctx.visitor.show_caught_errors(errors)
+                return ImplReturn(AnyValue(AnySource.error))
+        case _:
+            return callback(fallback, value)
+
+
 # Implementations of some important functions for use in their ExtendedArgSpecs (see above). These
 # are called when the test_scope checker encounters call to these functions.
+
+
+def _extract_getitem_type_args(
+    val: Value, ctx: CallContext
+) -> tuple[Value, ...] | None:
+    """Given the part within the brackets of a subscript expression, extract the values
+    that would be used as type arguments.
+
+    Returns a tuple of Values if we can figure out that it is a tuple of values,
+    a one-tuple if we know it's one value that is not a tuple, or None if we can't figure it out.
+    """
+    fallback = replace_fallback(val)
+    if isinstance(fallback, SequenceValue) and fallback.typ is tuple:
+        if any(is_many for is_many, _ in fallback.members):
+            return None
+        return tuple(member for _, member in fallback.members)
+    elif isinstance(fallback, KnownValue) and isinstance(fallback.val, tuple):
+        return tuple(KnownValue(elt) for elt in fallback.val)
+    overlap = intersect_values(val, TypedValue(tuple), ctx.visitor)
+    if overlap is NO_RETURN_VALUE:
+        # We know it's not a tuple.
+        return (val,)
+    return None
+
+
+def _generic_alias_or_stfv(base: type, args: Value, ctx: CallContext) -> Value:
+    type_args = _extract_getitem_type_args(args, ctx)
+    if type_args is None:
+        return TypedValue(types.GenericAlias)
+    if all_of_type(type_args, KnownValue):
+        args_tuple = tuple(arg.val for arg in type_args)
+        return_val = KnownValue(types.GenericAlias(base, args_tuple))
+    else:
+        return_val = TypedValue(types.GenericAlias)
+    type_forms = []
+    for arg in type_args:
+        type_form = _type_from_typeform_arg(arg, ctx)
+        if type_form == AnyValue(AnySource.error):
+            return return_val
+        type_forms.append(type_form)
+    return SyntheticTypeFormValue(GenericValue(base, type_forms), return_val, ctx.node)
+
+
+def _getitem_impl(ctx: CallContext) -> ImplReturn | Value:
+    a = ctx.vars["a"]
+    b = ctx.vars["b"]
+
+    def inner(val: SimpleType, original_val: Value) -> ImplReturn | Value:
+        match val:
+            case KnownValue(val=val) if val is type:
+                return _generic_alias_or_stfv(type, b, ctx)
+            case _:
+                return AnyValue(AnySource.inference)
+
+    return call_on_simple(inner, a, ctx)
 
 
 def _issubclass_impl(ctx: CallContext) -> Value:
@@ -3505,6 +3601,14 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
                 [ParameterTypeGuardExtension("obj", CallableValue(ANY_SIGNATURE))],
             ),
         ),
+        Signature.make(
+            [
+                SigParameter("a", ParameterKind.POSITIONAL_ONLY),
+                SigParameter("b", ParameterKind.POSITIONAL_ONLY),
+            ],
+            callable=operator.getitem,
+            impl=_getitem_impl,
+        ),
     ]
     if qcore is not None:
         signatures += [
@@ -3961,7 +4065,7 @@ def _re_impl_with_pattern(ctx: CallContext) -> Value:
     return ctx.inferred_return_value
 
 
-DEFAULT_ARGSPECS_WITH_CACHE_CALLABLES = (
+_REGEX_CALLABLES = (
     re.compile,
     re.search,
     re.match,
@@ -3972,6 +4076,9 @@ DEFAULT_ARGSPECS_WITH_CACHE_CALLABLES = (
     re.sub,
     re.subn,
 )
+DEFAULT_ARGSPECS_WITH_CACHE_CALLABLES = {
+    **{callable: _re_impl_with_pattern for callable in _REGEX_CALLABLES}
+}
 
 
 def uses_default_argspecs_with_cache(obj: object) -> bool:
@@ -3982,8 +4089,8 @@ def get_default_argspecs_with_cache(
     asc: "pycroscope.arg_spec.ArgSpecCache",
 ) -> dict[object, ConcreteSignature]:
     sigs = {}
-    for func in DEFAULT_ARGSPECS_WITH_CACHE_CALLABLES:
-        sig = asc.get_argspec(func, impl=_re_impl_with_pattern)
+    for func, impl in DEFAULT_ARGSPECS_WITH_CACHE_CALLABLES.items():
+        sig = asc.get_argspec(func, impl=impl)
         assert isinstance(
             sig, (Signature, OverloadedSignature)
         ), f"failed to find signature for {func}: {sig}"

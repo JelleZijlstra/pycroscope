@@ -1,4 +1,5 @@
 # static analysis: ignore
+
 import typing_extensions
 
 from .error_code import ErrorCode
@@ -2197,3 +2198,30 @@ class TestRegex(TestNameCheckVisitorBase):
             f(bad)  # E: invalid_regex
             f(1)
             f(unannotated)
+
+
+class TestOperatorGetItem(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_operator_getitem(self):
+        from operator import getitem
+        from types import GenericAlias
+        from unittest.mock import ANY
+
+        from typing_extensions import Literal, assert_type
+
+        from pycroscope.value import (
+            GenericValue,
+            KnownValue,
+            SyntheticTypeFormValue,
+            assert_is_value,
+        )
+
+        type_1 = GenericAlias(type, (1,))
+        stfv = SyntheticTypeFormValue(
+            GenericValue(type, [TypedValue(int)]), KnownValue(type[int]), ANY
+        )
+
+        def capybara(x):
+            assert_type(getitem(type, x), GenericAlias)
+            assert_type(getitem(type, 1), Literal[type_1])  # E: invalid_annotation
+            assert_is_value(getitem(type, int), stfv)
