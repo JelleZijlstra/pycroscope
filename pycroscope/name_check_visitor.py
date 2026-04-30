@@ -90,13 +90,7 @@ from .annotations import (
     type_from_value,
     value_from_ast,
 )
-from .arg_spec import (
-    ArgSpecCache,
-    ClassesSafeToInstantiate,
-    IgnoredCallees,
-    UnwrapClass,
-    is_dot_asynq_function,
-)
+from .arg_spec import ArgSpecCache, IgnoredCallees, UnwrapClass, is_dot_asynq_function
 from .asynq_checker import AsynqChecker
 from .boolability import Boolability, get_boolability
 from .checker import Checker, CheckerAttrContext
@@ -168,7 +162,6 @@ from .safe import (
     safe_hasattr,
     safe_isinstance,
     safe_issubclass,
-    should_disable_runtime_call_for_namedtuple_class,
 )
 from .shared_options import (
     EnforceNoUnused,
@@ -15272,11 +15265,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if local is not None:
                 return_value = local
 
-        if (
-            allow_call
-            and isinstance(callee_wrapped, KnownValue)
-            and self._should_perform_runtime_call(callee_wrapped)
-        ):
+        if allow_call and isinstance(callee_wrapped, KnownValue):
             arg_values = [arg.value for arg in args]
             kw_values = [(kw, composite.value) for kw, composite in keywords]
             if self._can_perform_call(arg_values, kw_values):
@@ -15347,21 +15336,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if isinstance(task_cls, type):
                     return TypedValue(task_cls)
             return return_value
-
-    def _should_perform_runtime_call(self, callee: KnownValue) -> bool:
-        callee_obj = callee.val
-        if (
-            is_typing_name(callee_obj, "TypeVar")
-            or is_typing_name(callee_obj, "ParamSpec")
-            or is_typing_name(callee_obj, "TypeVarTuple")
-        ):
-            return False
-        return not (
-            isinstance(callee_obj, type)
-            and is_namedtuple_class(callee_obj)
-            and should_disable_runtime_call_for_namedtuple_class(callee_obj)
-            and not ClassesSafeToInstantiate.contains(callee_obj, self.options)
-        )
 
     def _specialize_generic_alias_call_return(
         self, callee: Value, return_value: Value, node: ast.AST | None
