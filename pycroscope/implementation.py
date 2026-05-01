@@ -22,7 +22,7 @@ from .annotations import (
     make_type_param_from_value,
     type_from_value,
 )
-from .error_code import ErrorCode
+from .error_code import Error, ErrorCode
 from .extensions import assert_type, reveal_locals, reveal_type
 from .format_strings import parse_format_string
 from .maybe_asynq import qcore
@@ -2844,7 +2844,12 @@ def _get_assignment_target_name(ctx: CallContext) -> str | None:
     return None
 
 
-def _check_assignment_name_match(ctx: CallContext, name_arg: str, callee: str) -> None:
+def _check_assignment_name_match(
+    ctx: CallContext,
+    name_arg: str,
+    callee: str,
+    code: Error = ErrorCode.must_have_same_name,
+) -> None:
     name_val = ctx.vars.get(name_arg)
     target_name = _get_assignment_target_name(ctx)
     if (
@@ -2856,7 +2861,7 @@ def _check_assignment_name_match(ctx: CallContext, name_arg: str, callee: str) -
             ctx.show_error(
                 f"{callee} named {name_val.val!r} must be assigned to "
                 "a variable with the same name",
-                ErrorCode.incompatible_call,
+                code,
                 arg=name_arg,
             )
 
@@ -2905,7 +2910,9 @@ def _validate_type_param_partial_call(ctx: CallContext) -> None:
 
 
 def _sentinel_impl(ctx: CallContext) -> Value:
-    _check_assignment_name_match(ctx, "name", "sentinel")
+    _check_assignment_name_match(
+        ctx, "name", "sentinel", ErrorCode.sentinel_must_have_same_name
+    )
     repr = ctx.vars.get("repr", NO_ARG_SENTINEL)
     if repr is not NO_ARG_SENTINEL and repr != KnownValue(None):
         ctx.show_error(
