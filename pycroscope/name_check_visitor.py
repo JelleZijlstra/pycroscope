@@ -90,13 +90,7 @@ from .annotations import (
     type_from_value,
     value_from_ast,
 )
-from .arg_spec import (
-    ArgSpecCache,
-    ClassesSafeToInstantiate,
-    IgnoredCallees,
-    UnwrapClass,
-    is_dot_asynq_function,
-)
+from .arg_spec import ArgSpecCache, IgnoredCallees, UnwrapClass, is_dot_asynq_function
 from .asynq_checker import AsynqChecker
 from .boolability import Boolability, get_boolability
 from .checker import Checker, CheckerAttrContext
@@ -168,7 +162,6 @@ from .safe import (
     safe_hasattr,
     safe_isinstance,
     safe_issubclass,
-    should_disable_runtime_call_for_namedtuple_class,
 )
 from .shared_options import (
     EnforceNoUnused,
@@ -3055,16 +3048,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             class_key, attr_name
         )
         return match is not None and self._is_instance_only_symbol(match[1].symbol)
-
-    def _get_instance_only_annotation_value_for_class_key(
-        self, class_key: ClassKey, attr_name: str
-    ) -> Value:
-        match = self._get_type_object_attribute_match_for_class_key(
-            class_key, attr_name
-        )
-        if match is not None and self._is_instance_only_symbol(match[1].symbol):
-            return match[1].value
-        return UNINITIALIZED_VALUE
 
     def _contains_classvar_type_parameter(self, value: Value) -> bool:
         for subval in value.walk_values():
@@ -8014,7 +7997,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _is_instance_member_accessed_through_class(
         self, root_composite: Composite, attr_name: str, node: ast.AST | None = None
     ) -> bool:
-        if attr_name in {"__name__", "__qualname__", "__module__", "__doc__"}:
+        if attr_name in {
+            "__name__",
+            "__qualname__",
+            "__module__",
+            "__doc__",
+            "__annotations__",
+        }:
             return False
         call_expr: ast.AST | None = root_composite.node
         if isinstance(node, ast.Attribute):
@@ -11703,6 +11692,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 mutually_exclusive_qualifiers=((Qualifier.Final, Qualifier.ReadOnly),),
                 qualifier_error_code=ErrorCode.invalid_qualifier,
             )
+            if (
+                node.value is None
+                and Qualifier.ClassVar in qualifiers
+                and expected_type is None
+            ):
+                expected_type = AnyValue(AnySource.unannotated)
         if (
             should_collect_class_annotation_variance
             and local_type_param_polarities is not None
@@ -12110,8 +12105,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 symbol_qualifiers.add(Qualifier.ReadOnly)
             is_instance_only = False
             if dataclass_field_info is not None:
-                is_instance_only = Qualifier.ClassVar not in symbol_qualifiers and (
-                    Qualifier.InitVar not in symbol_qualifiers
+                has_dataclass_class_binding = node.value is not None and (
+                    field_options is None or field_options.default is not None
+                )
+                is_instance_only = (
+                    Qualifier.ClassVar not in symbol_qualifiers
+                    and (Qualifier.InitVar not in symbol_qualifiers)
+                    and not has_dataclass_class_binding
                 )
             elif is_class_annotation_without_value and not has_classvar:
                 is_instance_only = True
@@ -14521,18 +14521,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 varname=root_composite.varname,
                 node=root_composite.node,
             )
-        if (
-            isinstance(node, ast.Attribute)
-            and self.current_class_key is not None
-            and self._is_current_method_receiver_node(node.value)
-            and self._is_class_object_attribute_root(root_composite.value) is True
-            and self._is_instance_only_member(self.current_class_key, attr)
-        ):
-            static_member = self._get_instance_only_annotation_value_for_class_key(
-                self.current_class_key, attr
-            )
-            if static_member is not UNINITIALIZED_VALUE:
-                return static_member
         if not is_special_lookup and self._is_instance_member_accessed_through_class(
             root_composite, attr, node
         ):
@@ -14640,7 +14628,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             record_reads=record_reads,
             self_value=resolved_self_value,
         )
-        result = attributes.get_attribute(ctx)
+        result, error = attributes.get_attribute_with_error(ctx)
+        if error is not None:
+            result = UNINITIALIZED_VALUE
         root_info = _attribute_root_class_info(root_composite.value)
         if (
             result is UNINITIALIZED_VALUE
@@ -14662,7 +14652,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     record_reads=record_reads,
                     self_value=resolved_self_value,
                 )
-                result = attributes.get_attribute(mangled_ctx)
+                result, error = attributes.get_attribute_with_error(mangled_ctx)
+                if error is not None:
+                    result = UNINITIALIZED_VALUE
         if result is UNINITIALIZED_VALUE and use_fallback and node is not None:
             return self._get_attribute_fallback(root_composite.value, attr, node)
         return result
@@ -15273,11 +15265,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if local is not None:
                 return_value = local
 
-        if (
-            allow_call
-            and isinstance(callee_wrapped, KnownValue)
-            and self._should_perform_runtime_call(callee_wrapped)
-        ):
+        if allow_call and isinstance(callee_wrapped, KnownValue):
             arg_values = [arg.value for arg in args]
             kw_values = [(kw, composite.value) for kw, composite in keywords]
             if self._can_perform_call(arg_values, kw_values):
@@ -15295,9 +15283,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             f"Call to {callee_wrapped.val} is not supported",
                             error_code=ErrorCode.incompatible_call,
                         )
-                    elif not self._should_preserve_static_call_return(
-                        callee_wrapped, return_value, result
-                    ):
+                    else:
                         return_value = KnownValue(result)
 
         return_value = self._specialize_generic_alias_call_return(
@@ -15350,87 +15336,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if isinstance(task_cls, type):
                     return TypedValue(task_cls)
             return return_value
-
-    def _should_perform_runtime_call(self, callee: KnownValue) -> bool:
-        callee_obj = callee.val
-        if (
-            is_typing_name(callee_obj, "TypeVar")
-            or is_typing_name(callee_obj, "ParamSpec")
-            or is_typing_name(callee_obj, "TypeVarTuple")
-        ):
-            return False
-        return not (
-            isinstance(callee_obj, type)
-            and is_namedtuple_class(callee_obj)
-            and should_disable_runtime_call_for_namedtuple_class(callee_obj)
-            and not ClassesSafeToInstantiate.contains(callee_obj, self.options)
-        )
-
-    def _should_preserve_static_constructor_return(
-        self, callee: Value, static_return_value: Value, runtime_result: object
-    ) -> bool:
-        runtime_class: type | None = None
-        callee_args: Sequence[Value]
-        if isinstance(callee, KnownValue):
-            origin = get_origin(callee.val)
-            runtime_args = get_args(callee.val)
-            if not (isinstance(origin, type) and runtime_args):
-                return False
-            runtime_class = origin
-            callee_args = [
-                TypedValue(arg) if isinstance(arg, type) else KnownValue(arg)
-                for arg in runtime_args
-            ]
-        elif not (
-            isinstance(callee, PartialValue)
-            and callee.operation is PartialValueOperation.SUBSCRIPT
-        ):
-            return False
-        else:
-            if isinstance(callee.root, KnownValue) and isinstance(
-                callee.root.val, type
-            ):
-                runtime_class = callee.root.val
-            callee_args = [
-                (
-                    TypedValue(member.val)
-                    if isinstance(member, KnownValue) and type(member.val) is type
-                    else member
-                )
-                for member in callee.members
-            ]
-        if runtime_class is None:
-            return False
-        if "__new__" not in runtime_class.__dict__:
-            return False
-        annotations = safe_getattr(
-            runtime_class.__dict__["__new__"], "__annotations__", {}
-        )
-        if "return" not in annotations:
-            return False
-
-        static_root = replace_fallback(static_return_value)
-        if isinstance(static_root, GenericValue) and isinstance(static_root.typ, type):
-            if len(static_root.args) == len(callee_args) and all(
-                static_arg == callee_arg
-                for static_arg, callee_arg in zip(static_root.args, callee_args)
-            ):
-                return False
-            return isinstance(runtime_result, static_root.typ)
-        return False
-
-    def _should_preserve_static_call_return(
-        self, callee: Value, static_return_value: Value, runtime_result: object
-    ) -> bool:
-        if self._should_preserve_static_constructor_return(
-            callee, static_return_value, runtime_result
-        ):
-            return True
-        if safe_isinstance(runtime_result, tuple) and is_namedtuple_class(
-            type(runtime_result)
-        ):
-            return not isinstance(static_return_value, AnyValue)
-        return False
 
     def _specialize_generic_alias_call_return(
         self, callee: Value, return_value: Value, node: ast.AST | None

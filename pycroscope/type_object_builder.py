@@ -334,15 +334,12 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
                 continue
             if name in namedtuple_fields:
                 continue
-            symbol = _symbol_from_runtime_annotation(annotation, typ)
+            has_class_binding = isinstance(class_dict, Mapping) and name in class_dict
+            symbol = _symbol_from_runtime_annotation(annotation, typ, has_class_binding)
             is_instance_only = (
                 not symbol.is_classvar
                 and not symbol.is_initvar
-                and (
-                    name in runtime_dataclass_fields
-                    or not isinstance(class_dict, Mapping)
-                    or name not in class_dict
-                )
+                and not has_class_binding
             )
             symbols[name] = replace(
                 symbol,
@@ -553,11 +550,15 @@ _CLASS_SYMBOL_ALLOWED_QUALIFIERS = frozenset(
 )
 
 
-def _symbol_from_runtime_annotation(annotation: object, owner: type) -> ClassSymbol:
+def _symbol_from_runtime_annotation(
+    annotation: object, owner: type, has_class_binding: bool
+) -> ClassSymbol:
     ctx = RuntimeAnnotationsContext(owner=owner, self_key=owner)
     with ctx.suppress_errors():
         expr = annotation_expr_from_runtime(annotation, ctx=ctx)
         typ, qualifiers = expr.maybe_unqualify(_CLASS_SYMBOL_ALLOWED_QUALIFIERS)
+        if typ is None and not has_class_binding:
+            typ = AnyValue(AnySource.unannotated)
     if _is_frozen_dataclass(owner):
         qualifiers.add(Qualifier.ReadOnly)
     return ClassSymbol(annotation=typ, qualifiers=frozenset(qualifiers))
