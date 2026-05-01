@@ -26,6 +26,22 @@ from .value import (
     get_self_param,
 )
 
+DATACLASS_MANAGED_METHODS = frozenset(
+    {
+        "__delattr__",
+        "__eq__",
+        "__ge__",
+        "__gt__",
+        "__hash__",
+        "__init__",
+        "__le__",
+        "__lt__",
+        "__post_init__",
+        "__repr__",
+        "__setattr__",
+    }
+)
+
 
 def synthesize_dataclass_hash_attribute(
     semantics: DataclassInfo | None,
