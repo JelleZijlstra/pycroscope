@@ -64,6 +64,13 @@ class TestUnsafeOverlap(TestNameCheckVisitorBase):
             assert 1 == z  # E: unsafe_comparison
 
     @assert_passes()
+    def test_len_predicate_intersection(self):
+        def capybara(title: str):
+            title_without_brackets = title.strip()
+            if len(title_without_brackets) >= 20 and title_without_brackets != title:
+                pass
+
+    @assert_passes()
     def test_subclass_value(self):
         from typing import Type
 

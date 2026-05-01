@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix false positive `unsafe_comparison` errors when comparing a value narrowed by a length predicate against its original type.
 - Preserve precise dictionary entries for `dict.fromkeys()`, so known literal keys with a shared value can satisfy broader `dict[...]` return annotations.
 - Fix false positive `undefined_attribute` errors for `@staticmethod` methods accessed through dataclass instances.
 - Fix overload-only callable protocol methods so protocol compatibility checks use the declared overload set instead of the runtime overload placeholder.
