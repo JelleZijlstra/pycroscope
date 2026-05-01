@@ -1158,6 +1158,34 @@ def _dict_setitem_impl(ctx: CallContext) -> ImplReturn:
     return _add_pairs_to_dict(ctx.vars["self"], [pair], ctx, varname)
 
 
+def _dict_fromkeys_impl(ctx: CallContext) -> ImplReturn:
+    value = ctx.vars["value"]
+
+    def inner(iterable: Value) -> Value:
+        keys = concrete_values_from_iterable(iterable, ctx.visitor)
+        if isinstance(keys, CanAssignError):
+            ctx.show_error(
+                f"{iterable} is not iterable",
+                ErrorCode.unsupported_operation,
+                arg="iterable",
+                detail=str(keys),
+            )
+            return AnyValue(AnySource.error)
+        if isinstance(keys, Value):
+            if not _check_dict_key_hashability(keys, ctx, "iterable"):
+                return AnyValue(AnySource.error)
+            return DictIncompleteValue(dict, [KVPair(keys, value, is_many=True)])
+
+        pairs = []
+        for key in keys:
+            if not _check_dict_key_hashability(key, ctx, "iterable"):
+                return AnyValue(AnySource.error)
+            pairs.append(KVPair(key, value))
+        return DictIncompleteValue(dict, pairs)
+
+    return flatten_unions(inner, ctx.vars["iterable"])
+
+
 def _dict_getitem_impl(ctx: CallContext) -> ImplReturn:
     def inner(key: Value) -> Value:
         self_value = replace_fallback(ctx.vars["self"])
@@ -3279,6 +3307,63 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
             callable=dict.__setitem__,
             impl=_dict_setitem_impl,
             return_annotation=KnownValue(None),
+        ),
+        OverloadedSignature(
+            [
+                Signature.make(
+                    [
+                        SigParameter(
+                            "iterable",
+                            _POS_ONLY,
+                            annotation=GenericValue(
+                                collections.abc.Iterable,
+                                [TypeVarValue(TypeVarParam(K, owner=None))],
+                            ),
+                        ),
+                        SigParameter(
+                            "value",
+                            _POS_ONLY,
+                            annotation=KnownValue(None),
+                            default=KnownValue(None),
+                        ),
+                    ],
+                    callable=dict.fromkeys,
+                    impl=_dict_fromkeys_impl,
+                    return_annotation=GenericValue(
+                        dict,
+                        [
+                            TypeVarValue(TypeVarParam(K, owner=None)),
+                            AnyValue(AnySource.explicit) | KnownValue(None),
+                        ],
+                    ),
+                ),
+                Signature.make(
+                    [
+                        SigParameter(
+                            "iterable",
+                            _POS_ONLY,
+                            annotation=GenericValue(
+                                collections.abc.Iterable,
+                                [TypeVarValue(TypeVarParam(K, owner=None))],
+                            ),
+                        ),
+                        SigParameter(
+                            "value",
+                            _POS_ONLY,
+                            annotation=TypeVarValue(TypeVarParam(V, owner=None)),
+                        ),
+                    ],
+                    callable=dict.fromkeys,
+                    impl=_dict_fromkeys_impl,
+                    return_annotation=GenericValue(
+                        dict,
+                        [
+                            TypeVarValue(TypeVarParam(K, owner=None)),
+                            TypeVarValue(TypeVarParam(V, owner=None)),
+                        ],
+                    ),
+                ),
+            ]
         ),
         Signature.make(
             [
