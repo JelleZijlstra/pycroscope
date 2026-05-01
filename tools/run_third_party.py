@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import os
 import re
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterator, Sequence
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -47,21 +46,36 @@ def _resolve_workdir_relative_path(workdir: Path, value: str) -> Path:
     return path.resolve()
 
 
-def install_editable_package(package_dir: Path) -> None:
-    if importlib.util.find_spec("pip") is not None:
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-e", str(package_dir)], check=True
-        )
+def _editable_install_command(package_dir: Path) -> list[str]:
+    return ["uv", "pip", "install", "--python", sys.executable, "-e", str(package_dir)]
+
+
+def install_editable_package(package_dir: Path, *, verbose: bool = False) -> None:
+    command = _editable_install_command(package_dir)
+    if verbose:
+        subprocess.run(command, check=True)
         return
 
-    subprocess.run(
-        ["uv", "pip", "install", "--python", sys.executable, "-e", str(package_dir)],
-        check=True,
-    )
+    try:
+        subprocess.run(
+            command,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        if exc.stdout:
+            print(
+                exc.stdout,
+                end="" if exc.stdout.endswith("\n") else "\n",
+                file=sys.stderr,
+            )
+        raise
 
 
 @contextmanager
-def clone_repo(repo_url: str, ref: str | None = None) -> Iterator[Path]:
+def clone_repo(repo_url: str, ref: str | None = None) -> Generator[Path, None, None]:
     repo_name = _sanitize_repo_name(repo_url)
     with tempfile.TemporaryDirectory(prefix=f"{repo_name}-") as temp_dir:
         clone_dir = Path(temp_dir) / repo_name
@@ -76,7 +90,9 @@ def clone_repo(repo_url: str, ref: str | None = None) -> Iterator[Path]:
 
 
 @contextmanager
-def repo_context(repo_ref: str, ref: str | None = None) -> Iterator[tuple[Path, bool]]:
+def repo_context(
+    repo_ref: str, ref: str | None = None
+) -> Generator[tuple[Path, bool], None, None]:
     if Path(repo_ref).expanduser().exists():
         yield _resolve_local_repo(repo_ref), False
         return
@@ -206,6 +222,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             "For values starting with '-', use --pycroscope-arg=VALUE."
         ),
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Show dependency installation output.",
+    )
     install_group = parser.add_mutually_exclusive_group()
     install_group.add_argument(
         "--install",
@@ -235,7 +257,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             should_install = args.install or (cloned and not args.skip_install)
             if should_install:
                 print(f"Installing editable package from: {install_dir}")
-                install_editable_package(install_dir)
+                install_editable_package(install_dir, verbose=args.verbose)
             return run_pycroscope(
                 repo_root,
                 workdir=workdir,

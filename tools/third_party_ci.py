@@ -11,6 +11,11 @@ if __package__ in (None, ""):
 
 from tools import run_third_party
 
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib  # static analysis: ignore[import_failed]
+
 
 @dataclass(frozen=True)
 class ThirdPartyCheck:
@@ -39,6 +44,8 @@ THIRD_PARTY_CHECKS: Final[tuple[ThirdPartyCheck, ...]] = (
         targets=("taxonomy/",),
     ),
 )
+
+LOCAL_CONFIG_PATH: Final = Path(__file__).with_name("third_party_ci_local.toml")
 
 
 def _checks_by_name() -> dict[str, ThirdPartyCheck]:
@@ -85,8 +92,34 @@ def parse_local_overrides(values: list[str], known_checks: set[str]) -> dict[str
     return overrides
 
 
+def read_local_config(
+    path: Path | None = None, known_checks: set[str] | None = None
+) -> dict[str, str]:
+    if path is None:
+        path = LOCAL_CONFIG_PATH
+    if not path.exists():
+        return {}
+
+    known_checks = known_checks or {check.name for check in THIRD_PARTY_CHECKS}
+    with path.open("rb") as config_file:
+        data = tomllib.load(config_file)
+
+    local = data.get("local", {})
+    if not isinstance(local, dict):
+        raise ValueError(f"{path}: [local] must be a table.")
+
+    overrides: dict[str, str] = {}
+    for name, value in local.items():
+        if name not in known_checks:
+            raise ValueError(f"{path}: unknown third-party check in [local]: {name}")
+        if not isinstance(value, str):
+            raise ValueError(f"{path}: [local].{name} must be a string path.")
+        overrides[name] = value
+    return overrides
+
+
 def build_run_third_party_argv(
-    check: ThirdPartyCheck, local_overrides: dict[str, str]
+    check: ThirdPartyCheck, local_overrides: dict[str, str], *, verbose: bool = False
 ) -> list[str]:
     repo_ref = local_overrides.get(check.name, check.repo_url)
     argv = [repo_ref, *check.targets, "--config-file", check.config_file]
@@ -102,12 +135,18 @@ def build_run_third_party_argv(
         argv.append(f"--pycroscope-arg={arg}")
     if check.install:
         argv.append("--install")
+    if verbose:
+        argv.append("--verbose")
     return argv
 
 
-def run_check(check: ThirdPartyCheck, local_overrides: dict[str, str]) -> int:
+def run_check(
+    check: ThirdPartyCheck, local_overrides: dict[str, str], *, verbose: bool = False
+) -> int:
     print(f"Running pycroscope on {check.name}...")
-    exit_code = run_third_party.main(build_run_third_party_argv(check, local_overrides))
+    exit_code = run_third_party.main(
+        build_run_third_party_argv(check, local_overrides, verbose=verbose)
+    )
     if exit_code == 0:
         if check.expected_to_fail:
             print(f"{check.name}: unexpectedly clean")
@@ -148,13 +187,21 @@ def main(argv: list[str] | None = None) -> int:
             "May be repeated."
         ),
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Show dependency installation output from each third-party check.",
+    )
     args = parser.parse_args(argv)
 
     try:
         selected_checks = select_checks(args.checks)
-        local_overrides = parse_local_overrides(
-            args.local, {check.name for check in THIRD_PARTY_CHECKS}
-        )
+        known_checks = {check.name for check in THIRD_PARTY_CHECKS}
+        local_overrides = {
+            **read_local_config(known_checks=known_checks),
+            **parse_local_overrides(args.local, known_checks),
+        }
     except ValueError as exc:
         print(exc, file=sys.stderr)
         return 1
@@ -166,7 +213,7 @@ def main(argv: list[str] | None = None) -> int:
 
     failures: list[str] = []
     for check in selected_checks:
-        if run_check(check, local_overrides) != 0:
+        if run_check(check, local_overrides, verbose=args.verbose) != 0:
             failures.append(check.name)
 
     if failures:
