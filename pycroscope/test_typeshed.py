@@ -240,17 +240,6 @@ class TestTypeshedClient(TestNameCheckVisitorBase):
         assert tsf._get_fq_name(ExplodesOnQualname()) is None
 
     @assert_passes()
-    def test_dict_fromkeys(self):
-        def capybara(i: int) -> None:
-            assert_is_value(
-                dict.fromkeys([i]),
-                GenericValue(
-                    dict,
-                    [TypedValue(int), AnyValue(AnySource.explicit) | KnownValue(None)],
-                ),
-            )
-
-    @assert_passes()
     def test_datetime(self):
         from datetime import datetime
 

@@ -14,7 +14,7 @@ from typing_extensions import Protocol, TypeVarTuple, runtime_checkable
 from . import tests, value
 from .checker import Checker
 from .name_check_visitor import NameCheckVisitor
-from .predicates import MinLen
+from .predicates import MaxLen, MinLen
 from .relations import _extract_type_form, intersect_values, is_subtype
 from .signature import ELLIPSIS_PARAM, Signature
 from .stacked_scopes import Composite
@@ -1317,3 +1317,25 @@ def test_can_overlap() -> None:
         TypedValue(str).can_overlap(KnownValue(None), CTX, OverlapMode.EQ),
         CanAssignError,
     )
+
+
+def test_intersection_can_overlap() -> None:
+    min_len_20 = value.PredicateValue(MinLen(20))
+    str_and_min_len = IntersectionValue((TypedValue(str), min_len_20))
+
+    assert str_and_min_len.can_overlap(TypedValue(str), CTX, OverlapMode.EQ) is None
+    assert TypedValue(str).can_overlap(str_and_min_len, CTX, OverlapMode.EQ) is None
+    assert value.is_overlapping(str_and_min_len, TypedValue(str), CTX)
+    assert not value.is_overlapping(
+        TypedValue(str) & TypedValue(int), TypedValue(str), CTX
+    )
+
+
+def test_predicate_can_overlap_uses_intersection() -> None:
+    min_len_20 = value.PredicateValue(MinLen(20))
+    max_len_10 = value.PredicateValue(MaxLen(10))
+
+    assert isinstance(
+        min_len_20.can_overlap(max_len_10, CTX, OverlapMode.EQ), CanAssignError
+    )
+    assert not value.is_overlapping(min_len_20, max_len_10, CTX)

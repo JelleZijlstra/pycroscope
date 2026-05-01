@@ -151,6 +151,8 @@ line-length = 100
 [tool.pytest.ini_options]
 filterwarnings = [
   "error::DeprecationWarning",
+  # https://github.com/python/typing_extensions/issues/747
+  "ignore:'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction.. instead:DeprecationWarning",
 ]
 
 [tool.ruff.lint]

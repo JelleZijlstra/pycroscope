@@ -24,7 +24,7 @@ from .annotations import (
     make_type_param_from_value,
     type_from_value,
 )
-from .error_code import ErrorCode
+from .error_code import Error, ErrorCode
 from .extensions import assert_type, reveal_locals, reveal_type
 from .format_strings import parse_format_string
 from .maybe_asynq import qcore
@@ -1311,6 +1311,34 @@ def _dict_setitem_impl(ctx: CallContext) -> ImplReturn:
         return ImplReturn(KnownValue(None))
     pair = KVPair(key, ctx.vars["v"])
     return _add_pairs_to_dict(ctx.vars["self"], [pair], ctx, varname)
+
+
+def _dict_fromkeys_impl(ctx: CallContext) -> ImplReturn:
+    value = ctx.vars["value"]
+
+    def inner(iterable: Value) -> Value:
+        keys = concrete_values_from_iterable(iterable, ctx.visitor)
+        if isinstance(keys, CanAssignError):
+            ctx.show_error(
+                f"{iterable} is not iterable",
+                ErrorCode.unsupported_operation,
+                arg="iterable",
+                detail=str(keys),
+            )
+            return AnyValue(AnySource.error)
+        if isinstance(keys, Value):
+            if not _check_dict_key_hashability(keys, ctx, "iterable"):
+                return AnyValue(AnySource.error)
+            return DictIncompleteValue(dict, [KVPair(keys, value, is_many=True)])
+
+        pairs = []
+        for key in keys:
+            if not _check_dict_key_hashability(key, ctx, "iterable"):
+                return AnyValue(AnySource.error)
+            pairs.append(KVPair(key, value))
+        return DictIncompleteValue(dict, pairs)
+
+    return flatten_unions(inner, ctx.vars["iterable"])
 
 
 def _dict_getitem_impl(ctx: CallContext) -> ImplReturn:
@@ -2999,7 +3027,12 @@ def _get_assignment_target_name(ctx: CallContext) -> str | None:
     return None
 
 
-def _check_assignment_name_match(ctx: CallContext, name_arg: str, callee: str) -> None:
+def _check_assignment_name_match(
+    ctx: CallContext,
+    name_arg: str,
+    callee: str,
+    code: Error = ErrorCode.must_have_same_name,
+) -> None:
     name_val = ctx.vars.get(name_arg)
     target_name = _get_assignment_target_name(ctx)
     if (
@@ -3011,7 +3044,7 @@ def _check_assignment_name_match(ctx: CallContext, name_arg: str, callee: str) -
             ctx.show_error(
                 f"{callee} named {name_val.val!r} must be assigned to "
                 "a variable with the same name",
-                ErrorCode.incompatible_call,
+                code,
                 arg=name_arg,
             )
 
@@ -3060,7 +3093,9 @@ def _validate_type_param_partial_call(ctx: CallContext) -> None:
 
 
 def _sentinel_impl(ctx: CallContext) -> Value:
-    _check_assignment_name_match(ctx, "name", "sentinel")
+    _check_assignment_name_match(
+        ctx, "name", "sentinel", ErrorCode.sentinel_must_have_same_name
+    )
     repr = ctx.vars.get("repr", NO_ARG_SENTINEL)
     if repr is not NO_ARG_SENTINEL and repr != KnownValue(None):
         ctx.show_error(
@@ -3427,6 +3462,63 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
             callable=dict.__setitem__,
             impl=_dict_setitem_impl,
             return_annotation=KnownValue(None),
+        ),
+        OverloadedSignature(
+            [
+                Signature.make(
+                    [
+                        SigParameter(
+                            "iterable",
+                            _POS_ONLY,
+                            annotation=GenericValue(
+                                collections.abc.Iterable,
+                                [TypeVarValue(TypeVarParam(K, owner=None))],
+                            ),
+                        ),
+                        SigParameter(
+                            "value",
+                            _POS_ONLY,
+                            annotation=KnownValue(None),
+                            default=KnownValue(None),
+                        ),
+                    ],
+                    callable=dict.fromkeys,
+                    impl=_dict_fromkeys_impl,
+                    return_annotation=GenericValue(
+                        dict,
+                        [
+                            TypeVarValue(TypeVarParam(K, owner=None)),
+                            AnyValue(AnySource.explicit) | KnownValue(None),
+                        ],
+                    ),
+                ),
+                Signature.make(
+                    [
+                        SigParameter(
+                            "iterable",
+                            _POS_ONLY,
+                            annotation=GenericValue(
+                                collections.abc.Iterable,
+                                [TypeVarValue(TypeVarParam(K, owner=None))],
+                            ),
+                        ),
+                        SigParameter(
+                            "value",
+                            _POS_ONLY,
+                            annotation=TypeVarValue(TypeVarParam(V, owner=None)),
+                        ),
+                    ],
+                    callable=dict.fromkeys,
+                    impl=_dict_fromkeys_impl,
+                    return_annotation=GenericValue(
+                        dict,
+                        [
+                            TypeVarValue(TypeVarParam(K, owner=None)),
+                            TypeVarValue(TypeVarParam(V, owner=None)),
+                        ],
+                    ),
+                ),
+            ]
         ),
         Signature.make(
             [

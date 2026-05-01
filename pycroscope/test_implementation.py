@@ -1,5 +1,6 @@
 # static analysis: ignore
 
+import pytest
 import typing_extensions
 
 from .error_code import ErrorCode
@@ -1069,6 +1070,49 @@ class TestGenericMutators(TestNameCheckVisitorBase):
             )
 
     @assert_passes()
+    def test_dict_fromkeys(self):
+        from typing_extensions import Literal
+
+        FIELDS = ("section", "reference_type", "authors")
+
+        def capybara() -> dict[str, str]:
+            row = dict.fromkeys(FIELDS, "")
+            assert_is_value(
+                row,
+                DictIncompleteValue(
+                    dict,
+                    [
+                        KVPair(KnownValue("section"), KnownValue("")),
+                        KVPair(KnownValue("reference_type"), KnownValue("")),
+                        KVPair(KnownValue("authors"), KnownValue("")),
+                    ],
+                ),
+            )
+            row["other_key"] = "some_value"
+            assert_is_value(
+                row,
+                DictIncompleteValue(
+                    dict,
+                    [
+                        KVPair(KnownValue("section"), KnownValue("")),
+                        KVPair(KnownValue("reference_type"), KnownValue("")),
+                        KVPair(KnownValue("authors"), KnownValue("")),
+                        KVPair(KnownValue("other_key"), KnownValue("some_value")),
+                    ],
+                ),
+            )
+            return row
+
+        def explicit_none(i: int) -> None:
+            assert_is_value(
+                dict.fromkeys([i], None),
+                DictIncompleteValue(dict, [KVPair(TypedValue(int), KnownValue(None))]),
+            )
+
+        def from_iterable(keys: tuple[Literal["x"], ...]) -> dict[str, int]:
+            return dict.fromkeys(keys, 1)
+
+    @assert_passes()
     def test_dict_clear(self):
         from typing import Dict
 
@@ -2036,19 +2080,19 @@ class TestTypingConstructNameMatching(TestNameCheckVisitorBase):
         from typing_extensions import ParamSpec, TypeVarTuple
 
         GoodTypeVar = TypeVar("GoodTypeVar")
-        BadTypeVar = TypeVar("WrongTypeVar")  # E: incompatible_call
+        BadTypeVar = TypeVar("WrongTypeVar")  # E: must_have_same_name
         GoodTypeVarTuple = TypeVarTuple("GoodTypeVarTuple")
-        BadTypeVarTuple = TypeVarTuple("WrongTypeVarTuple")  # E: incompatible_call
+        BadTypeVarTuple = TypeVarTuple("WrongTypeVarTuple")  # E: must_have_same_name
         GoodParamSpec = ParamSpec("GoodParamSpec")
-        BadParamSpec = ParamSpec("WrongParamSpec")  # E: incompatible_call
+        BadParamSpec = ParamSpec("WrongParamSpec")  # E: must_have_same_name
         GoodNewType = NewType("GoodNewType", int)
-        BadNewType = NewType("WrongNewType", int)  # E: incompatible_call
+        BadNewType = NewType("WrongNewType", int)  # E: must_have_same_name
         GoodNamedTuple = NamedTuple("GoodNamedTuple", [("x", int)])
         BadNamedTuple = NamedTuple(
-            "WrongNamedTuple", [("x", int)]  # E: incompatible_call
+            "WrongNamedTuple", [("x", int)]  # E: must_have_same_name
         )
         GoodTypedDict = TypedDict("GoodTypedDict", {"x": int})
-        BadTypedDict = TypedDict("WrongTypedDict", {"x": int})  # E: incompatible_call
+        BadTypedDict = TypedDict("WrongTypedDict", {"x": int})  # E: must_have_same_name
         print(
             GoodTypeVar,
             BadTypeVar,
@@ -2079,7 +2123,7 @@ class TestTypingConstructNameMatching(TestNameCheckVisitorBase):
             # E: incompatible_argument
             name=object_name,
         )
-        BadNewType = NewType(tp=int, name="WrongNewType")  # E: incompatible_call
+        BadNewType = NewType(tp=int, name="WrongNewType")  # E: must_have_same_name
 
         print(GoodNewType, MaybeNewType, ObjectNameNewType, BadNewType)
 
@@ -2140,9 +2184,13 @@ class TestSentinelImplementation(TestNameCheckVisitorBase):
         from typing_extensions import Sentinel
 
         GOOD = Sentinel("GOOD")
-        BAD = Sentinel("WRONG")  # E: incompatible_call
+        BAD = Sentinel("WRONG")  # E: sentinel_must_have_same_name
         print(GOOD, BAD)
 
+    @pytest.mark.filterwarnings(
+        "ignore:The 'repr' parameter is deprecated and will be removed in Python 3.15.:"
+        "DeprecationWarning"
+    )
     @assert_passes()
     def test_sentinel_repr_is_deprecated(self):
         from typing_extensions import Sentinel
