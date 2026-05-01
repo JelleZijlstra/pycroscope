@@ -3408,7 +3408,7 @@ class TestNewType(TestNameCheckVisitorBase):
             class UserIdDerived(UserId):  # E: invalid_base
                 pass
 
-        GoodName = NewType("BadName", int)  # E: incompatible_call
+        GoodName = NewType("BadName", int)  # E: must_have_same_name
 
         GoodNewType1 = NewType("GoodNewType1", list)
         GoodNewType2 = NewType("GoodNewType2", GoodNewType1)

@@ -2036,19 +2036,19 @@ class TestTypingConstructNameMatching(TestNameCheckVisitorBase):
         from typing_extensions import ParamSpec, TypeVarTuple
 
         GoodTypeVar = TypeVar("GoodTypeVar")
-        BadTypeVar = TypeVar("WrongTypeVar")  # E: incompatible_call
+        BadTypeVar = TypeVar("WrongTypeVar")  # E: must_have_same_name
         GoodTypeVarTuple = TypeVarTuple("GoodTypeVarTuple")
-        BadTypeVarTuple = TypeVarTuple("WrongTypeVarTuple")  # E: incompatible_call
+        BadTypeVarTuple = TypeVarTuple("WrongTypeVarTuple")  # E: must_have_same_name
         GoodParamSpec = ParamSpec("GoodParamSpec")
-        BadParamSpec = ParamSpec("WrongParamSpec")  # E: incompatible_call
+        BadParamSpec = ParamSpec("WrongParamSpec")  # E: must_have_same_name
         GoodNewType = NewType("GoodNewType", int)
-        BadNewType = NewType("WrongNewType", int)  # E: incompatible_call
+        BadNewType = NewType("WrongNewType", int)  # E: must_have_same_name
         GoodNamedTuple = NamedTuple("GoodNamedTuple", [("x", int)])
         BadNamedTuple = NamedTuple(
-            "WrongNamedTuple", [("x", int)]  # E: incompatible_call
+            "WrongNamedTuple", [("x", int)]  # E: must_have_same_name
         )
         GoodTypedDict = TypedDict("GoodTypedDict", {"x": int})
-        BadTypedDict = TypedDict("WrongTypedDict", {"x": int})  # E: incompatible_call
+        BadTypedDict = TypedDict("WrongTypedDict", {"x": int})  # E: must_have_same_name
         print(
             GoodTypeVar,
             BadTypeVar,
@@ -2079,7 +2079,7 @@ class TestTypingConstructNameMatching(TestNameCheckVisitorBase):
             # E: incompatible_argument
             name=object_name,
         )
-        BadNewType = NewType(tp=int, name="WrongNewType")  # E: incompatible_call
+        BadNewType = NewType(tp=int, name="WrongNewType")  # E: must_have_same_name
 
         print(GoodNewType, MaybeNewType, ObjectNameNewType, BadNewType)
 
@@ -2140,7 +2140,7 @@ class TestSentinelImplementation(TestNameCheckVisitorBase):
         from typing_extensions import Sentinel
 
         GOOD = Sentinel("GOOD")
-        BAD = Sentinel("WRONG")  # E: incompatible_call
+        BAD = Sentinel("WRONG")  # E: sentinel_must_have_same_name
         print(GOOD, BAD)
 
     @pytest.mark.filterwarnings(

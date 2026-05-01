@@ -384,7 +384,7 @@ class TestTypedDict(TestNameCheckVisitorBase):
         my_dict = {"a": int}
         Bad1 = TypedDict("Bad1", my_dict)  # E: incompatible_call
         Bad2 = TypedDict("Bad2", {1: int})  # E: incompatible_call
-        Bad3 = TypedDict("WrongName", {"a": int})  # E: incompatible_call
+        Bad3 = TypedDict("WrongName", {"a": int})  # E: must_have_same_name
 
         def capybara(x: T) -> None:
             assert_type(x["a"], int)
