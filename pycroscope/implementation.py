@@ -22,7 +22,7 @@ from .annotations import (
     make_type_param_from_value,
     type_from_value,
 )
-from .error_code import ErrorCode
+from .error_code import Error, ErrorCode
 from .extensions import assert_type, reveal_locals, reveal_type
 from .format_strings import parse_format_string
 from .maybe_asynq import qcore
@@ -2848,7 +2848,7 @@ def _check_assignment_name_match(
     ctx: CallContext,
     name_arg: str,
     callee: str,
-    code: ErrorCode = ErrorCode.must_have_same_name,
+    code: Error = ErrorCode.must_have_same_name,
 ) -> None:
     name_val = ctx.vars.get(name_arg)
     target_name = _get_assignment_target_name(ctx)
