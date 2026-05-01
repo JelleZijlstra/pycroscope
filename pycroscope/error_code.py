@@ -203,6 +203,14 @@ ErrorCode = ErrorRegistry(
         ),
         Error("invalid_metaclass", "Invalid metaclass"),
         Error("invalid_specialization", "Invalid specialization of generic type"),
+        Error(
+            "must_have_same_name",
+            "Object must be assigned to a variable with the same name",
+        ),
+        Error(
+            "sentinel_must_have_same_name",
+            "Sentinel value must be assigned to a variable with the same name",
+        ),
     ]
 )
 
@@ -230,6 +238,7 @@ DISABLED_BY_DEFAULT = {
     ErrorCode.bare_ignore,
     ErrorCode.too_many_positional_args,
     ErrorCode.invalid_literal,
+    ErrorCode.sentinel_must_have_same_name,
     # TODO: turn this on
     ErrorCode.implicit_reexport,
     ErrorCode.incompatible_override,

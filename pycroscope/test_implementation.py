@@ -1,4 +1,5 @@
 # static analysis: ignore
+import pytest
 import typing_extensions
 
 from .error_code import ErrorCode
@@ -2142,6 +2143,10 @@ class TestSentinelImplementation(TestNameCheckVisitorBase):
         BAD = Sentinel("WRONG")  # E: incompatible_call
         print(GOOD, BAD)
 
+    @pytest.mark.filterwarnings(
+        "ignore:The 'repr' parameter is deprecated and will be removed in Python 3.15.:"
+        "DeprecationWarning"
+    )
     @assert_passes()
     def test_sentinel_repr_is_deprecated(self):
         from typing_extensions import Sentinel
