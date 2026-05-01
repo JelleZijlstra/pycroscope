@@ -598,6 +598,20 @@ class TestAttributes(TestNameCheckVisitorBase):
             def read_staticmethod(self) -> None:
                 assert_type(super().label(), int)
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_dataclass_staticmethod_access_through_instance(self):
+        from dataclasses import dataclass
+
+        @dataclass
+        class Visitor:
+            @staticmethod
+            def is_literal(node: object) -> bool:
+                return True
+
+            def visit(self, node: object) -> None:
+                if self.is_literal(node):
+                    pass
+
     @assert_passes()
     def test_super_new_attribute(self):
         class Base:

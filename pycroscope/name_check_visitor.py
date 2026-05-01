@@ -2615,12 +2615,31 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ),
         )
 
+    def _should_add_class_body_method_to_synthetic_overlay(
+        self,
+        synthetic_type: TypeObject,
+        method_name: str,
+        dataclass_semantics: DataclassInfo | None,
+    ) -> bool:
+        if not isinstance(synthetic_type.typ, type):
+            return True
+        if dataclass_semantics is None:
+            return True
+        return method_name in dataclass_helpers.DATACLASS_MANAGED_METHODS
+
     def _apply_synthetic_method_symbol_flags(
-        self, synthetic_type: TypeObject, node: ast.ClassDef
+        self,
+        synthetic_type: TypeObject,
+        node: ast.ClassDef,
+        dataclass_semantics: DataclassInfo | None = None,
     ) -> None:
         for method_name, (
             function_decorators
         ) in self._get_synthetic_method_symbol_flags(node).items():
+            if not self._should_add_class_body_method_to_synthetic_overlay(
+                synthetic_type, method_name, dataclass_semantics
+            ):
+                continue
             existing = synthetic_type.get_declared_symbol(method_name)
             if existing is not None and existing.is_property:
                 continue
@@ -2659,7 +2678,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._set_synthetic_member_on_type_object(
                 synthetic_type, synthetic_name, initializer=attr_value
             )
-        self._apply_synthetic_method_symbol_flags(synthetic_type, node)
+        self._apply_synthetic_method_symbol_flags(
+            synthetic_type, node, dataclass_semantics
+        )
         dataclass_helpers.apply_synthetic_attributes(
             dataclass_semantics,
             type_object=synthetic_type,
@@ -2897,6 +2918,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
         synthetic_type = self._current_synthetic_overlay_type_object()
         if synthetic_type is None:
+            return
+        if not self._should_add_class_body_method_to_synthetic_overlay(
+            synthetic_type, node.name, self.current_dataclass_info
+        ):
             return
 
         deprecation_message = self._deprecation_message_from_value(
@@ -3669,7 +3694,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 tobj.set_is_direct_namedtuple(is_direct_namedtuple)
                 tobj.set_dataclass_info(dataclass_semantics)
                 tobj.set_dataclass_transform_info(dataclass_transform_info)
-                self._apply_synthetic_method_symbol_flags(tobj, node)
+                self._apply_synthetic_method_symbol_flags(
+                    tobj, node, dataclass_semantics
+                )
                 dataclass_metadata_class = synthetic_class
                 if self._is_checking():
                     # Bind the class name while checking its body so references
