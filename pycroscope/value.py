@@ -556,6 +556,17 @@ class Value:
                     return None
                 errors.append(maybe_error)
             return CanAssignError("cannot overlap with union", errors)
+        if isinstance(other, IntersectionValue):
+            errors = []
+            for val in other.vals:
+                maybe_error = self.can_overlap(val, ctx, mode)
+                if maybe_error is not None:
+                    errors.append(maybe_error)
+            if errors:
+                return CanAssignError("cannot overlap with intersection", errors)
+            return None
+        if isinstance(other, PredicateValue):
+            return other.can_overlap(self, ctx, mode)
         if isinstance(other, AnnotatedValue):
             return self.can_overlap(other.value, ctx, mode)
         if isinstance(other, TypeVarValue):
@@ -2948,6 +2959,18 @@ class IntersectionValue(Value):
             [val.get_type_value(ctx) for val in self.vals], ctx
         )
 
+    def can_overlap(
+        self, other: Value, ctx: CanAssignContext, mode: OverlapMode
+    ) -> CanAssignError | None:
+        errors: list[CanAssignError] = []
+        for val in self.vals:
+            maybe_error = val.can_overlap(other, ctx, mode)
+            if maybe_error is not None:
+                errors.append(maybe_error)
+        if errors:
+            return CanAssignError("cannot overlap with intersection", errors)
+        return None
+
     def __str__(self) -> str:
         return " & ".join(str(val) for val in self.vals)
 
@@ -3941,6 +3964,26 @@ class PredicateValue(Value):
         # `object`, not an exact class object.
         return SubclassValue(TypedValue(object))
 
+    def can_overlap(
+        self, other: Value, ctx: CanAssignContext, mode: OverlapMode
+    ) -> CanAssignError | None:
+        if isinstance(
+            other,
+            (
+                VariableNameValue,
+                MultiValuedValue,
+                IntersectionValue,
+                AnnotatedValue,
+                TypeVarValue,
+                TypeAliasValue,
+            ),
+        ):
+            return super().can_overlap(other, ctx, mode)
+        inters = self.predicate.intersect_with(gradualize(other), ctx)
+        if inters is NO_RETURN_VALUE:
+            return CanAssignError(f"{self} and {other} cannot overlap")
+        return None
+
     def walk_values(self) -> Iterable[Value]:
         yield self
         yield from self.predicate.walk_values()
@@ -4731,14 +4774,24 @@ def is_overlapping(left: Value, right: Value, ctx: CanAssignContext) -> bool:
     # Fairly permissive checks for now; possibly this can be tightened up later.
     left = _deliteral(left)
     right = _deliteral(right)
-    # TODO: we should always do this but that leads to some silly behavior
-    # (it starts thinking about dictionary subclasses that are also sequences)
-    if isinstance(left, PredicateValue) or isinstance(right, PredicateValue):
-        inters = pycroscope.relations.intersect_values(left, right, ctx)
+    if isinstance(left, MultiValuedValue):
+        return not left.vals or any(
+            is_overlapping(val, right, ctx) for val in left.vals
+        )
+    if isinstance(right, MultiValuedValue):
+        return not right.vals or any(
+            is_overlapping(left, val, ctx) for val in right.vals
+        )
+    if isinstance(left, IntersectionValue):
+        return all(is_overlapping(val, right, ctx) for val in left.vals)
+    if isinstance(right, IntersectionValue):
+        return all(is_overlapping(left, val, ctx) for val in right.vals)
+    if isinstance(left, PredicateValue):
+        inters = left.predicate.intersect_with(gradualize(right), ctx)
         return inters is not NO_RETURN_VALUE
-    if isinstance(left, (MultiValuedValue, IntersectionValue)) and left.vals:
-        # Swap the operands so we decompose and de-Literal the other union too
-        return any(is_overlapping(right, val, ctx) for val in left.vals)
+    if isinstance(right, PredicateValue):
+        inters = right.predicate.intersect_with(gradualize(left), ctx)
+        return inters is not NO_RETURN_VALUE
     return left.is_assignable(right, ctx) or right.is_assignable(left, ctx)
 
 
