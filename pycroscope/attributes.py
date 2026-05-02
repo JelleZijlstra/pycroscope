@@ -70,6 +70,7 @@ class AttrContext:
     root_composite: Composite
     attr: str
     options: Options = field(repr=False)
+    is_special_lookup: bool = False
 
     @property
     def root_value(self) -> Value:
@@ -109,7 +110,10 @@ class AttrContext:
         self, *, on_class: bool, receiver: Value
     ) -> AttributePolicy:
         return AttributePolicy(
-            on_class=on_class, receiver=receiver, receiver_composite=self.root_composite
+            on_class=on_class,
+            receiver=receiver,
+            receiver_composite=self.root_composite,
+            is_special_lookup=self.is_special_lookup,
         )
 
 

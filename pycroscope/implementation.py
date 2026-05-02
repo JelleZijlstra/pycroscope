@@ -17,7 +17,7 @@ import typing_extensions
 
 import pycroscope
 
-from . import runtime
+from . import attributes, runtime
 from .annotations import (
     annotation_expr_from_value,
     is_typevarlike,
@@ -260,6 +260,34 @@ def _getitem_impl(ctx: CallContext) -> ImplReturn | Value:
                 return AnyValue(AnySource.from_another)
             case KnownValue(val=val) if val is type:
                 return _generic_alias_or_stfv(type, b, ctx)
+            case SubclassValue():
+                cgi = attributes.get_attribute(
+                    pycroscope.checker.CheckerAttrContext(
+                        Composite(original_val),
+                        "__class_getitem__",
+                        ctx.visitor.options,
+                        checker=ctx.visitor.checker,
+                    )
+                )
+                if cgi is not UNINITIALIZED_VALUE:
+                    return _call(cgi, [ctx.composites["b"]], ctx)
+                gi = attributes.get_attribute(
+                    pycroscope.checker.CheckerAttrContext(
+                        Composite(val),
+                        "__getitem__",
+                        ctx.visitor.options,
+                        is_special_lookup=True,
+                        checker=ctx.visitor.checker,
+                    )
+                )
+                if gi is not UNINITIALIZED_VALUE:
+                    return _call(gi, [ctx.composites["b"]], ctx)
+                ctx.show_error(
+                    f"{val} is not subscriptable",
+                    ErrorCode.unsupported_operation,
+                    arg="a",
+                )
+                return AnyValue(AnySource.error)
             case (
                 SyntheticModuleValue()
                 | TypeFormValue()

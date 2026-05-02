@@ -2322,3 +2322,27 @@ class TestOperatorGetItem(TestNameCheckVisitorBase):
 
             assert_type(getitem(HasMeta, 1), int)
             getitem(HasMeta, "x")  # E: incompatible_argument
+
+    @assert_passes()
+    def test_subclass_value(self):
+        from operator import getitem
+
+        from typing_extensions import assert_type
+
+        class HasCGI:
+            def __class_getitem__(cls, item: int) -> int:
+                return 42
+
+        class Meta(type):
+            def __getitem__(self, item: int) -> int:
+                return 42
+
+        class HasMeta(metaclass=Meta):
+            pass
+
+        def capybara(cls: type[HasCGI], cls2: type[HasMeta]):
+            assert_type(getitem(cls, 1), int)
+            getitem(cls, "x")  # E: incompatible_argument
+
+            assert_type(getitem(cls2, 1), int)
+            getitem(cls2, "x")  # E: incompatible_argument
