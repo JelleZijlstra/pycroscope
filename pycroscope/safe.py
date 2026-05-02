@@ -8,6 +8,7 @@ import inspect
 import sys
 import types
 import typing
+import warnings
 from collections.abc import Container, Sequence
 from typing import Any, NewType, TypeVar
 
@@ -170,6 +171,18 @@ def is_typing_name(obj: object, name: str) -> bool:
         if obj is typing_obj:
             return True
     return safe_in(obj, names)
+
+
+def is_deprecated_decorator(obj: object) -> bool:
+    from .extensions import deprecated as deprecated_decorator
+
+    if obj is deprecated_decorator or is_typing_name(obj, "deprecated"):
+        return True
+    return obj is _WARNINGS_DEPRECATED
+
+
+_MISSING = object()
+_WARNINGS_DEPRECATED = getattr(warnings, "deprecated", _MISSING)
 
 
 try:

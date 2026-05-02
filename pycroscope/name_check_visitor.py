@@ -155,6 +155,7 @@ from .relations import (
 from .safe import (
     hasattr_static,
     is_dataclass_type,
+    is_deprecated_decorator,
     is_hashable,
     is_namedtuple_class,
     is_typing_name,
@@ -3025,7 +3026,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for unapplied, _, node in decorators:
             if not (
                 isinstance(unapplied, KnownValue)
-                and is_typing_name(unapplied.val, "deprecated")
+                and is_deprecated_decorator(unapplied.val)
                 and isinstance(node, ast.Call)
                 and node.args
                 and isinstance(node.args[0], ast.Constant)

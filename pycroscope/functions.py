@@ -19,13 +19,12 @@ from typing_extensions import ReadOnly, Sentinel
 
 from .analysis_lib import is_positional_only_arg_name
 from .error_code import ErrorCode
-from .extensions import deprecated as deprecated_decorator
 from .input_sig import InputSigValue
 from .maybe_asynq import asynq
 from .node_visitor import Error, ErrorContext
 from .options import Options, PyObjectSequenceOption
 from .relations import Relation, get_tv_map, has_relation
-from .safe import is_instance_of_typing_name, is_typing_name
+from .safe import is_deprecated_decorator, is_instance_of_typing_name, is_typing_name
 from .signature import (
     ParameterKind,
     Signature,
@@ -870,11 +869,7 @@ def _deprecated_message_from_decorator(
     unapplied: Value, node: ast.expr, ctx: Context
 ) -> str | None:
     if not (
-        isinstance(unapplied, KnownValue)
-        and (
-            is_typing_name(unapplied.val, "deprecated")
-            or unapplied.val is deprecated_decorator
-        )
+        isinstance(unapplied, KnownValue) and is_deprecated_decorator(unapplied.val)
     ):
         return None
     if not isinstance(node, ast.Call) or not node.args:
