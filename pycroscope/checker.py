@@ -48,9 +48,9 @@ from .signature import (
     ParameterKind,
     Signature,
     SigParameter,
-    _promote_constructor_type_arg,
     as_concrete_signature,
     make_bound_method,
+    promote_constructor_type_arg,
 )
 from .stacked_scopes import Composite
 from .suggested_type import CallableTracker
@@ -101,14 +101,14 @@ from .value import (
     UnboundMethodValue,
     Value,
     VariableNameValue,
-    _iter_typevar_map_items,
-    _typevar_map_from_varlike_pairs,
     flatten_values,
     get_self_param,
     is_union,
     iter_type_params_in_value,
+    iter_typevar_map_items,
     replace_fallback,
     type_param_to_value,
+    typevar_map_from_varlike_pairs,
     typevartuple_value_to_members,
 )
 
@@ -655,9 +655,9 @@ class Checker:
         synthetic_bases = self._get_type_object_generic_bases(typ)
         if synthetic_bases is not None:
             for base, tv_map in synthetic_bases.items():
-                substituted_tv_map = _typevar_map_from_varlike_pairs(
+                substituted_tv_map = typevar_map_from_varlike_pairs(
                     (tv, value.substitute_typevars(substitution_map))
-                    for tv, value in _iter_typevar_map_items(tv_map)
+                    for tv, value in iter_typevar_map_items(tv_map)
                 )
                 if base not in merged:
                     merged[base] = TypeVarMap()
@@ -2131,10 +2131,10 @@ class Checker:
                         )
                     else:
                         specialized_instance_type = TypedValue(origin)
-                    typevar_map = _typevar_map_from_varlike_pairs(
+                    typevar_map = typevar_map_from_varlike_pairs(
                         zip(type_params, arg_values)
                     )
-                    exact_typevar_map = _typevar_map_from_varlike_pairs(
+                    exact_typevar_map = typevar_map_from_varlike_pairs(
                         zip(type_params, exact_arg_values)
                     )
                     if not self._runtime_init_self_annotation_matches(
@@ -2628,7 +2628,7 @@ class Checker:
         exact_member_values = receiver_member_values
         if preserve_exact_return:
             exact_member_values = [
-                _promote_constructor_type_arg(member) for member in exact_member_values
+                promote_constructor_type_arg(member) for member in exact_member_values
             ]
         compatibility_member_values = [
             (
@@ -2738,9 +2738,9 @@ class Checker:
             and exact_typevar_map
             and exact_typevar_map != typevar_map
         ):
-            exact_typevar_map = _typevar_map_from_varlike_pairs(
-                (typevar, _promote_constructor_type_arg(member))
-                for typevar, member in _iter_typevar_map_items(exact_typevar_map)
+            exact_typevar_map = typevar_map_from_varlike_pairs(
+                (typevar, promote_constructor_type_arg(member))
+                for typevar, member in iter_typevar_map_items(exact_typevar_map)
             )
             exact_return_argspec = origin_argspec.substitute_typevars(exact_typevar_map)
             specialized_argspec = _replace_signature_returns(

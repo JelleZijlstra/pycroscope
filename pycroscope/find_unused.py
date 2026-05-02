@@ -243,6 +243,7 @@ class UnusedObjectFinder:
             return False
         try:
             # __future__ imports are usually unused
+            # static analysis: ignore[private_import]
             return not isinstance(value, __future__._Feature)
         except Exception:
             return True

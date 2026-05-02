@@ -169,7 +169,7 @@ def _is_frozen_dataclass(typ: type) -> bool:
     return params is not None and getattr(params, "frozen", False) is True
 
 
-def _get_runtime_dataclass_fields(typ: type) -> tuple[DataclassFieldRecord, ...]:
+def get_runtime_dataclass_fields(typ: type) -> tuple[DataclassFieldRecord, ...]:
     dataclass_fields = safe_getattr(typ, "__dataclass_fields__", None)
     if not isinstance(dataclass_fields, Mapping):
         return ()
@@ -199,7 +199,7 @@ def _runtime_dataclass_field_info(field: object) -> DataclassFieldInfo:
     return DataclassFieldInfo(has_default=has_default, init=init, kw_only=kw_only)
 
 
-def _iter_base_type_values(
+def iter_base_type_values(
     value: Value,
     arg_spec_cache: ArgSpecCache,
     owner: ClassKey | None = None,
@@ -237,22 +237,22 @@ def _iter_base_type_values(
     value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):
         for subval in value.vals:
-            yield from _iter_base_type_values(
+            yield from iter_base_type_values(
                 subval, arg_spec_cache, owner=owner, seen_known_bases=seen_known_bases
             )
         return
     if isinstance(value, IntersectionValue):
         for subval in value.vals:
-            yield from _iter_base_type_values(
+            yield from iter_base_type_values(
                 subval, arg_spec_cache, owner=owner, seen_known_bases=seen_known_bases
             )
         return
-    yield from _iter_base_type_values_from_simple(
+    yield from iter_base_type_values_from_simple(
         value, arg_spec_cache, owner, seen_known_bases
     )
 
 
-def _iter_base_type_values_from_simple(
+def iter_base_type_values_from_simple(
     value: SimpleType,
     arg_spec_cache: ArgSpecCache,
     owner: ClassKey | None,
@@ -262,14 +262,14 @@ def _iter_base_type_values_from_simple(
         base_id = id(value.val)
         if base_id in seen_known_bases:
             return
-        yield from _iter_base_type_values(
+        yield from iter_base_type_values(
             arg_spec_cache._type_from_base(value.val, owner or object),
             arg_spec_cache,
             owner=owner,
             seen_known_bases=seen_known_bases | {base_id},
         )
     elif isinstance(value, SyntheticClassObjectValue):
-        yield from _iter_base_type_values(
+        yield from iter_base_type_values(
             value.class_type,
             arg_spec_cache,
             owner=owner,
@@ -292,12 +292,12 @@ def _iter_base_type_values_from_simple(
         assert_never(value)
 
 
-def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) -> None:
+def add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) -> None:
     class_dict = safe_getattr(typ, "__dict__", None)
     namedtuple_fields = frozenset(_runtime_namedtuple_field_names(typ))
     runtime_dataclass_fields = {
         record.field_name: record.field_info
-        for record in _get_runtime_dataclass_fields(typ)
+        for record in get_runtime_dataclass_fields(typ)
     }
     for name in namedtuple_fields:
         raw_value = (

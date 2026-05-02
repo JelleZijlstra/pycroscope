@@ -9,7 +9,7 @@ if asynq is None:
     pytest.skip("asynq not available", allow_module_level=True)
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes, skip_if_not_installed
-from .yield_checker import VarnameGenerator, _camel_case_to_snake_case
+from .yield_checker import VarnameGenerator, camel_case_to_snake_case
 
 
 class TestUnnecessaryYield(TestNameCheckVisitorBase):
@@ -820,10 +820,10 @@ class TestVarnameGenerator(object):
 
 
 def test_camel_case_to_snake_case():
-    assert "hello" == _camel_case_to_snake_case("hello")
-    assert "capybara" == _camel_case_to_snake_case("Capybara")
-    assert "capybara_result" == _camel_case_to_snake_case("CapybaraResult")
-    assert "http_error" == _camel_case_to_snake_case("HTTPError")
-    assert "ñoldor" == _camel_case_to_snake_case("Ñoldor")
-    assert "αθήνα" == _camel_case_to_snake_case("Αθήνα")
-    assert "ссср_союз" == _camel_case_to_snake_case("СССРСоюз")
+    assert "hello" == camel_case_to_snake_case("hello")
+    assert "capybara" == camel_case_to_snake_case("Capybara")
+    assert "capybara_result" == camel_case_to_snake_case("CapybaraResult")
+    assert "http_error" == camel_case_to_snake_case("HTTPError")
+    assert "ñoldor" == camel_case_to_snake_case("Ñoldor")
+    assert "αθήνα" == camel_case_to_snake_case("Αθήνα")
+    assert "ссср_союз" == camel_case_to_snake_case("СССРСоюз")

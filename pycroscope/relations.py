@@ -80,7 +80,6 @@ from pycroscope.value import (
     Value,
     VariableNameValue,
     Variance,
-    _iter_typevar_map_items,
     default_value_for_type_param,
     flatten_values,
     freshen_typevars_for_inference,
@@ -88,6 +87,7 @@ from pycroscope.value import (
     gradualize,
     intersect_bounds_maps,
     iter_type_params_in_value,
+    iter_typevar_map_items,
     pack_typevartuple_binding,
     replace_fallback,
     replace_known_sequence_value,
@@ -1318,7 +1318,7 @@ def _translate_generic_typevar_bounds(
             LowerBound(type_params_by_typevar[typevar], value),
             UpperBound(type_params_by_typevar[typevar], value),
         ]
-        for typevar, value in _iter_typevar_map_items(translated_tv_map)
+        for typevar, value in iter_typevar_map_items(translated_tv_map)
         if typevar in type_params_by_typevar
     }
 
@@ -1408,7 +1408,7 @@ def _get_generic_variances(
 def _can_assign_type_form(
     inner_type: Value, value: Value, ctx: CanAssignContext
 ) -> CanAssign:
-    value_as_type = _extract_type_form(value, ctx)
+    value_as_type = extract_type_form(value, ctx)
     if isinstance(value_as_type, CanAssignError):
         return value_as_type
     can_assign = has_relation(inner_type, value_as_type, Relation.ASSIGNABLE, ctx)
@@ -1417,7 +1417,7 @@ def _can_assign_type_form(
     return can_assign
 
 
-def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssignError:
+def extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssignError:
     """Interpret ``value`` as a ``TypeForm`` payload and return the extracted type.
 
     The result is always a gradual type suitable for relation checks. This accepts
@@ -1432,7 +1432,7 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
         return gradualize(value.inner_type)
     elif isinstance(value, AnnotatedValue):
         # Annotated metadata is ignored for implicit TypeForm extraction.
-        return _extract_type_form(value.value, ctx)
+        return extract_type_form(value.value, ctx)
     elif isinstance(value, (PartialValue, PartialCallValue)):
         from pycroscope.annotations import make_type_param_from_value, type_from_value
 
@@ -1450,12 +1450,12 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
 
         extracted = type_from_value(value, visitor=ctx, suppress_errors=True)
         if extracted != AnyValue(AnySource.error):
-            return _extract_type_form(extracted, ctx)
+            return extract_type_form(extracted, ctx)
         return CanAssignError(f"{value} is not a TypeForm")
     elif isinstance(value, MultiValuedValue):
         vals: list[Value] = []
         for subval in value.vals:
-            subval_as_type = _extract_type_form(subval, ctx)
+            subval_as_type = extract_type_form(subval, ctx)
             if isinstance(subval_as_type, CanAssignError):
                 return subval_as_type
             vals.append(subval_as_type)
@@ -1944,7 +1944,7 @@ def _has_relation_sequence(
     ctx = relation_ctx.ctx
     # TypeObject.can_assign() does the nominal/container-level compatibility check
     # for all sequences. For tuple/tuple, it also already performs the full
-    # element-by-element comparison via _compare_tuple_sequences(); preserve that
+    # element-by-element comparison via compare_tuple_sequences(); preserve that
     # detailed result instead of replacing it with a generic "tuple is not
     # assignable to tuple" wrapper here.
     can_assign = left.get_type_object(ctx).can_assign(
@@ -1963,10 +1963,10 @@ def _has_relation_sequence(
     if left.typ is tuple and right.typ is tuple:
         return can_assign
 
-    return _compare_tuple_sequences(left, right, relation_ctx)
+    return compare_tuple_sequences(left, right, relation_ctx)
 
 
-def _compare_tuple_sequences(
+def compare_tuple_sequences(
     left: SequenceValue, right: SequenceValue, relation_ctx: RelationContext
 ) -> CanAssign:
     captured_typevartuple = _try_capture_single_typevartuple_sequence(
@@ -2366,7 +2366,7 @@ def get_tv_map_from_ctx(
 
     # TODO: what is this doing
     exact_bindings = _get_exact_typevar_bindings(original_left, right)
-    for typevar, value in _iter_typevar_map_items(exact_bindings):
+    for typevar, value in iter_typevar_map_items(exact_bindings):
         existing = tv_map.get_value(typevar)
         if existing is None or isinstance(existing, AnyValue):
             tv_map = tv_map.with_value(typevar, value)

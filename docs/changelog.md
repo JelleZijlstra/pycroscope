@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add a disabled-by-default `private_import` error code that flags imports and module attribute reads of single-underscore module members; pycroscope's self check now enforces it.
 - Recognize `warnings.deprecated` as a deprecation decorator in static fallback analysis, fixing missed deprecated diagnostics with newer `typing_extensions` backports.
 - Fix false positive `unsafe_comparison` errors when comparing a value narrowed by a length predicate against its original type.
 - Preserve precise dictionary entries for `dict.fromkeys()`, so known literal keys with a shared value can satisfy broader `dict[...]` return annotations.

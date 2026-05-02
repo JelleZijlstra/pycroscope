@@ -16,7 +16,7 @@ from .name_check_visitor import (
 from .test_name_check_visitor import (
     ClassAttributeChecker,
     TestNameCheckVisitorBase,
-    _make_module,
+    make_module,
 )
 
 
@@ -36,7 +36,7 @@ class TestFindUnused(TestNameCheckVisitorBase):
         kwargs = self.visitor_cls.prepare_constructor_kwargs(
             {"settings": settings}, extra_options=extra_options
         )
-        module = _make_module(code_str) if module is None else module
+        module = make_module(code_str) if module is None else module
         with ClassAttributeChecker(
             enabled=True,
             should_check_unused_attributes=True,
@@ -432,7 +432,7 @@ class TestFindUnused(TestNameCheckVisitorBase):
                 def __init__(self) -> None:
                     self.cache = 0
             """
-        module = _make_module(textwrap.dedent(code))
+        module = make_module(textwrap.dedent(code))
         self.assert_unused_attributes(
             code,
             {("Config", "enabled", False)},
@@ -454,7 +454,7 @@ class TestFindUnused(TestNameCheckVisitorBase):
             class Child(Base):
                 pass
             """
-        module = _make_module(textwrap.dedent(code))
+        module = make_module(textwrap.dedent(code))
         self.assert_unused_attributes(
             code,
             set(),

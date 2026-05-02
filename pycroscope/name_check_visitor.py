@@ -71,11 +71,9 @@ from .annotated_types import Ge, Gt, Le, Lt
 from .annotations import (
     AnnotationExpr,
     Context,
+    DefaultContext,
     Qualifier,
     SyntheticEvaluator,
-    _DefaultContext,
-    _normalize_paramspec_generic_args,
-    _specialize_type_alias_value,
     annotation_expr_from_annotations,
     annotation_expr_from_ast,
     annotation_expr_from_runtime,
@@ -87,6 +85,8 @@ from .annotations import (
     is_typing_name,
     make_type_param,
     make_type_param_from_value,
+    normalize_paramspec_generic_args,
+    specialize_type_alias_value,
     type_from_value,
     value_from_ast,
 )
@@ -158,6 +158,7 @@ from .safe import (
     is_deprecated_decorator,
     is_hashable,
     is_namedtuple_class,
+    is_private_module_member_name,
     is_typing_name,
     safe_getattr,
     safe_hasattr,
@@ -184,7 +185,7 @@ from .signature import (
     ParameterKind,
     Signature,
     SigParameter,
-    _promote_constructor_type_arg,
+    promote_constructor_type_arg,
 )
 from .stacked_scopes import (
     EMPTY_ORIGIN,
@@ -227,23 +228,23 @@ from .type_object import (
     NamedTupleField,
     TypeObject,
     TypeObjectAttribute,
-    _class_key_from_value,
-    _is_definitely_class_object_value,
-    _iter_base_type_objects,
-    _receiver_key_from_value,
     can_assign_to_base_callable,
+    class_key_from_value,
     class_keys_match,
     direct_bases_from_values,
     get_mro,
     is_compatible_attribute,
+    is_definitely_class_object_value,
+    iter_base_type_objects,
     lookup_declared_symbol_with_owner,
+    receiver_key_from_value,
     typevar_map_from_generic_args,
 )
 from .type_params import (
     ActiveTypeParams,
     TypeParamIdentity,
-    _compose_observed_variance_polarity,
-    _record_variance_polarity,
+    compose_observed_variance_polarity,
+    record_variance_polarity,
 )
 from .typeshed import TypeshedFinder
 from .value import (
@@ -323,8 +324,6 @@ from .value import (
     UnboundMethodValue,
     Value,
     Variance,
-    _is_property_initializer,
-    _iter_typevar_map_items,
     annotate_value,
     bound_self_type_from_class_key,
     class_owner_from_key,
@@ -336,8 +335,10 @@ from .value import (
     get_typevar_variance,
     is_async_iterable,
     is_iterable,
+    is_property_initializer,
     is_union,
     iter_type_params_in_value,
+    iter_typevar_map_items,
     kv_pairs_from_mapping,
     make_coro_type,
     replace_fallback,
@@ -731,6 +732,10 @@ class _AttrContext(CheckerAttrContext):
     def record_attr_read(self, obj: type) -> None:
         if self.record_reads and self.node is not None:
             self.visitor._record_type_attr_read(obj, self.attr, self.node)
+
+    def record_private_module_member_access(self, module_name: str, attr: str) -> None:
+        if self.node is not None:
+            self.visitor._show_private_import_error(self.node, module_name, attr)
 
     def get_self_value(self) -> Value:
         if self.self_value is not None:
@@ -2076,10 +2081,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _get_import_failure_node(
         self, error: BaseException
-    ) -> ast.AST | node_visitor._FakeNode | None:
+    ) -> ast.AST | node_visitor.FakeNode | None:
         lineno = self._get_import_failure_lineno(error)
         if lineno is not None:
-            return node_visitor._FakeNode(lineno=lineno, col_offset=0)
+            return node_visitor.FakeNode(lineno=lineno, col_offset=0)
         if self.tree is not None and self.tree.body:
             return self.tree.body[0]
         return None
@@ -2598,7 +2603,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             is_method = False
         if property_info is not None and (
             synthetic_initializer is None
-            or not _is_property_initializer(synthetic_initializer)
+            or not is_property_initializer(synthetic_initializer)
         ):
             synthetic_initializer = None
         type_object.set_declared_symbol(
@@ -2731,7 +2736,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             elif initializer is not None and (
                 not property_initializer_must_be_property
-                or _is_property_initializer(initializer)
+                or is_property_initializer(initializer)
             ):
                 resolved_initializer = initializer
             else:
@@ -5342,7 +5347,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _type_parameter_class_key(self, value: Value) -> ClassKey | None:
         candidate = replace_fallback(value)
-        class_key = _receiver_key_from_value(candidate)
+        class_key = receiver_key_from_value(candidate)
         if class_key is None:
             return None
         if isinstance(candidate, KnownValue):
@@ -6029,7 +6034,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     base_typ, generic_args
                 ).items():
                     existing_map = seen_mappings.setdefault(gb_typ, TypeVarMap())
-                    for type_param, value in _iter_typevar_map_items(tv_map):
+                    for type_param, value in iter_typevar_map_items(tv_map):
                         existing = existing_map.get_value(type_param)
                         if existing is None:
                             existing_map = existing_map.with_value(type_param, value)
@@ -6416,7 +6421,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(class_key, type):
             return safe_issubclass(class_key, type)
         return any(
-            self._class_key_is_type_subclass(_class_key_from_value(base_value), seen)
+            self._class_key_is_type_subclass(class_key_from_value(base_value), seen)
             for base_value in self.checker.make_type_object(
                 class_key
             ).get_direct_bases()
@@ -8084,7 +8089,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return value
         if isinstance(root_value, KnownValue) and isinstance(root_value.val, type):
             return value
-        class_key = _class_key_from_value(root_value)
+        class_key = class_key_from_value(root_value)
         if class_key is not None:
             getitem = lookup_declared_symbol_with_owner(class_key, "__getitem__", self)
             if getitem is not None and getitem[0] is not tuple:
@@ -8266,7 +8271,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # pure async functions are otherwise incorrectly inferred as returning whatever the
         # underlying function returns
         if info.async_kind == AsyncFunctionKind.pure:
-            task_cls = _get_task_cls(info.potential_function)
+            task_cls = get_task_cls(info.potential_function)
             return_value = AsyncTaskIncompleteValue(task_cls, return_value)
 
         if isinstance(info.node, ast.AsyncFunctionDef) or (
@@ -8682,9 +8687,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for typevar, local_used_polarities in local_polarities.items():
             target_used_polarities = target.setdefault(typevar, set())
             for local_used_polarity in local_used_polarities:
-                _record_variance_polarity(
+                record_variance_polarity(
                     target_used_polarities,
-                    _compose_observed_variance_polarity(polarity, local_used_polarity),
+                    compose_observed_variance_polarity(polarity, local_used_polarity),
                 )
 
     def _infer_type_param_variances_from_polarities(
@@ -9103,6 +9108,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     if val is None:
                         unresolved_aliases.append(alias)
                     else:
+                        self._maybe_show_private_from_import_error(alias, node.module)
                         self._set_alias_in_scope(alias, val, node=node)
                 if not unresolved_aliases:
                     return
@@ -9148,6 +9154,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                 continue
             val = self._get_import_from_value(source_module, alias.name, node)
+            self._maybe_show_private_from_import_error(
+                alias, self._imported_module_name(source_module)
+            )
             val = self._maybe_annotate_type_checking_value(
                 val, module_name=node.module, attribute_name=alias.name
             )
@@ -9185,6 +9194,38 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ErrorCode.import_failed,
         )
         return AnyValue(AnySource.error)
+
+    def _imported_module_name(self, source_module: Value) -> str | None:
+        if isinstance(source_module, KnownValue) and isinstance(
+            source_module.val, types.ModuleType
+        ):
+            return source_module.val.__name__
+        if isinstance(source_module, SyntheticModuleValue):
+            return ".".join(source_module.module_path)
+        return None
+
+    def _show_private_import_error(
+        self, node: ast.AST, module_name: str | None, attr: str
+    ) -> None:
+        if not is_private_module_member_name(attr):
+            return
+        if (
+            module_name is not None
+            and self.module is not None
+            and module_name == self.module.__name__
+        ):
+            return
+        if module_name is None:
+            message = f"Use of private module member {attr!r}"
+        else:
+            message = f"Use of private module member {module_name}.{attr}"
+        self._show_error_if_checking(node, message, error_code=ErrorCode.private_import)
+
+    def _maybe_show_private_from_import_error(
+        self, alias: ast.alias, module_name: str | None
+    ) -> None:
+        if alias.name != "*":
+            self._show_private_import_error(alias, module_name, alias.name)
 
     def _get_import_from_module(self, node: ast.ImportFrom) -> Value:
         if node.level > 0:
@@ -13250,12 +13291,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     # Value-position specialization of a declared type alias should
                     # use the recorded alias metadata rather than the raw runtime
                     # GenericAlias object, which may not support further specialization.
-                    annotation_ctx = _DefaultContext(visitor=self, node=node)
+                    annotation_ctx = DefaultContext(visitor=self, node=node)
                     members = self._maybe_unpack_tuple(index, node)
                     if isinstance(
                         runtime_type_alias, SyntheticTypeFormValue
                     ) and isinstance(runtime_type_alias.inner_type, TypeAliasValue):
-                        new_alias = _specialize_type_alias_value(
+                        new_alias = specialize_type_alias_value(
                             runtime_type_alias.inner_type,
                             members,
                             annotation_ctx,
@@ -13269,7 +13310,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         )
                         return SyntheticTypeFormValue(new_alias, new_runtime_type, node)
                     assert isinstance(runtime_type_alias, TypeAliasValue)
-                    return _specialize_type_alias_value(
+                    return specialize_type_alias_value(
                         runtime_type_alias, members, annotation_ctx, node=node
                     )
                 should_use_static_annotation_subscript = self.in_annotation and (
@@ -13545,7 +13586,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         if type_parameters:
             normalized_members = tuple(
-                _normalize_paramspec_generic_args(
+                normalize_paramspec_generic_args(
                     type_parameters, list(normalized_members), self, node=node
                 )
             )
@@ -14946,7 +14987,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             for base_value in self.checker.make_type_object(
                 class_key
             ).get_direct_bases():
-                base_key = _class_key_from_value(base_value)
+                base_key = class_key_from_value(base_value)
                 if base_key is not None:
                     keys.append(base_key)
             return keys
@@ -15333,7 +15374,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             callee_wrapped.val
         ):
             async_fn = callee_wrapped.val.__self__
-            return AsyncTaskIncompleteValue(_get_task_cls(async_fn), return_value)
+            return AsyncTaskIncompleteValue(get_task_cls(async_fn), return_value)
         elif isinstance(
             callee_wrapped, UnboundMethodValue
         ) and callee_wrapped.secondary_attr_name in ("async", "asynq"):
@@ -15349,7 +15390,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 local_return = self.get_local_return_value(primary_sig.signature)
             if local_return is not None:
                 return_value = local_return
-            return AsyncTaskIncompleteValue(_get_task_cls(async_fn), return_value)
+            return AsyncTaskIncompleteValue(get_task_cls(async_fn), return_value)
         elif (
             asynq is not None
             and isinstance(callee_wrapped, UnboundMethodValue)
@@ -15363,7 +15404,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and isinstance(callee_wrapped, KnownValue)
                 and asynq.is_pure_async_fn(callee_wrapped.val)
             ):
-                task_cls = _get_task_cls(callee_wrapped.val)
+                task_cls = get_task_cls(callee_wrapped.val)
                 if isinstance(task_cls, type):
                     return TypedValue(task_cls)
             return return_value
@@ -15445,7 +15486,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ]
         else:
             return return_value
-        type_args = [_promote_constructor_type_arg(arg) for arg in type_args]
+        type_args = [promote_constructor_type_arg(arg) for arg in type_args]
 
         def _specialize(value: Value) -> Value | None:
             if allow_annotated_specialization and isinstance(value, AnnotatedValue):
@@ -16054,7 +16095,7 @@ def _is_namedtuple_marker_base(base_value: Value) -> bool:
 def _iter_type_objects_from_base_value(
     base_value: Value, checker: Checker
 ) -> Iterable[TypeObject]:
-    yield from _iter_base_type_objects(base_value, checker)
+    yield from iter_base_type_objects(base_value, checker)
 
 
 def _is_namedtuple_like_base_value(base_value: Value, checker: Checker) -> bool:
@@ -16501,8 +16542,8 @@ def _attribute_root_class_info(value: Value) -> _AttributeRootClassInfo:
             _attribute_root_class_info(subval) for subval in value.vals
         )
     return _AttributeRootClassInfo(
-        class_key=_receiver_key_from_value(value),
-        is_class_object=_is_definitely_class_object_value(value),
+        class_key=receiver_key_from_value(value),
+        is_class_object=is_definitely_class_object_value(value),
     )
 
 
@@ -17173,11 +17214,11 @@ def _is_valid_implicit_type_alias_name_value(value: Value) -> bool:
     elif isinstance(value, KnownValue):
         if value.val is None:
             return True
-        return _is_definitely_class_object_value(value) or _is_typing_alias_value(
+        return is_definitely_class_object_value(value) or _is_typing_alias_value(
             value.val
         )
     elif isinstance(value, SimpleType):
-        return _is_definitely_class_object_value(value)
+        return is_definitely_class_object_value(value)
     else:
         assert_never(value)
 
@@ -17288,7 +17329,7 @@ def _should_use_static_annotation_subscript_on_import_failure(value: Value) -> b
     )
 
 
-def _get_task_cls(fn: object) -> type[Any]:
+def get_task_cls(fn: object) -> type[Any]:
     """Returns the task class for an async function."""
     assert asynq is not None
 

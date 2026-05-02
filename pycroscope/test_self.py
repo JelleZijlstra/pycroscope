@@ -18,7 +18,7 @@ from pycroscope.shared_options import (
     EnforceNoUnusedAttributes,
     EnforceNoUnusedCallPatterns,
 )
-from pycroscope.test_name_check_visitor import _make_module
+from pycroscope.test_name_check_visitor import make_module
 from pycroscope.test_node_visitor import skip_if_not_installed
 
 
@@ -61,6 +61,7 @@ def _check_files_with_annotations(
     settings = PycroscopeVisitor._get_default_settings()
     if settings is not None:
         settings[ErrorCode.implicit_any] = False
+        settings[ErrorCode.private_import] = True
         settings[ErrorCode.unreachable] = True
     kwargs: dict[str, object] = {"settings": settings, "files": files}
     kwargs = dict(PycroscopeVisitor.prepare_constructor_kwargs(kwargs))
@@ -170,7 +171,7 @@ def test_self_check_reports_unused_objects() -> None:
         code,
         tree,
         annotate=True,
-        module=_make_module(code),
+        module=make_module(code),
         unused_finder=unused_finder,
         **kwargs,
     )
@@ -215,7 +216,7 @@ def test_self_check_reports_unused_attributes() -> None:
             code,
             tree,
             annotate=True,
-            module=_make_module(code),
+            module=make_module(code),
             attribute_checker=attribute_checker,
             **kwargs,
         )
@@ -250,7 +251,7 @@ def test_self_check_reports_unused_call_patterns() -> None:
         "checker"
     ].options.get_value_for(EnforceNoUnusedCallPatterns)
     visitor = PycroscopeVisitor(
-        filename, code, tree, annotate=True, module=_make_module(code), **kwargs
+        filename, code, tree, annotate=True, module=make_module(code), **kwargs
     )
     failures = visitor.check()
     failures += PycroscopeVisitor.perform_final_checks(kwargs)
@@ -286,7 +287,7 @@ def test_self_check_visits_decorated_namedtuple_subclass_method() -> None:
     kwargs: dict[str, object] = {"settings": settings, "files": [filename]}
     kwargs = dict(PycroscopeVisitor.prepare_constructor_kwargs(kwargs))
     visitor = PycroscopeVisitor(
-        filename, code, tree, annotate=True, module=_make_module(code), **kwargs
+        filename, code, tree, annotate=True, module=make_module(code), **kwargs
     )
     failures = visitor.check()
     assert not failures

@@ -16,7 +16,12 @@ from .annotations import RuntimeAnnotationsContext, type_from_runtime
 from .options import Options, PyObjectSequenceOption
 from .predicates import HasAttr
 from .relations import intersect_multi
-from .safe import is_generic_alias, safe_getattr, safe_isinstance
+from .safe import (
+    is_generic_alias,
+    is_private_module_member_name,
+    safe_getattr,
+    safe_isinstance,
+)
 from .signature import MaybeSignature
 from .stacked_scopes import Composite
 from .type_object import AttributePolicy, TypeObject, TypeObjectAttribute
@@ -84,6 +89,9 @@ class AttrContext:
         pass
 
     def record_attr_read(self, obj: Any) -> None:
+        pass
+
+    def record_private_module_member_access(self, module_name: str, attr: str) -> None:
         pass
 
     def resolve_name_from_typeshed(self, module: str, name: str) -> Value:
@@ -190,6 +198,8 @@ def _get_attribute_from_value(
             attribute_value = ctx.resolve_name_from_typeshed(module, ctx.attr)
             if attribute_value is UNINITIALIZED_VALUE:
                 return _get_attribute_from_value(TypedValue(types.ModuleType), ctx)
+            if is_private_module_member_name(ctx.attr):
+                ctx.record_private_module_member_access(module, ctx.attr)
             return attribute_value, None
         case MultiValuedValue(vals=vals):
             if not vals:
@@ -340,6 +350,13 @@ def _super_thisclass_key(value: Value) -> ClassKey | None:
 
 def _ca_error(value: Value, ctx: AttrContext) -> CanAssignError:
     return CanAssignError(f"{value} has no attribute '{ctx.attr}'")
+
+
+def _maybe_record_private_module_member_access(
+    module: types.ModuleType, ctx: AttrContext
+) -> None:
+    if is_private_module_member_name(ctx.attr):
+        ctx.record_private_module_member_access(module.__name__, ctx.attr)
 
 
 def _get_attribute_from_super_value(
@@ -534,9 +551,11 @@ def _get_attribute_from_known_inner(
         if obj is collections.abc and runtime_value is not None:
             # Prefer the runtime lookup for collections.abc because typeshed pretends
             # its values are imported from typing.
+            _maybe_record_private_module_member_access(obj, ctx)
             return runtime_value, None
         attribute_value = ctx.resolve_name_from_typeshed(obj.__name__, ctx.attr)
         if attribute_value is not UNINITIALIZED_VALUE:
+            _maybe_record_private_module_member_access(obj, ctx)
             return attribute_value, None
 
         try:
@@ -552,6 +571,7 @@ def _get_attribute_from_known_inner(
                     globals=obj.__dict__,
                     ctx=RuntimeAnnotationsContext(ctx, self_key=None),
                 )
+                _maybe_record_private_module_member_access(obj, ctx)
                 return annotation_value, None
 
     if safe_isinstance(obj, type):
@@ -573,6 +593,9 @@ def _get_attribute_from_known_inner(
         ):
             return type_object_attr.value, type_object_attr.error
         return UNINITIALIZED_VALUE, _ca_error(value, ctx)
+
+    if safe_isinstance(obj, types.ModuleType):
+        _maybe_record_private_module_member_access(obj, ctx)
 
     if (
         tobj.is_enum()

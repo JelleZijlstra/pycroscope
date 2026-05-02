@@ -1,4 +1,5 @@
 # static analysis: ignore
+from .error_code import ErrorCode
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
 from .value import KnownValue, assert_is_value
@@ -56,6 +57,27 @@ class TestImport(TestNameCheckVisitorBase):
                 assert_is_value(extensions, KnownValue(P.extensions))
                 not_a_name  # E: undefined_name
             """)
+
+    @assert_passes(settings={ErrorCode.private_import: True})
+    def test_private_from_import(self):
+        def capybara():
+            from pycroscope.safe import _MISSING  # E: private_import
+
+            print(_MISSING)
+
+    @assert_passes(settings={ErrorCode.private_import: True})
+    def test_private_module_attribute(self):
+        def capybara():
+            import pycroscope.safe
+
+            print(pycroscope.safe._MISSING)  # E: private_import
+
+    @assert_passes()
+    def test_private_import_disabled_by_default(self):
+        def capybara():
+            from pycroscope.safe import _MISSING
+
+            print(_MISSING)
 
 
 class TestDisallowedImport(TestNameCheckVisitorBase):

@@ -114,13 +114,13 @@ class _VarianceCollectionContext:
     polarity: int
 
 
-def _compose_observed_variance_polarity(polarity: int, modifier: int) -> int:
+def compose_observed_variance_polarity(polarity: int, modifier: int) -> int:
     if polarity == 0 or modifier == 0:
         return 0
     return polarity * modifier
 
 
-def _record_variance_polarity(used_polarities: set[int], polarity: int) -> None:
+def record_variance_polarity(used_polarities: set[int], polarity: int) -> None:
     if polarity == 0:
         used_polarities.update({-1, 1})
     else:
@@ -603,7 +603,7 @@ class ActiveTypeParams:
     def current_variance_polarity(self, base_polarity: int) -> int:
         polarity = base_polarity
         for modifier in self._variance_polarity_stack:
-            polarity = _compose_observed_variance_polarity(polarity, modifier)
+            polarity = compose_observed_variance_polarity(polarity, modifier)
         return polarity
 
     @contextlib.contextmanager
@@ -727,7 +727,7 @@ class ActiveTypeParams:
                         used_polarities = context.type_param_polarities.setdefault(
                             type_param.typevar, set()
                         )
-                    _record_variance_polarity(
+                    record_variance_polarity(
                         used_polarities,
                         self.current_variance_polarity(context.polarity),
                     )

@@ -45,7 +45,7 @@ ErrorCodeInstance = error_code.Error | Enum
 
 
 @dataclass(frozen=True)
-class _FakeNode:
+class FakeNode:
     lineno: int
     col_offset: int
 
@@ -323,7 +323,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
     def show_errors_for_unused_ignores(self, error_code: ErrorCodeInstance) -> None:
         """Shows errors for any unused ignore comments."""
         for i, line in self.get_unused_ignores():
-            node = _FakeNode(i + 1, line.index(IGNORE_COMMENT))
+            node = FakeNode(i + 1, line.index(IGNORE_COMMENT))
             stripped = line.strip()
             if stripped == IGNORE_COMMENT or re.match(
                 rf"^{re.escape(IGNORE_COMMENT)}\[[^\s\]]+\]$", stripped
@@ -344,7 +344,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
             return
         for i, line in enumerate(self._lines()):
             if IGNORE_COMMENT in line and IGNORE_COMMENT + "[" not in line:
-                node = _FakeNode(i + 1, line.index(IGNORE_COMMENT))
+                node = FakeNode(i + 1, line.index(IGNORE_COMMENT))
                 self.show_error(node, error_code=error_code, obey_ignore=False)
 
     @classmethod
@@ -631,7 +631,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
 
     def show_error(
         self,
-        node: ast.AST | _FakeNode | None,
+        node: ast.AST | FakeNode | None,
         e: str | None = None,
         error_code: ErrorCodeInstance | None = None,
         *,
