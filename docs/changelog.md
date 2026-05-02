@@ -1,7 +1,11 @@
 # Changelog
 
-## Unreleased
+## Version 0.4.0 (May 2, 2026)
 
+This release aims to strengthen robustness and quality, fixing many issues
+found in real-world code.
+
+- Add precise type inference for the result of `operator.getitem`.
 - Add a disabled-by-default `private_import` error code that flags imports and module attribute reads of single-underscore module members; pycroscope's self check now enforces it.
 - Recognize `warnings.deprecated` as a deprecation decorator in static fallback analysis, fixing missed deprecated diagnostics with newer `typing_extensions` backports.
 - Fix false positive `unsafe_comparison` errors when comparing a value narrowed by a length predicate against its original type.
@@ -41,26 +45,16 @@
 - Make class-object attribute lookup prefer real runtime members before synthetic overlays, so descriptor-backed class attributes keep working even when method bodies assign through `self.attr` or transformed instance access is enabled.
 - Fix runtime generic descriptor specialization so instances like `Field[int]()` and `Field[Other | None]()` keep their concrete payload types during attribute lookup instead of falling back to unspecialized `~T`.
 - Fix `Self`-typed iterator and query methods during fallback analysis, so classmethod patterns like `for i, obj in enumerate(cls.select()): ...` and `query = cls.select()` preserve `Self` instead of misbinding nested receiver types.
-
 - Fix a method-binding regression in fallback analysis so inherited instance methods are bound exactly once, which removes false positive call-arity errors in projects that use transformed class attributes.
-
 - Fix a `Self` regression for generic receiver methods, so calls like `Query[Self].filter() -> Query[Self]` and `Getter[Self].get_one() -> Self | None` no longer get widened to nested receiver types during fallback analysis.
-
 - Fix a user-visible regression in large project analysis so pycroscope no longer prints stray internal `__getitem__` debug lines, and avoids internal errors when stub lookup touches runtime objects whose `__getattr__` methods can raise project-specific exceptions.
-
 - Split overloaded annotation diagnostics into narrower ones: pycroscope now uses `invalid_self_usage`, `invalid_paramspec_usage`, and `invalid_qualifier` for those specific mistakes, keeps other bad annotation forms under `invalid_annotation`, uses declaration-specific codes like `invalid_typeddict`/`invalid_namedtuple`/`invalid_overload`/`invalid_final`/`invalid_type_alias`/`invalid_protocol`/`invalid_type_parameter`, reports duplicate type-alias statements as `already_declared`, and reports calling `Annotated` aliases as `not_callable`.
-
 - Fix fallback-mode generic class-object assignability so synthetic classes now honor declared type-parameter defaults when compared against annotations like `type[Bar[str]]`.
-
 - Fix several `Self` edge cases so generic classmethods preserve class arguments like `Box[int].make() -> Box[int]`, `Self | None` stays stable inside method bodies, and `cls` attribute writes using `Self` no longer produce false positives.
-
 - Fix generic `NamedTuple` subclasses in import-failure analysis so inherited tuple fields and synthetic methods now keep specialized type arguments, which restores checks like tuple-style indexing and constructor argument validation for classes such as `class Child(Base[int]): ...`.
 - Fix importable-mode runtime `NamedTuple` constructor inference so runtime classes preserve their concrete return types and tuple behavior without relying on fallback-analysis side effects.
-
 - Fix `Self` handling in class-body descriptor expressions so pycroscope now preserves owner-bound `Self` types in both importable and fallback analysis, instead of relying on syntax-specific workarounds.
-
 - Fix several internal-error crashes and false positives when analyzing large projects: pycroscope now degrades ParamSpec input-signature placeholders safely in suggested-type generation, avoids treating ordinary container literals with unsupported elements as crashing implicit type aliases, snapshots `from module import *` exports before lazy annotation work can mutate the source module dictionary, and no longer reports callable intersections as `not_callable`.
-
 - Fix two false positives around runtime analysis: subscripting ordinary values annotated with a type alias no longer looks like type-alias specialization, and unresolved `match` value patterns now fall back cleanly instead of reporting internal errors.
 - Improve `TypeObject` attribute lookup for stub-backed members so runtime classes now merge direct stub symbols with runtime descriptors, preserving runtime descriptor shape while using stub type information for properties and other attributes.
 - Fix class-object metaclass lookup so `TypeObject.get_attribute()` now follows Python's class-access rules, including bound metaclass members and metaclass properties overriding same-named class attributes.
@@ -93,7 +87,6 @@
 - Improve `TypeVar` handling by distinguishing declared type parameters from call-site inference variables, so pycroscope no longer solves rigid `TypeVar`s during ordinary assignability checks and now preserves more accurate generic-call and recursive type-alias behavior.
 - Fix context-manager inference for cases like `contextlib.nullcontext()` and unions of different context manager implementations, so `with` bindings and exit-type checks now keep the right types instead of falling back to imprecise results or spurious errors.
 - Improve several inference edge cases: `iter(d.values())` now produces an `Iterator` with the right value type, tuple-valued attributes stay narrowed after truthiness and `len()` checks, and bitwise operations on `enum.Flag`/`re.RegexFlag` preserve the enum type.
-
 - Restore concise generic-parameter names in invalid type-alias diagnostics, so errors mention forms like `~T: str`, `~P`, and `Ts` instead of full internal parameter object reprs.
 - Fix `Generic[...]` and `Protocol[...]` base validation parity between importable and import-failure analysis, including PEP 695 class declarations like `class C[T](Generic[T])` that should be rejected consistently.
 - Fix `@dataclass_transform` parity between importable and import-failure analysis: pycroscope now reuses synthetic dataclass metadata for runtime-backed classes when checking attributes like `__hash__` and `__match_args__`, so hashability and class-pattern matching behave consistently in both modes.
