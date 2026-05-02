@@ -619,6 +619,18 @@ def type_from_value(
     return _type_from_value(value, ctx)
 
 
+def type_from_subscripted_value(
+    root: Value,
+    members: Sequence[Value],
+    visitor: CanAssignContext | None = None,
+    node: ast.AST | None = None,
+    ctx: Context | None = None,
+) -> Value:
+    if ctx is None:
+        ctx = _DefaultContext(visitor=visitor, node=node)
+    return _type_from_subscripted_value(root, members, ctx)
+
+
 def annotation_expr_from_value(
     value: Value,
     *,
@@ -1488,7 +1500,7 @@ def _runtime_type_alias_from_partial_value(
 ) -> TypeAliasValue | None:
     if partial_value.operation is not PartialValueOperation.SUBSCRIPT:
         return None
-    alias_value = type_from_subscripted_value(
+    alias_value = _type_from_subscripted_value(
         partial_value.root, partial_value.members, ctx
     )
     inferred_type_params = _infer_alias_type_params_from_value(alias_value)
@@ -2321,7 +2333,7 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
         return value.inner_type
     elif isinstance(value, PartialValue):
         if value.operation is PartialValueOperation.SUBSCRIPT:
-            return type_from_subscripted_value(value.root, value.members, ctx)
+            return _type_from_subscripted_value(value.root, value.members, ctx)
         if value.operation is PartialValueOperation.BITOR:
             return _type_from_bitor_value(value.root, value.members, ctx)
         return value.get_fallback_value()
@@ -2442,11 +2454,11 @@ def _annotation_expr_from_subscripted_value(
                     return AnnotationExpr(ctx, AnyValue(AnySource.error))
                 inner = _annotation_expr_from_value(members[0], ctx)
                 return inner.add_qualifier(qualifier, node)
-    val = type_from_subscripted_value(root, members, ctx)
+    val = _type_from_subscripted_value(root, members, ctx)
     return AnnotationExpr(ctx, val)
 
 
-def type_from_subscripted_value(
+def _type_from_subscripted_value(
     root: Value, members: Sequence[Value], ctx: Context
 ) -> Value:
     if isinstance(root, SyntheticTypeFormValue) and isinstance(
@@ -2458,8 +2470,8 @@ def type_from_subscripted_value(
         self_owner = next(root.get_metadata_of_type(SelfOwnerExtension), None)
         if self_owner is not None:
             with override(ctx, "self_key", self_owner.class_key):
-                return type_from_subscripted_value(root.value, members, ctx)
-        return type_from_subscripted_value(root.value, members, ctx)
+                return _type_from_subscripted_value(root.value, members, ctx)
+        return _type_from_subscripted_value(root.value, members, ctx)
     if _is_self_annotation_value(root):
         ctx.show_error(
             "Self cannot be further subscripted",
@@ -2548,12 +2560,15 @@ def type_from_subscripted_value(
     if isinstance(root, PartialValue):
         runtime_alias = _runtime_type_alias_from_partial_value(root, ctx)
         if runtime_alias is not None:
-            return type_from_subscripted_value(runtime_alias, members, ctx)
+            return _type_from_subscripted_value(runtime_alias, members, ctx)
         root_type = _type_from_value(root, ctx)
-        return type_from_subscripted_value(root_type, members, ctx)
+        return _type_from_subscripted_value(root_type, members, ctx)
     elif isinstance(root, MultiValuedValue):
         return unite_values(
-            *[type_from_subscripted_value(subval, members, ctx) for subval in root.vals]
+            *[
+                _type_from_subscripted_value(subval, members, ctx)
+                for subval in root.vals
+            ]
         )
     if (
         isinstance(root, SyntheticClassObjectValue)
@@ -2679,7 +2694,7 @@ def type_from_subscripted_value(
         return AnyValue(AnySource.error)
     runtime_alias = _runtime_type_alias_from_runtime_value(root.val, ctx)
     if runtime_alias is not None:
-        return type_from_subscripted_value(runtime_alias, members, ctx)
+        return _type_from_subscripted_value(runtime_alias, members, ctx)
     root = root.val
     if is_instance_of_typing_name(root, "TypeAliasType"):
         alias_object = root

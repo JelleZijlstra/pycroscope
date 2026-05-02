@@ -19,7 +19,6 @@ import pycroscope
 
 from . import attributes, runtime
 from .annotations import (
-    Context,
     annotation_expr_from_value,
     is_typevarlike,
     make_type_param_from_value,
@@ -130,6 +129,7 @@ from .value import (
     kv_pairs_from_mapping,
     len_of_value,
     replace_fallback,
+    replace_fallback_except,
     replace_known_sequence_value,
     tuple_members_from_value,
     unite_values,
@@ -161,12 +161,17 @@ def flatten_unions(
     return ImplReturn.unite_impl_rets(results)
 
 
+ValueT = TypeVar("ValueT", bound=Value)
+
+
 def call_on_simple(
-    callback: Callable[[SimpleType, Value], ImplReturn | Value],
+    callback: Callable[[SimpleType | ValueT, Value], ImplReturn | Value],
     value: Value,
     ctx: CallContext,
+    *,
+    except_types: tuple[type[ValueT], ...] = (),
 ) -> ImplReturn | Value:
-    fallback = replace_fallback(value)
+    fallback = replace_fallback_except(value, except_types)
     match fallback:
         case MultiValuedValue(vals=vals):
             if not vals:
@@ -283,8 +288,38 @@ def _getitem_impl(ctx: CallContext) -> ImplReturn | Value:
         )
         return AnyValue(AnySource.error)
 
-    def inner(val: SimpleType, original_val: Value) -> ImplReturn | Value:
+    def _make_stfv(val: Value, runtime_result: Value) -> Value:
+        args = _extract_getitem_type_args(b, ctx)
+        if args is None:
+            return runtime_result
+        type_result = type_from_subscripted_value(
+            val, args, visitor=ctx.visitor, node=ctx.node
+        )
+        return SyntheticTypeFormValue(type_result, runtime_result, ctx.node)
+
+    def inner(
+        val: SimpleType | SyntheticTypeFormValue, original_val: Value
+    ) -> ImplReturn | Value:
         match val:
+            case SyntheticTypeFormValue(
+                inner_type=inner_type, runtime_type=runtime_type
+            ):
+                runtime_result_or_ret = call_on_simple(
+                    inner, runtime_type, ctx, except_types=(SyntheticTypeFormValue,)
+                )
+                if isinstance(runtime_result_or_ret, ImplReturn):
+                    runtime_result = runtime_result_or_ret.return_value
+                else:
+                    runtime_result = runtime_result_or_ret
+                result = _make_stfv(inner_type, runtime_result)
+                if isinstance(runtime_result_or_ret, ImplReturn):
+                    return ImplReturn(
+                        result,
+                        runtime_result_or_ret.constraint,
+                        runtime_result_or_ret.no_return_unless,
+                    )
+                else:
+                    return result
             case AnyValue():
                 return AnyValue(AnySource.from_another)
             case KnownValue(val=value) if value is type:
@@ -305,13 +340,7 @@ def _getitem_impl(ctx: CallContext) -> ImplReturn | Value:
                 if args is None:
                     return runtime_result
                 type_result = type_from_subscripted_value(
-                    val,
-                    args,
-                    Context(
-                        can_assign_ctx=ctx.visitor,
-                        self_key=ctx.visitor.current_class_key,
-                        visitor=ctx.visitor,
-                    ),
+                    val, args, visitor=ctx.visitor, node=ctx.node
                 )
                 return SyntheticTypeFormValue(type_result, runtime_result, ctx.node)
             case SubclassValue():
@@ -341,7 +370,7 @@ def _getitem_impl(ctx: CallContext) -> ImplReturn | Value:
             case _:
                 assert_never(val)
 
-    return call_on_simple(inner, a, ctx)
+    return call_on_simple(inner, a, ctx, except_types=(SyntheticTypeFormValue,))
 
 
 def _issubclass_impl(ctx: CallContext) -> Value:

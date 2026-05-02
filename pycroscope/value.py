@@ -4051,6 +4051,24 @@ def replace_fallback(val: Value) -> BasicType:
     return val
 
 
+ValueT = TypeVar("ValueT", bound=Value)
+
+
+def replace_fallback_except(
+    val: Value, except_types: tuple[type[ValueT], ...] = ()
+) -> BasicType | ValueT:
+    while True:
+        if isinstance(val, except_types):
+            return val
+        fallback = val.get_fallback_value()
+        if fallback is None:
+            break
+        val = fallback
+    if not isinstance(val, BASIC_TYPE):
+        raise NotAGradualType(f"Encountered non-basic type {val!r}")
+    return val
+
+
 def is_union(val: Value) -> bool:
     return isinstance(val, MultiValuedValue) or (
         isinstance(val, AnnotatedValue) and isinstance(val.value, MultiValuedValue)

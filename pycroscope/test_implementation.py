@@ -2419,6 +2419,7 @@ class TestOperatorGetItem(TestNameCheckVisitorBase):
     def test_known_as_type(self):
         import types
         from operator import getitem
+        from typing import TypeVar
         from unittest.mock import ANY
 
         from pycroscope.value import (
@@ -2428,9 +2429,14 @@ class TestOperatorGetItem(TestNameCheckVisitorBase):
             assert_is_value,
         )
 
+        T = TypeVar("T")
+
         stfv = SyntheticTypeFormValue(
             GenericValue(list, [TypedValue(int)]), TypedValue(types.GenericAlias), ANY
         )
 
         def capybara(i: int) -> None:
             assert_is_value(getitem(list, int), stfv)
+
+            stfv1 = getitem(list, T)
+            assert_is_value(getitem(stfv1, int), stfv)
