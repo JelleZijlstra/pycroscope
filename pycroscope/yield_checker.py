@@ -131,7 +131,7 @@ class VarnameGenerator:
 
     def _get_candidate(self, node: ast.AST) -> str:
         if isinstance(node, ast.Name):
-            camel_cased = _camel_case_to_snake_case(node.id)
+            camel_cased = camel_case_to_snake_case(node.id)
             if camel_cased != node.id:
                 return camel_cased
             else:
@@ -655,7 +655,7 @@ class YieldChecker:
         return is_async_fn(obj)
 
 
-def _camel_case_to_snake_case(s: str) -> str:
+def camel_case_to_snake_case(s: str) -> str:
     """Converts a CamelCase string to snake_case."""
     out: list[str] = []
     last_was_uppercase = False

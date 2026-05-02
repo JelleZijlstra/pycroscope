@@ -8,7 +8,7 @@ import types
 from typing_extensions import assert_type
 
 from . import test_node_visitor
-from .analysis_lib import make_module
+from .analysis_lib import make_module as make_module_with_scope
 from .attributes import ClassAttributeTransformer
 from .checker import Checker
 from .error_code import DISABLED_IN_TESTS, ErrorCode
@@ -114,7 +114,7 @@ class TestNameCheckVisitorBase(test_node_visitor.BaseNodeVisitorTester):
                 "allow_runtime_module_load_failure"
             )
         try:
-            module = _make_module(textwrap.dedent(code_str))
+            module = make_module(textwrap.dedent(code_str))
         except Exception as exc:
             raise AssertionError(
                 "run_in_both_module_modes could not execute importable mode: "
@@ -163,7 +163,7 @@ class TestNameCheckVisitorBase(test_node_visitor.BaseNodeVisitorTester):
             mod = None
         else:
             try:
-                mod = _make_module(code_str)
+                mod = make_module(code_str)
             except Exception:
                 if not allow_runtime_module_load_failure:
                     raise
@@ -202,13 +202,13 @@ class TestAnnotatingNodeVisitor(test_node_visitor.BaseNodeVisitorTester):
 
     def _run_tree(self, code_str, tree, **kwargs):
         """Runs the visitor on this tree."""
-        kwargs["module"] = _make_module(code_str)
+        kwargs["module"] = make_module(code_str)
         return super(TestAnnotatingNodeVisitor, self)._run_tree(
             code_str, tree, **kwargs
         )
 
 
-def _make_module(code_str: str) -> types.ModuleType:
+def make_module(code_str: str) -> types.ModuleType:
     """Creates a Python module with the given code."""
     # make helpers for value inference checking available to all tests
     extra_scope = dict(
@@ -241,7 +241,7 @@ def _make_module(code_str: str) -> types.ModuleType:
         UNINITIALIZED_VALUE=UNINITIALIZED_VALUE,
         NO_RETURN_VALUE=NO_RETURN_VALUE,
     )
-    return make_module(code_str, extra_scope)
+    return make_module_with_scope(code_str, extra_scope)
 
 
 def _make_checked_visitor(
@@ -249,7 +249,7 @@ def _make_checked_visitor(
 ) -> tuple[ConfiguredNameCheckVisitor, ast.Module]:
     code_str = textwrap.dedent(code_str)
     tree = ast.parse(code_str)
-    module = _make_module(code_str)
+    module = make_module(code_str)
     settings = {code: code not in DISABLED_IN_TESTS for code in ErrorCode}
     kwargs = ConfiguredNameCheckVisitor.prepare_constructor_kwargs(
         {"settings": settings}
@@ -2301,7 +2301,7 @@ class TestClassAttributeChecker(TestNameCheckVisitorBase):
             type[Any].__name__
             """)
         tree = ast.parse(code, "<test input>")
-        module = _make_module(code)
+        module = make_module(code)
         settings = {code: code not in DISABLED_IN_TESTS for code in ErrorCode}
         kwargs = self.visitor_cls.prepare_constructor_kwargs({"settings": settings})
         with ClassAttributeChecker(
@@ -2471,7 +2471,7 @@ class TestClassAttributeChecker(TestNameCheckVisitorBase):
 
         code = textwrap.dedent(code)
         tree = ast.parse(code, "<test input>")
-        module = _make_module(code)
+        module = make_module(code)
         settings = {code: code not in DISABLED_IN_TESTS for code in ErrorCode}
         kwargs = self.visitor_cls.prepare_constructor_kwargs(
             {"settings": settings},

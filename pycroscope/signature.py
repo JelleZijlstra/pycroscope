@@ -119,18 +119,18 @@ from .value import (
     UpperBound,
     Value,
     Variance,
-    _iter_typevar_map_items,
-    _typevar_map_from_varlike_pairs,
     annotate_value,
     concrete_values_from_iterable,
     flatten_values,
     get_tv_map,
     intersect_bounds_maps,
     iter_type_params_in_value,
+    iter_typevar_map_items,
     make_inference_typevar_map,
     replace_fallback,
     replace_known_sequence_value,
     stringify_object,
+    typevar_map_from_varlike_pairs,
     unannotate,
     unannotate_value,
     unify_bounds_maps,
@@ -320,10 +320,10 @@ def _get_constructor_literal_runtime_type(bounds: Sequence[Bound]) -> type | Non
     return None
 
 
-def _promote_constructor_type_arg(value: Value) -> Value:
+def promote_constructor_type_arg(value: Value) -> Value:
     if isinstance(value, MultiValuedValue):
         return unite_values(
-            *[_promote_constructor_type_arg(subval) for subval in value.vals]
+            *[promote_constructor_type_arg(subval) for subval in value.vals]
         )
     if isinstance(value, TypedValue):
         if value.typ is float:
@@ -337,14 +337,14 @@ def _widen_constructor_typevar_solution(
     value: Value, *, literal_runtime_type: type | None = None
 ) -> Value:
     if literal_runtime_type is not None:
-        return _promote_constructor_type_arg(TypedValue(literal_runtime_type))
+        return promote_constructor_type_arg(TypedValue(literal_runtime_type))
     if isinstance(value, KnownValue):
-        return _promote_constructor_type_arg(TypedValue(type(value.val)))
+        return promote_constructor_type_arg(TypedValue(type(value.val)))
     if isinstance(value, MultiValuedValue):
         return unite_values(
             *[_widen_constructor_typevar_solution(subval) for subval in value.vals]
         )
-    return _promote_constructor_type_arg(value)
+    return promote_constructor_type_arg(value)
 
 
 class MaximumPositionalArgs(IntegerOption):
@@ -885,7 +885,7 @@ class Signature:
         for constraint_values in itertools.product(
             *(constrained_typevars[typevar] for typevar in typevars)
         ):
-            typevar_map = _typevar_map_from_varlike_pairs(
+            typevar_map = typevar_map_from_varlike_pairs(
                 zip(typevars, constraint_values)
             )
             signature = self.substitute_typevars(typevar_map)
@@ -1540,7 +1540,7 @@ class Signature:
     def get_default_return(self, source: AnySource = AnySource.error) -> CallReturn:
         return_value = self.return_value
         if self._return_key in self.typevars_of_params:
-            typevar_values = _typevar_map_from_varlike_pairs(
+            typevar_values = typevar_map_from_varlike_pairs(
                 (tv, AnyValue(source)) for tv in self.all_typevars
             )
             return_value = return_value.substitute_typevars(typevar_values)
@@ -1698,7 +1698,7 @@ class Signature:
                 )
                 if isinstance(param_tv_map, CanAssignError):
                     continue
-                for typevar, value in _iter_typevar_map_items(param_tv_map):
+                for typevar, value in iter_typevar_map_items(param_tv_map):
                     if isinstance(
                         typevar, TypeVarTupleParam
                     ) and _is_placeholder_typevartuple_solution(
@@ -1717,7 +1717,7 @@ class Signature:
                 )
             )
             if should_widen_constructor_typevars:
-                typevar_values = _typevar_map_from_varlike_pairs(
+                typevar_values = typevar_map_from_varlike_pairs(
                     (
                         typevar,
                         (
@@ -1731,7 +1731,7 @@ class Signature:
                             else value
                         ),
                     )
-                    for typevar, value in _iter_typevar_map_items(typevar_values)
+                    for typevar, value in iter_typevar_map_items(typevar_values)
                 )
             if errors:
                 self.show_call_error(
@@ -2197,7 +2197,7 @@ class Signature:
         else:
             solved_typevars = {
                 typevar
-                for typevar, value in _iter_typevar_map_items(typevars)
+                for typevar, value in iter_typevar_map_items(typevars)
                 if not _is_identity_typevar_solution(typevar, value)
             }
             inferable_typevars = {
@@ -2420,7 +2420,7 @@ class Signature:
         )
         solved_typevars = {
             typevar
-            for typevar, value in _iter_typevar_map_items(tv_map)
+            for typevar, value in iter_typevar_map_items(tv_map)
             if not _is_identity_typevar_solution(typevar, value)
         }
         remaining_param_typevars = {

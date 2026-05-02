@@ -421,7 +421,7 @@ class SyntheticEvaluator(type_evaluation.Evaluator):
         return cls(
             node,
             return_annotation,
-            _DefaultContext(
+            DefaultContext(
                 self_key=visitor.current_class_key,
                 visitor=visitor,
                 node=node,
@@ -449,7 +449,7 @@ def type_from_ast(
 
     """
     if ctx is None:
-        ctx = _DefaultContext(visitor=visitor, node=ast_node)
+        ctx = DefaultContext(visitor=visitor, node=ast_node)
     return _type_from_ast(ast_node, ctx)
 
 
@@ -463,7 +463,7 @@ def annotation_expr_from_ast(
     """Given an AST node representing an annotation, return a
     ``AnnotationExpr``."""
     if ctx is None:
-        ctx = _DefaultContext(visitor=visitor, node=ast_node)
+        ctx = DefaultContext(visitor=visitor, node=ast_node)
     if suppress_errors:
         with ctx.suppress_errors():
             return _annotation_expr_from_ast(ast_node, ctx)
@@ -538,7 +538,7 @@ def type_from_runtime(
     """
 
     if ctx is None:
-        ctx = _DefaultContext(visitor=visitor, node=node, globals=globals)
+        ctx = DefaultContext(visitor=visitor, node=node, globals=globals)
     if suppress_errors and allow_undefined_names:
         with ctx.suppress_errors():
             with ctx.allow_undefined_names():
@@ -563,7 +563,7 @@ def annotation_expr_from_runtime(
     allow_undefined_names: bool = False,
 ) -> AnnotationExpr:
     if ctx is None:
-        ctx = _DefaultContext(visitor=visitor, node=node, globals=globals)
+        ctx = DefaultContext(visitor=visitor, node=node, globals=globals)
     if suppress_errors and allow_undefined_names:
         with ctx.suppress_errors():
             with ctx.allow_undefined_names():
@@ -606,7 +606,7 @@ def type_from_value(
 
     """
     if ctx is None:
-        ctx = _DefaultContext(visitor=visitor, node=node)
+        ctx = DefaultContext(visitor=visitor, node=node)
     if suppress_errors and allow_undefined_names:
         with ctx.suppress_errors():
             with ctx.allow_undefined_names():
@@ -628,7 +628,7 @@ def type_from_subscripted_value(
     ctx: Context | None = None,
 ) -> Value:
     if ctx is None:
-        ctx = _DefaultContext(visitor=visitor, node=node)
+        ctx = DefaultContext(visitor=visitor, node=node)
     return _type_from_subscripted_value(root, members, ctx)
 
 
@@ -642,7 +642,7 @@ def annotation_expr_from_value(
     allow_undefined_names: bool = False,
 ) -> AnnotationExpr:
     if ctx is None:
-        ctx = _DefaultContext(visitor=visitor, node=node)
+        ctx = DefaultContext(visitor=visitor, node=node)
     if suppress_errors and allow_undefined_names:
         with ctx.suppress_errors():
             with ctx.allow_undefined_names():
@@ -664,7 +664,7 @@ def value_from_ast(
     error_on_unrecognized: bool = True,
 ) -> Value:
     if ctx is None:
-        ctx = _DefaultContext(visitor=visitor, node=ast_node)
+        ctx = DefaultContext(visitor=visitor, node=ast_node)
     try:
         val = _Visitor(ctx).visit(ast_node)
     except _UnsupportedAnnotationExpression:
@@ -777,9 +777,12 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
             extra_keys = _annotation_expr_from_runtime(val.__extra_keys__, ctx)
         # typing_extensions 4.12
         # static analysis: ignore[value_always_true]
-        if isinstance(val, typing_extensions._TypedDictMeta) and not hasattr(
-            typing_extensions, "TypeForm"
-        ):
+        if isinstance(
+            val,
+            # static analysis: ignore[private_import]
+            typing_extensions._TypedDictMeta,
+            # static analysis: ignore[value_always_true]
+        ) and not hasattr(typing_extensions, "TypeForm"):
             if hasattr(val, "__closed__") and val.__closed__:
                 extra_keys = _annotation_expr_from_runtime(val.__extra_items__, ctx)
         else:
@@ -927,7 +930,7 @@ def make_type_param_from_value(
 ) -> TypeParam | None:
     if ctx is None:
         assert visitor is not None, "visitor must be provided if ctx is not"
-        ctx = _DefaultContext(visitor=visitor, node=node)
+        ctx = DefaultContext(visitor=visitor, node=node)
     if isinstance(value, PartialCallValue):
         runtime_val = replace_fallback(value.runtime_value)
         if isinstance(runtime_val, TypedValue):
@@ -1316,7 +1319,7 @@ def make_type_param(
 ) -> TypeParam:
     if ctx is None:
         assert visitor is not None, "visitor must be provided if ctx is not"
-        ctx = _DefaultContext(visitor=visitor, node=node)
+        ctx = DefaultContext(visitor=visitor, node=node)
     if owner is None:
         active_type_param = ctx.active_type_params.get_type_param(tv)
         if active_type_param is not None:
@@ -1727,7 +1730,7 @@ def _normalize_paramspec_generic_arg_in_context(
     return AnyValue(AnySource.error)
 
 
-def _normalize_paramspec_generic_args_in_context(
+def normalize_paramspec_generic_args_in_context(
     type_params: Sequence[TypeParam], args: Sequence[Value], ctx: Context
 ) -> list[Value]:
     if len(type_params) == 1 and isinstance(type_params[0], ParamSpecParam):
@@ -1757,7 +1760,7 @@ def _ensure_annotation_context(
 ) -> Context:
     if isinstance(ctx, Context):
         return ctx
-    return _DefaultContext(visitor=ctx, node=node)
+    return DefaultContext(visitor=ctx, node=node)
 
 
 def _normalize_paramspec_generic_arg(
@@ -1772,13 +1775,13 @@ def _normalize_paramspec_generic_arg(
     )
 
 
-def _normalize_paramspec_generic_args(
+def normalize_paramspec_generic_args(
     type_params: Sequence[TypeParam],
     args: Sequence[Value],
     ctx: Context | CanAssignContext,
     node: ast.AST | None = None,
 ) -> list[Value]:
-    return _normalize_paramspec_generic_args_in_context(
+    return normalize_paramspec_generic_args_in_context(
         type_params, args, ctx=_ensure_annotation_context(ctx, node)
     )
 
@@ -2465,7 +2468,7 @@ def _type_from_subscripted_value(
     if isinstance(root, SyntheticTypeFormValue) and isinstance(
         root.inner_type, TypeAliasValue
     ):
-        return _specialize_type_alias_value(root.inner_type, members, ctx)
+        return specialize_type_alias_value(root.inner_type, members, ctx)
 
     if isinstance(root, AnnotatedValue):
         self_owner = next(root.get_metadata_of_type(SelfOwnerExtension), None)
@@ -2526,7 +2529,7 @@ def _type_from_subscripted_value(
             return AnyValue(AnySource.error)
         if typed_members is not None:
             if root_type_params is not None:
-                typed_members = _normalize_paramspec_generic_args(
+                typed_members = normalize_paramspec_generic_args(
                     root_type_params, typed_members, ctx
                 )
             if is_typing_name(root.typ, "Generic") or is_typing_name(
@@ -2554,7 +2557,7 @@ def _type_from_subscripted_value(
                 _type_from_value_type_alias_arg(member, root_type_params[0], ctx)
                 for member in members
             ]
-            typed_members = _normalize_paramspec_generic_args(
+            typed_members = normalize_paramspec_generic_args(
                 root_type_params, typed_members, ctx
             )
             return GenericValue(root.typ, typed_members)
@@ -2603,7 +2606,7 @@ def _type_from_subscripted_value(
             ):
                 return AnyValue(AnySource.error)
             typed_members = [_type_from_value(elt, ctx) for elt in members]
-        typed_members = _normalize_paramspec_generic_args(
+        typed_members = normalize_paramspec_generic_args(
             typed_dict_type_params, typed_members, ctx
         )
         substitutions = TypeVarMap()
@@ -2643,7 +2646,7 @@ def _type_from_subscripted_value(
             ):
                 return AnyValue(AnySource.error)
             typed_members = [_type_from_value(elt, ctx) for elt in members]
-        typed_members = _normalize_paramspec_generic_args(
+        typed_members = normalize_paramspec_generic_args(
             synthetic_type_params, typed_members, ctx
         )
         return GenericValue(
@@ -2679,14 +2682,14 @@ def _type_from_subscripted_value(
             ):
                 return AnyValue(AnySource.error)
             typed_members = [_type_from_value(elt, ctx) for elt in members]
-        typed_members = _normalize_paramspec_generic_args(
+        typed_members = normalize_paramspec_generic_args(
             synthetic_type_params_for_str, typed_members, ctx
         )
         return GenericValue(
             synthetic_typ, _canonicalize_generic_args_for_value(typed_members)
         )
     if isinstance(root, TypeAliasValue):
-        return _specialize_type_alias_value(root, members, ctx)
+        return specialize_type_alias_value(root, members, ctx)
 
     assert isinstance(root, Value)
     if not isinstance(root, KnownValue):
@@ -2862,7 +2865,7 @@ def _type_from_subscripted_value(
             ):
                 return AnyValue(AnySource.error)
             typed_members = [_type_from_value(elt, ctx) for elt in members]
-        typed_members = _normalize_paramspec_generic_args(
+        typed_members = normalize_paramspec_generic_args(
             type_params, typed_members, ctx
         )
         return GenericValue(root, _canonicalize_generic_args_for_value(typed_members))
@@ -2924,7 +2927,7 @@ def _type_from_subscripted_value(
         return AnyValue(AnySource.error)
 
 
-def _specialize_type_alias_value(
+def specialize_type_alias_value(
     root: TypeAliasValue,
     members: Sequence[Value],
     ctx: Context,
@@ -3025,7 +3028,7 @@ def _type_alias_cache_key(key: object) -> object:
         return key
 
 
-class _DefaultContext(Context):
+class DefaultContext(Context):
     def __init__(
         self,
         *,
@@ -3609,7 +3612,7 @@ def _value_of_origin_args(
                 ):
                     return AnyValue(AnySource.error)
                 args_vals = [_type_from_runtime(val, ctx) for val in args]
-            args_vals = _normalize_paramspec_generic_args(type_params, args_vals, ctx)
+            args_vals = normalize_paramspec_generic_args(type_params, args_vals, ctx)
             return GenericValue(origin, _canonicalize_generic_args_for_value(args_vals))
         else:
             return _maybe_typed_value(origin)

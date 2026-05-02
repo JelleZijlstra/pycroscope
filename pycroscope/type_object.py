@@ -39,7 +39,7 @@ from .options import PyObjectSequenceOption
 from .relations import (
     Relation,
     RelationContext,
-    _compare_tuple_sequences,
+    compare_tuple_sequences,
     has_relation_from_ctx,
 )
 from .safe import (
@@ -107,11 +107,10 @@ from .value import (
     TypeVarValue,
     UnboundMethodValue,
     Value,
-    _iter_typevar_map_items,
-    _typevar_map_from_varlike_pairs,
     default_value_for_type_param,
     get_self_param,
     get_single_typevartuple_param,
+    iter_typevar_map_items,
     match_typevar_arguments,
     replace_fallback,
     replace_known_sequence_value,
@@ -119,6 +118,7 @@ from .value import (
     substitute_typevartuple_binding,
     tuple_members_from_value,
     type_param_to_value,
+    typevar_map_from_varlike_pairs,
     typevartuple_binding_to_generic_args,
     typevartuple_binding_to_tuple_value,
     unify_bounds_maps,
@@ -396,21 +396,21 @@ def direct_bases_from_values(
     direct_bases = [
         converted
         for base in base_values
-        for converted in type_object_builder._iter_base_type_values(
+        for converted in type_object_builder.iter_base_type_values(
             base, checker.arg_spec_cache, owner=owner
         )
-        if owner is None or _class_key_from_value(converted) != owner
+        if owner is None or class_key_from_value(converted) != owner
     ]
     return tuple(_replace_invalid_bases(direct_bases or [TypedValue(object)]))
 
 
 # TODO: this should not exist, work with the TypeObject directly instead
-def _iter_base_type_objects(
+def iter_base_type_objects(
     base_value: Value, checker: "pycroscope.checker.Checker"
 ) -> Iterator["TypeObject"]:
     import pycroscope.type_object_builder as type_object_builder
 
-    for converted in type_object_builder._iter_base_type_values(
+    for converted in type_object_builder.iter_base_type_values(
         base_value, checker.arg_spec_cache
     ):
         if isinstance(converted, AnyValue):
@@ -446,7 +446,7 @@ class MroEntry:
             result = f"~{result}"
         if self.tv_map:
             args_str = ", ".join(
-                f"{tv}={value}" for tv, value in _iter_typevar_map_items(self.tv_map)
+                f"{tv}={value}" for tv, value in iter_typevar_map_items(self.tv_map)
             )
             result += f"[{args_str}]"
         return result
@@ -598,7 +598,7 @@ class TypeObject:
 
         direct_symbols: dict[str, ClassSymbol] = {}
         if isinstance(self.typ, type):
-            type_object_builder._add_runtime_declared_symbols(self.typ, direct_symbols)
+            type_object_builder.add_runtime_declared_symbols(self.typ, direct_symbols)
         if self._virtual_symbols is not None:
             _add_synthetic_declared_symbols(self._virtual_symbols, direct_symbols)
         synthetic_symbols: Mapping[str, ClassSymbol] = (
@@ -695,7 +695,7 @@ class TypeObject:
     def _compute_is_protocol(self) -> bool:
         if isinstance(self.typ, ClassOwner):
             return any(
-                (base_key := _class_key_from_value(base_value)) is not None
+                (base_key := class_key_from_value(base_value)) is not None
                 and is_typing_name(base_key, "Protocol")
                 for base_value in self.get_direct_bases()
             )
@@ -734,7 +734,7 @@ class TypeObject:
             return tuple(records_by_name[name] for name in ordered_names)
         if isinstance(self.typ, ClassOwner):
             return ()
-        return type_object_builder._get_runtime_dataclass_fields(self.typ)
+        return type_object_builder.get_runtime_dataclass_fields(self.typ)
 
     def _has_synthetic_namedtuple_class(self) -> bool:
         if self._resolving_synthetic_namedtuple_class:
@@ -1020,7 +1020,7 @@ class TypeObject:
         namedtuple_fields = self._namedtuple_fields_from_runtime(runtime_class)
         self.set_direct_bases((TypedValue(tuple),))
         declared_symbols: dict[str, ClassSymbol] = {}
-        type_object_builder._add_runtime_declared_symbols(
+        type_object_builder.add_runtime_declared_symbols(
             runtime_class, declared_symbols
         )
         self.replace_virtual_symbols(declared_symbols)
@@ -1672,7 +1672,7 @@ class TypeObject:
             self_tuple_members = tuple_members_from_value(self_val, ctx)
             other_tuple_members = tuple_members_from_value(other_val, ctx)
             if self_tuple_members is not None and other_tuple_members is not None:
-                return _compare_tuple_sequences(
+                return compare_tuple_sequences(
                     SequenceValue(tuple, self_tuple_members),
                     SequenceValue(tuple, other_tuple_members),
                     RelationContext(relation, ctx),
@@ -2181,7 +2181,7 @@ def merge_declared_symbol(
     )
 
 
-def _class_key_from_value(value: Value) -> ClassKey | None:
+def class_key_from_value(value: Value) -> ClassKey | None:
     # This helper is intentionally a little broader than the abstraction we
     # ultimately want: many callers use it for "what class does this value point
     # at?" regardless of whether the value is itself a class object/subclass or
@@ -3063,8 +3063,8 @@ def lookup_declared_symbol_with_owner(
     return owner_tobj.typ, symbol
 
 
-def _receiver_key_from_value(value: Value) -> ClassKey | None:
-    key = _class_key_from_value(value)
+def receiver_key_from_value(value: Value) -> ClassKey | None:
+    key = class_key_from_value(value)
     if key is not None:
         return key
     narrowed = replace_fallback(value)
@@ -3073,7 +3073,7 @@ def _receiver_key_from_value(value: Value) -> ClassKey | None:
     return None
 
 
-def _is_definitely_class_object_value(value: Value) -> bool:
+def is_definitely_class_object_value(value: Value) -> bool:
     """Return whether the value definitely represents a class object.
 
     For unions, all members must be class objects.
@@ -3084,11 +3084,11 @@ def _is_definitely_class_object_value(value: Value) -> bool:
     value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):
         return bool(value.vals) and all(
-            _is_definitely_class_object_value(subval) for subval in value.vals
+            is_definitely_class_object_value(subval) for subval in value.vals
         )
     if isinstance(value, IntersectionValue):
         return bool(value.vals) and any(
-            _is_definitely_class_object_value(subval) for subval in value.vals
+            is_definitely_class_object_value(subval) for subval in value.vals
         )
     if isinstance(value, KnownValue):
         return safe_isinstance(value.val, type)
@@ -3336,7 +3336,7 @@ def _match_up_generic_params(
                 param, default_value_for_type_param(param)
             )
         return substitutions
-    return _typevar_map_from_varlike_pairs(seq)
+    return typevar_map_from_varlike_pairs(seq)
 
 
 def _entries_match(a: MroEntry, b: MroEntry) -> bool:

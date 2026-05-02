@@ -187,6 +187,7 @@ ErrorCode = ErrorRegistry(
         Error("override_does_not_override", "Method does not override any base method"),
         Error("missing_generic_parameters", "Missing type parameters for generic type"),
         Error("disallowed_import", "Disallowed import"),
+        Error("private_import", "Use of a private object from another module"),
         Error(
             "typeis_must_be_subtype",
             "TypeIs narrowed type must be a subtype of the input type",
@@ -224,6 +225,7 @@ DISABLED_IN_TESTS = {
     ErrorCode.implicit_any,
     ErrorCode.classvar_type_parameters,
     ErrorCode.invalid_literal,
+    ErrorCode.private_import,
     ErrorCode.unreachable,
 }
 

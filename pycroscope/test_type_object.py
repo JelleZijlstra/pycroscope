@@ -15,7 +15,7 @@ from .type_object import (
     AttributePolicy,
     DataclassFieldRecord,
     NamedTupleField,
-    _class_key_from_value,
+    class_key_from_value,
     lookup_declared_symbol_with_owner,
 )
 from .value import (
@@ -91,7 +91,7 @@ def test_class_key_from_subclass_generic_value() -> None:
     value = SubclassValue(
         GenericValue(class_owner_from_key("mod.Base"), [TypedValue(int)])
     )
-    assert _class_key_from_value(value) == class_owner_from_key("mod.Base")
+    assert class_key_from_value(value) == class_owner_from_key("mod.Base")
 
 
 def test_class_key_from_union_with_consistent_key() -> None:
@@ -101,7 +101,7 @@ def test_class_key_from_union_with_consistent_key() -> None:
             GenericValue(class_owner_from_key("mod.Base"), [TypedValue(int)]),
         ]
     )
-    assert _class_key_from_value(value) == class_owner_from_key("mod.Base")
+    assert class_key_from_value(value) == class_owner_from_key("mod.Base")
 
 
 def test_class_key_from_intersection_with_consistent_key() -> None:
@@ -111,16 +111,16 @@ def test_class_key_from_intersection_with_consistent_key() -> None:
             SubclassValue(TypedValue(class_owner_from_key("mod.Base"))),
         )
     )
-    assert _class_key_from_value(value) == class_owner_from_key("mod.Base")
+    assert class_key_from_value(value) == class_owner_from_key("mod.Base")
 
 
 def test_class_key_from_annotated_value() -> None:
     value = AnnotatedValue(TypedValue(class_owner_from_key("mod.Base")), ())
-    assert _class_key_from_value(value) == class_owner_from_key("mod.Base")
+    assert class_key_from_value(value) == class_owner_from_key("mod.Base")
 
 
 def test_class_key_from_known_generic_alias() -> None:
-    assert _class_key_from_value(KnownValue(list[int])) is list
+    assert class_key_from_value(KnownValue(list[int])) is list
 
 
 def test_lookup_declared_symbol_with_owner_handles_synthetic_base() -> None:

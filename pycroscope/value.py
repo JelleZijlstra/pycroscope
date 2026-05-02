@@ -405,7 +405,7 @@ def substitute_typevartuple_binding(
     return tuple(substituted_members)
 
 
-def _typevar_map_from_varlike_pairs(
+def typevar_map_from_varlike_pairs(
     pairs: Iterable[tuple["TypeParam", object]],
 ) -> TypeVarMap:
     typevars: dict[TypeVarParam, Value] = {}
@@ -434,7 +434,7 @@ def _typevar_map_from_varlike_pairs(
     )
 
 
-def _iter_typevar_map_items(
+def iter_typevar_map_items(
     typevars: TypeVarMap,
 ) -> Iterator[tuple["TypeParam", "Value"]]:
     # TODO: This kind-erased compatibility layer lets callers reconstruct the old
@@ -1590,7 +1590,7 @@ class TypeAliasValue(Value):
             if matched_type_arguments is None:
                 # TODO this should be an error
                 return AnyValue(AnySource.inference)
-            typevars = _typevar_map_from_varlike_pairs(matched_type_arguments)
+            typevars = typevar_map_from_varlike_pairs(matched_type_arguments)
             val = val.substitute_typevars(typevars)
         elif type_params:
             # Unsubscripted aliases default each unspecialized parameter.
@@ -4953,7 +4953,7 @@ _PROPERTY_LIKE = (
 )
 
 
-def _is_property_initializer(value: Value) -> bool:
+def is_property_initializer(value: Value) -> bool:
     value = replace_fallback(value)
     return (
         isinstance(value, KnownValue)

@@ -15,7 +15,7 @@ from . import tests, value
 from .checker import Checker
 from .name_check_visitor import NameCheckVisitor
 from .predicates import MaxLen, MinLen
-from .relations import _extract_type_form, intersect_values, is_subtype
+from .relations import extract_type_form, intersect_values, is_subtype
 from .signature import ELLIPSIS_PARAM, Signature
 from .stacked_scopes import Composite
 from .test_node_visitor import skip_if_not_installed
@@ -138,7 +138,7 @@ def test_extract_type_form_from_partial_value() -> None:
         members=(KnownValue(int),),
         runtime_value=AnyValue(AnySource.inference),
     )
-    extracted = _extract_type_form(partial, CTX)
+    extracted = extract_type_form(partial, CTX)
     assert extracted == TypedValue(int)
 
 

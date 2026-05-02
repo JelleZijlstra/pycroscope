@@ -34,6 +34,11 @@ def hasattr_static(obj: object, name: str) -> bool:
         return True
 
 
+def is_private_module_member_name(name: str) -> bool:
+    """Return whether a name is private by the module-member convention."""
+    return name.startswith("_") and not name.startswith("__")
+
+
 def safe_hasattr(obj: object, name: str, /) -> bool:
     """Safe version of ``hasattr()``."""
     try:
@@ -196,7 +201,14 @@ def is_union(obj: object) -> bool:
 
 
 def is_generic_alias(obj: object) -> bool:
-    return safe_isinstance(obj, (types.GenericAlias, typing._GenericAlias))
+    return safe_isinstance(
+        obj,
+        (
+            types.GenericAlias,
+            # static analysis: ignore[private_import]
+            typing._GenericAlias,
+        ),
+    )
 
 
 def is_instance_of_typing_name(obj: object, name: str) -> typing_extensions.TypeIs[Any]:

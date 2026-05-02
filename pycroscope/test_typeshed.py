@@ -50,10 +50,10 @@ from .value import (
     TypeVarParam,
     TypeVarValue,
     Value,
-    _iter_typevar_map_items,
     assert_is_value,
     class_owner_from_key,
     class_owner_from_qualname,
+    iter_typevar_map_items,
 )
 
 T = TypeVar("T")
@@ -710,7 +710,7 @@ class TestGetGenericBases:
         normalized_base = _synthetic_key(base) if isinstance(base, str) else base
         actual = self.get_generic_bases(normalized_base, args)
         cleaned = {
-            base: [value for _, value in _iter_typevar_map_items(tv_map)]
+            base: [value for _, value in iter_typevar_map_items(tv_map)]
             for base, tv_map in actual.items()
         }
         normalized_expected = expected
