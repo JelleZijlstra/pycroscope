@@ -31,7 +31,6 @@ from .annotations import (
     value_from_ast,
 )
 from .error_code import Error, ErrorCode
-from .extensions import deprecated as deprecated_decorator
 from .extensions import evaluated, overload, real_overload
 from .functions import IMPLICIT_CLASSMETHODS, translate_vararg_type
 from .options import (
@@ -40,7 +39,13 @@ from .options import (
     Options,
     PathSequenceOption,
 )
-from .safe import hasattr_static, is_typing_name, safe_getattr, safe_isinstance
+from .safe import (
+    hasattr_static,
+    is_deprecated_decorator,
+    is_typing_name,
+    safe_getattr,
+    safe_isinstance,
+)
 from .shared_options import ImportPaths
 from .signature import (
     ConcreteSignature,
@@ -1315,9 +1320,8 @@ class TypeshedFinder:
             elif decorator == KnownValue(evaluated):
                 is_evaluated = True
                 continue
-            elif (
-                isinstance(decorator, DecoratorValue)
-                and decorator.decorator is deprecated_decorator
+            elif isinstance(decorator, DecoratorValue) and is_deprecated_decorator(
+                decorator.decorator
             ):
                 arg = decorator.args[0]
                 if isinstance(arg, KnownValue) and isinstance(arg.val, str):
@@ -1547,9 +1551,8 @@ class TypeshedFinder:
     def _extract_extension_from_decorator(
         self, decorator_val: Value
     ) -> Extension | None:
-        if (
-            isinstance(decorator_val, DecoratorValue)
-            and decorator_val.decorator is deprecated_decorator
+        if isinstance(decorator_val, DecoratorValue) and is_deprecated_decorator(
+            decorator_val.decorator
         ):
             arg = decorator_val.args[0]
             if isinstance(arg, KnownValue) and isinstance(arg.val, str):

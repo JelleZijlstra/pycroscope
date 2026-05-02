@@ -85,6 +85,7 @@ from .find_unused import used
 from .functions import FunctionDefNode
 from .node_visitor import ErrorContext
 from .safe import (
+    is_deprecated_decorator,
     is_instance_of_typing_name,
     is_sentinel,
     is_typing_name,
@@ -3447,7 +3448,7 @@ class _Visitor(ast.NodeVisitor):
             )
             make_type_param_from_value(partial, ctx=self.ctx)
             return partial
-        elif is_typing_name(func.val, "deprecated") or func.val is deprecated:
+        elif is_deprecated_decorator(func.val):
             if node.keywords:
                 self.ctx.show_error(
                     "deprecated() does not accept keyword arguments", node=node
