@@ -411,7 +411,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
         class Bad2(Contra_TA[Contra_TA[Contra_TA[T_co]]]):  # E: invalid_base
             ...
 
-    @assert_passes()
+    @assert_passes(run_in_both_module_modes=True)
     def test_protocol_variance_mismatch(self):
         from typing import Protocol, TypeVar
 
@@ -423,7 +423,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
         class TakesT(Protocol[T]):  # E: invalid_protocol
             def put(self, value: T) -> None: ...
 
-    @assert_passes()
+    @assert_passes(run_in_both_module_modes=True)
     def test_protocol_explicit_variance_mismatch(self):
         from typing import Protocol, TypeVar
 
@@ -436,7 +436,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
         class BadContravariant(Protocol[T_contra]):  # E: invalid_protocol
             def get(self) -> T_contra: ...
 
-    @assert_passes()
+    @assert_passes(run_in_both_module_modes=True)
     def test_protocol_unused_typevar_is_covariant(self):
         from typing import Protocol, TypeVar
 
@@ -449,7 +449,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
         class CovariantIsOkay(Protocol[T_co]):
             def __init__(self, value: T_co) -> None: ...
 
-    @assert_passes()
+    @assert_passes(run_in_both_module_modes=True)
     def test_protocol_paramspec_is_ignored_for_variance_check(self):
         from typing import ParamSpec, Protocol, TypeVar
 
@@ -459,7 +459,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
         class Callback(Protocol[P, R]):
             def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R: ...
 
-    @assert_passes()
+    @assert_passes(run_in_both_module_modes=True)
     def test_protocol_output_only_covariant_typevar_is_valid(self):
         from typing import Protocol, TypeVar
 
@@ -468,7 +468,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
         class Reader(Protocol[T_co]):
             def get(self) -> T_co: ...
 
-    @assert_passes()
+    @assert_passes(run_in_both_module_modes=True)
     def test_protocol_mapping_value_type_can_be_covariant(self):
         from typing import Iterable, Protocol, TypeVar
 
@@ -495,6 +495,36 @@ class TestTypeVar(TestNameCheckVisitorBase):
         class GoodAliasStaticMethod(Protocol[T_contra]):
             @my_staticmethod
             def put(value: T_contra) -> None: ...
+
+    @assert_passes()
+    def test_protocol_staticmethod_participates_in_variance(self):
+        from typing import Protocol, TypeVar
+
+        T = TypeVar("T")
+        T_contra = TypeVar("T_contra", contravariant=True)
+
+        class BadStaticMethod(Protocol[T]):  # E: invalid_protocol
+            @staticmethod
+            def put(value: T) -> None: ...
+
+        class GoodStaticMethod(Protocol[T_contra]):
+            @staticmethod
+            def put(value: T_contra) -> None: ...
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_protocol_property_participates_in_variance(self):
+        from typing import Protocol, TypeVar
+
+        T = TypeVar("T")
+        T_co = TypeVar("T_co", covariant=True)
+
+        class BadReader(Protocol[T]):  # E: invalid_protocol
+            @property
+            def item(self) -> T: ...
+
+        class GoodReader(Protocol[T_co]):
+            @property
+            def item(self) -> T_co: ...
 
     @assert_passes()
     def test_typeshed(self):
@@ -1534,7 +1564,8 @@ class TestGenericClasses(TestNameCheckVisitorBase):
 
     @skip_before((3, 12))
     def test_infer_variance_from_member_annotations(self):
-        self.assert_passes("""
+        self.assert_passes(
+            """
             from typing import Iterator
 
             class C[T]:
@@ -1543,11 +1574,14 @@ class TestGenericClasses(TestNameCheckVisitorBase):
 
             x: C[float] = C[int]()
             y: C[int] = C[float]()  # E: incompatible_assignment
-        """)
+        """,
+            run_in_both_module_modes=True,
+        )
 
     @skip_before((3, 12))
     def test_infer_variance_from_generic_base(self):
-        self.assert_passes("""
+        self.assert_passes(
+            """
             from typing import Generic, TypeVar
 
             T_co = TypeVar("T_co", covariant=True)
@@ -1569,7 +1603,9 @@ class TestGenericClasses(TestNameCheckVisitorBase):
             b: ChildCo[float] = ChildCo[int]()
             c: ChildContra[int] = ChildContra[float]()
             d: ChildContra[float] = ChildContra[int]()  # E: incompatible_assignment
-        """)
+        """,
+            run_in_both_module_modes=True,
+        )
 
     @skip_before((3, 12))
     def test_infer_variance_from_inferred_variance_base(self):
@@ -1656,6 +1692,27 @@ class TestGenericClasses(TestNameCheckVisitorBase):
             r1: CallableReturnBox[int] = CallableReturnBox[float]()
             r2: CallableReturnBox[float] = CallableReturnBox[int]()  # E: incompatible_assignment
         """)
+
+    @skip_before((3, 12))
+    def test_infer_variance_from_final_callable_attributes(self):
+        self.assert_passes(
+            """
+            from typing import Callable, Final, cast
+
+            class CallbackSource[T]:
+                callback: Final[Callable[[], T]] = cast(Callable[[], T], lambda: None)
+
+            class CallbackSink[T]:
+                callback: Final[Callable[[T], None]] = cast(Callable[[T], None], lambda value: None)
+
+            source_ok: CallbackSource[object] = CallbackSource[int]()
+            source_bad: CallbackSource[int] = CallbackSource[object]()  # E: incompatible_assignment
+
+            sink_bad: CallbackSink[object] = CallbackSink[int]()  # E: incompatible_assignment
+            sink_ok: CallbackSink[int] = CallbackSink[object]()
+        """,
+            run_in_both_module_modes=True,
+        )
 
     @skip_before((3, 12))
     def test_infer_variance_ignores_bad_sequence_annotation_without_crashing(self):

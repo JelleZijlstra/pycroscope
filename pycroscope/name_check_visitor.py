@@ -243,8 +243,7 @@ from .type_object import (
 from .type_params import (
     ActiveTypeParams,
     TypeParamIdentity,
-    compose_observed_variance_polarity,
-    record_variance_polarity,
+    infer_type_param_variances_from_class_api,
 )
 from .typeshed import TypeshedFinder
 from .value import (
@@ -2942,14 +2941,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             for decorator in node.decorator_list
         ):
 
-            if isinstance(function_value, PartialCallValue) and is_equivalent(
-                function_value.callee, KnownValue(property), self
-            ):
-                getter = function_value.arguments.get(
-                    "fget", AnyValue(AnySource.inference)
-                )
-            else:
-                getter = AnyValue(AnySource.inference)
+            getter = self._undecorated_function_value(info)
             fget = info.get_symbol(getter, deprecation_message)
             self._set_complete_synthetic_class_symbol(
                 node.name,
@@ -2971,20 +2963,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 setter_target_name = decorator.value.id
                 break
         if setter_target_name is None:
-            function_decorators = self._synthetic_method_symbol_flags(node)
             self._set_complete_synthetic_class_symbol(
                 node.name,
                 initializer=function_value,
                 node=node,
                 is_instance_only=False,
                 is_method=True,
-                function_decorators=function_decorators,
+                function_decorators=info.decorator_kinds,
                 deprecation_message=deprecation_message,
             )
             return
 
         mangled_target = _mangle_class_attribute_name(class_name, setter_target_name)
-        fset = info.get_symbol(function_value, deprecation_message)
+        fset = info.get_symbol(
+            self._undecorated_function_value(info), deprecation_message
+        )
         existing = synthetic_type.get_declared_symbol(mangled_target)
         existing_property_info = (
             existing.property_info if existing is not None else None
@@ -3008,6 +3001,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 fset=fset,
             ),
         )
+
+    def _undecorated_function_value(self, info: FunctionInfo) -> Value:
+        return compute_value_of_function(replace(info, decorators=[]), self)
 
     def _deprecation_message_from_value(self, value: Value) -> str | None:
         value = replace_fallback(value)
@@ -3731,16 +3727,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 class_scope_object if isinstance(class_scope_object, type) else None
             )
             is_protocol_class = self._is_protocol_class(base_values, class_scope_object)
-            class_type_param_polarities: dict[object, set[int]] = {}
-            if not is_protocol_class:
-                for base_variance_info in base_type_param_variance_infos:
-                    if base_variance_info.is_variance_declaration_base:
-                        continue
-                    self._merge_type_param_polarities(
-                        class_type_param_polarities,
-                        base_variance_info.type_param_polarities,
-                        polarity=1,
-                    )
             effective_type_param_values = (
                 type_param_values
                 if type_param_values
@@ -3844,6 +3830,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                     for base in base_values_for_registration
                 ]
+            variance_declaration_base_indexes = frozenset(
+                i
+                for i, base_info in enumerate(base_type_param_variance_infos)
+                if base_info.is_variance_declaration_base
+            )
             if should_register_generic_bases:
                 self.checker.register_synthetic_type_bases(
                     generic_class_key,
@@ -3880,24 +3871,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ),
                 override(self, "current_namedtuple_info", namedtuple_info),
                 self.active_type_params.push_class_type_params(class_scope_type_params),
-                self.active_type_params.push_class_type_param_variance_collection(
-                    class_type_param_polarities, is_protocol_class=is_protocol_class
-                ),
             ):
                 value, class_scope_values = self._visit_class_and_get_value(
                     node, class_scope_object
                 )
             if synthetic_typeddict is None:
                 inferred_registration_type_params: Sequence[TypeParam] | None = None
-                if class_scope_type_params and any(
-                    _type_param_uses_infer_variance(type_param)
-                    for type_param in class_scope_type_params
-                ):
+                if class_scope_type_params:
                     inferred_registration_type_params = (
-                        self._infer_type_param_variances_from_polarities(
-                            class_scope_type_params,
-                            class_type_param_polarities,
-                            is_protocol=False,
+                        infer_type_param_variances_from_class_api(
+                            tobj,
+                            self,
+                            excluded_base_indexes=variance_declaration_base_indexes,
                         )
                     )
 
@@ -3953,11 +3938,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     base_type_param_variance_infos,
                 )
                 self._check_protocol_type_param_variances(
-                    node,
-                    declared_type_params,
-                    base_values,
-                    class_scope_object,
-                    class_type_param_polarities,
+                    node, tobj, excluded_base_indexes=variance_declaration_base_indexes
                 )
             if (
                 runtime_enum_fallback_class is not None
@@ -5383,42 +5364,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _check_protocol_type_param_variances(
         self,
         node: ast.ClassDef,
-        type_params: Sequence[TypeParam],
-        base_values: Sequence[Value],
-        class_scope_object: ClassKey | None,
-        type_param_polarities: Mapping[object, set[int]],
+        tobj: TypeObject,
+        *,
+        excluded_base_indexes: frozenset[int],
     ) -> None:
         if sys.version_info >= (3, 12) and node.type_params:
             # PEP 695 class type parameters infer variance, so explicit
             # protocol variance checks for legacy TypeVars don't apply.
             return
-        if not self._is_protocol_class(base_values, class_scope_object):
+        if not tobj.is_protocol():
             return
+        type_params = tobj.get_declared_type_params()
         if not type_params:
             return
-        if isinstance(class_scope_object, (type, ClassOwner)):
-            canonical_type_params = tuple(
-                self.checker.get_type_parameters(class_scope_object)
-            )
-            if len(canonical_type_params) == len(type_params):
-                rebound_type_params: list[TypeParam] = []
-                for declared_type_param, canonical_type_param in zip(
-                    type_params, canonical_type_params
-                ):
-                    if isinstance(declared_type_param, TypeVarParam) and isinstance(
-                        canonical_type_param, TypeVarParam
-                    ):
-                        rebound_type_params.append(
-                            replace(
-                                canonical_type_param,
-                                variance=declared_type_param.variance,
-                            )
-                        )
-                    elif type(declared_type_param) is type(canonical_type_param):
-                        rebound_type_params.append(canonical_type_param)
-                    else:
-                        rebound_type_params.append(declared_type_param)
-                type_params = tuple(rebound_type_params)
         checked_type_params = [
             type_param
             for type_param in type_params
@@ -5426,12 +5384,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ]
         if not checked_type_params:
             return
-        inferred_type_params = self._infer_type_param_variances_from_polarities(
-            checked_type_params, type_param_polarities, is_protocol=True
+        inferred_type_params = infer_type_param_variances_from_class_api(
+            tobj,
+            self,
+            excluded_base_indexes=excluded_base_indexes,
+            infer_variance_only=False,
         )
-        for declared_type_param, inferred_type_param in zip(
-            checked_type_params, inferred_type_params
-        ):
+        if inferred_type_params is None:
+            return
+        inferred_type_params_by_identity = {
+            type_param.typevar: type_param
+            for type_param in inferred_type_params
+            if isinstance(type_param, TypeVarParam)
+        }
+        for declared_type_param in checked_type_params:
+            inferred_type_param = inferred_type_params_by_identity.get(
+                declared_type_param.typevar
+            )
+            if inferred_type_param is None:
+                continue
             if declared_type_param.variance is inferred_type_param.variance:
                 continue
             type_param_name = safe_getattr(
@@ -6905,8 +6876,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if isinstance(node, ast.Lambda) or node.returns is None:
                     return_annotation = None
                 else:
-                    with self.function_return_type_param_variance_context():
-                        return_annotation = self.value_of_annotation(node.returns)
+                    return_annotation = self.value_of_annotation(node.returns)
                     if isinstance(return_annotation, InputSigValue):
                         if isinstance(return_annotation.input_sig, ParamSpecParam):
                             self.show_error(
@@ -7010,16 +6980,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def visit_FunctionDef(self, node: FunctionDefNode) -> Value:
         potential_function = self._get_potential_function(node)
-        variance_ctx: AbstractContextManager[None] = contextlib.nullcontext()
-        if (
-            self.active_type_params.current_class_type_param_polarities() is not None
-            and node.name in {"__init__", "__new__"}
-        ):
-            variance_ctx = (
-                self.active_type_params.suspend_class_type_param_variance_collection()
-            )
         with (
-            variance_ctx,
             self.compute_function_info(
                 node,
                 # If we set the current_class in the collecting phase,
@@ -8664,52 +8625,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             self.check_for_missing_generic_params(node, val)
             return val
-
-    def function_param_type_param_variance_context(
-        self, *, parameter_index: int, is_staticmethod: bool
-    ) -> AbstractContextManager[None]:
-        return self.active_type_params.function_param_type_param_variance_context(
-            parameter_index=parameter_index, is_staticmethod=is_staticmethod
-        )
-
-    def function_return_type_param_variance_context(
-        self,
-    ) -> AbstractContextManager[None]:
-        return self.active_type_params.function_return_type_param_variance_context()
-
-    def _merge_type_param_polarities(
-        self,
-        target: dict[object, set[int]],
-        local_polarities: Mapping[object, set[int]],
-        *,
-        polarity: int,
-    ) -> None:
-        for typevar, local_used_polarities in local_polarities.items():
-            target_used_polarities = target.setdefault(typevar, set())
-            for local_used_polarity in local_used_polarities:
-                record_variance_polarity(
-                    target_used_polarities,
-                    compose_observed_variance_polarity(polarity, local_used_polarity),
-                )
-
-    def _infer_type_param_variances_from_polarities(
-        self,
-        type_params: Sequence[TypeParam],
-        type_param_polarities: Mapping[object, set[int]],
-        *,
-        is_protocol: bool,
-    ) -> Sequence[TypeParam]:
-        inferred_type_params = []
-        for type_param in type_params:
-            polarities = type_param_polarities.get(type_param.typevar, set())
-            if polarities == {1} or (is_protocol and not polarities):
-                variance = Variance.COVARIANT
-            elif polarities == {-1}:
-                variance = Variance.CONTRAVARIANT
-            else:
-                variance = Variance.INVARIANT
-            inferred_type_params.append(replace(type_param, variance=variance))
-        return inferred_type_params
 
     def _is_invalid_generic_annotation_node(self, node: ast.AST) -> bool:
         target = node.value if isinstance(node, ast.Subscript) else node
@@ -11697,24 +11612,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         explicit_type_alias_assignment_value = None
-        local_type_param_polarities: dict[object, set[int]] | None = None
-        class_type_param_polarities = (
-            self.active_type_params.current_class_type_param_polarities()
-        )
-        should_collect_class_annotation_variance = (
-            class_type_param_polarities is not None
-            and self.scopes.scope_type() is ScopeType.class_scope
-            and self.current_synthetic_typeddict is None
-        )
         if self.current_synthetic_typeddict is None:
-            if should_collect_class_annotation_variance:
-                local_type_param_polarities = {}
-                with self.active_type_params.collect_variance(
-                    local_type_param_polarities, polarity=1
-                ):
-                    annotation = self._visit_annotation(node.annotation)
-            else:
-                annotation = self._visit_annotation(node.annotation)
+            annotation = self._visit_annotation(node.annotation)
             if (
                 self._is_current_class_dataclass()
                 and _is_dataclass_kw_only_marker_value(annotation)
@@ -11770,32 +11669,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and expected_type is None
             ):
                 expected_type = AnyValue(AnySource.unannotated)
-        if (
-            should_collect_class_annotation_variance
-            and local_type_param_polarities is not None
-            and class_type_param_polarities is not None
-        ):
-            if self.is_in_typeddict_definition():
-                attribute_polarity = 0
-            elif Qualifier.ClassVar in qualifiers:
-                attribute_polarity = None
-            else:
-                attribute_polarity = (
-                    1
-                    if (
-                        self.current_dataclass_info is not None
-                        and self.current_dataclass_info.frozen
-                    )
-                    or Qualifier.Final in qualifiers
-                    or Qualifier.ReadOnly in qualifiers
-                    else 0
-                )
-            if attribute_polarity is not None:
-                self._merge_type_param_polarities(
-                    class_type_param_polarities,
-                    local_type_param_polarities,
-                    polarity=attribute_polarity,
-                )
         if Qualifier.TypeAlias in qualifiers and node.value is not None:
             if isinstance(node.target, ast.Name):
                 if self._is_collecting():
@@ -12967,6 +12840,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     bound=bound,
                     constraints=tuple(constraints) if constraints is not None else (),
                     default=default if default is not None else None,
+                    variance=Variance.INFERRED,
                 )
             )
             self._check_typevar_default_constraints(typevar, node)
@@ -16743,14 +16617,6 @@ def _variance_is_compatible_with_usage(
     if variance is Variance.COVARIANT:
         return -1 not in used_polarities
     return 1 not in used_polarities
-
-
-def _type_param_uses_infer_variance(type_param: TypeParam) -> bool:
-    if not is_instance_of_typing_name(type_param.typevar, "TypeVar"):
-        return False
-    if type_param.variance is Variance.INFERRED:
-        return True
-    return bool(safe_getattr(type_param.typevar, "__infer_variance__", False))
 
 
 def is_typing_object(value: object, typing_name: str) -> bool:

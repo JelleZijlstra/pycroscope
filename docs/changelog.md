@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Infer and validate class type-parameter variance from the collected class API in both importable and static fallback analysis, including generic bases and callable member annotations.
+
 ## Version 0.4.0 (May 2, 2026)
 
 This release aims to strengthen robustness and quality, fixing many issues
