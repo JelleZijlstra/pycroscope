@@ -254,6 +254,36 @@ def _getitem_impl(ctx: CallContext) -> ImplReturn | Value:
     a = ctx.vars["a"]
     b = ctx.vars["b"]
 
+    def _try_class_and_regular_getitem(
+        val: SimpleType, is_class: bool
+    ) -> Value | ImplReturn:
+        if is_class:
+            cgi = attributes.get_attribute(
+                pycroscope.checker.CheckerAttrContext(
+                    Composite(val),
+                    "__class_getitem__",
+                    ctx.visitor.options,
+                    checker=ctx.visitor.checker,
+                )
+            )
+            if cgi is not UNINITIALIZED_VALUE:
+                return _call(cgi, [ctx.composites["b"]], ctx)
+        gi = attributes.get_attribute(
+            pycroscope.checker.CheckerAttrContext(
+                Composite(val),
+                "__getitem__",
+                ctx.visitor.options,
+                is_special_lookup=True,
+                checker=ctx.visitor.checker,
+            )
+        )
+        if gi is not UNINITIALIZED_VALUE:
+            return _call(gi, [ctx.composites["b"]], ctx)
+        ctx.show_error(
+            f"{val} is not subscriptable", ErrorCode.unsupported_operation, arg="a"
+        )
+        return AnyValue(AnySource.error)
+
     def inner(val: SimpleType, original_val: Value) -> ImplReturn | Value:
         match val:
             case AnyValue():
@@ -261,33 +291,7 @@ def _getitem_impl(ctx: CallContext) -> ImplReturn | Value:
             case KnownValue(val=val) if val is type:
                 return _generic_alias_or_stfv(type, b, ctx)
             case SubclassValue():
-                cgi = attributes.get_attribute(
-                    pycroscope.checker.CheckerAttrContext(
-                        Composite(original_val),
-                        "__class_getitem__",
-                        ctx.visitor.options,
-                        checker=ctx.visitor.checker,
-                    )
-                )
-                if cgi is not UNINITIALIZED_VALUE:
-                    return _call(cgi, [ctx.composites["b"]], ctx)
-                gi = attributes.get_attribute(
-                    pycroscope.checker.CheckerAttrContext(
-                        Composite(val),
-                        "__getitem__",
-                        ctx.visitor.options,
-                        is_special_lookup=True,
-                        checker=ctx.visitor.checker,
-                    )
-                )
-                if gi is not UNINITIALIZED_VALUE:
-                    return _call(gi, [ctx.composites["b"]], ctx)
-                ctx.show_error(
-                    f"{val} is not subscriptable",
-                    ErrorCode.unsupported_operation,
-                    arg="a",
-                )
-                return AnyValue(AnySource.error)
+                return _try_class_and_regular_getitem(val, is_class=True)
             case TypedValue(typ):
                 tobj = ctx.visitor.checker.make_type_object(typ)
                 if tobj.is_assignable_to_type(type):
@@ -329,34 +333,7 @@ def _getitem_impl(ctx: CallContext) -> ImplReturn | Value:
                 tobj = class_type.get_type_object(ctx.visitor)
                 if tobj.get_declared_type_params():
                     return _generic_alias_or_stfv(class_type.typ, b, ctx)
-
-                cgi = tobj.get_attribute(
-                    "__class_getitem__",
-                    AttributePolicy(
-                        on_class=True, receiver=original_val, visitor=ctx.visitor
-                    ),
-                )
-                if cgi is not None:
-                    return _call(
-                        cgi.value, [ctx.composites["a"], ctx.composites["b"]], ctx
-                    )
-                gi = tobj.get_attribute(
-                    "__getitem__",
-                    AttributePolicy(
-                        on_class=True,
-                        receiver=original_val,
-                        visitor=ctx.visitor,
-                        is_special_lookup=True,
-                    ),
-                )
-                if gi is not None:
-                    return _call(gi.value, [ctx.composites["b"]], ctx)
-                ctx.show_error(
-                    f"{val} is not subscriptable",
-                    ErrorCode.unsupported_operation,
-                    arg="a",
-                )
-                return AnyValue(AnySource.error)
+                return _try_class_and_regular_getitem(val, is_class=True)
             case _:
                 return AnyValue(AnySource.inference)
 

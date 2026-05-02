@@ -2192,7 +2192,7 @@ class TestSyntheticType(TestNameCheckVisitorBase):
 
         def capybara():
             operator.getitem(Good(), "hello")
-            operator.getitem(Bad(), "hello")  # E: incompatible_call
+            operator.getitem(Bad(), "hello")  # E: incompatible_argument
             operator.getitem(1, "hello")  # E: incompatible_argument
 
     @assert_passes()

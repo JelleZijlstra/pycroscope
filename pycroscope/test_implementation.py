@@ -2324,7 +2324,7 @@ class TestOperatorGetItem(TestNameCheckVisitorBase):
             assert_type(getitem(HasMeta, 1), int)
             getitem(HasMeta, "x")  # E: incompatible_argument
 
-    @assert_passes()
+    @assert_passes(run_in_both_module_modes=True)
     def test_subclass_value(self):
         from operator import getitem
 
