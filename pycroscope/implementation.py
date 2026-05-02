@@ -11,9 +11,10 @@ import typing
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import replace
 from itertools import product
-from typing import NewType, TypeVar, assert_never, cast
+from typing import NewType, TypeVar, cast
 
 import typing_extensions
+from typing_extensions import assert_never
 
 import pycroscope
 
