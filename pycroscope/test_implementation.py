@@ -2401,3 +2401,36 @@ class TestOperatorGetItem(TestNameCheckVisitorBase):
         def capybara(td: TD):
             assert_type(getitem(td, "x"), int)
             getitem(td, "y")  # E: invalid_typeddict_key
+
+    @assert_passes()
+    def test_known(self):
+        from operator import getitem
+
+        from typing_extensions import LiteralString, assert_type
+
+        def capybara(i: int) -> None:
+            assert_type(getitem("x", i), LiteralString)
+
+            # Maybe we'll infer Literal["x"] here at some point
+            assert_type(getitem("x", 0), LiteralString)
+            getitem("x", "y")  # E: incompatible_argument
+
+    @assert_passes()
+    def test_known_as_type(self):
+        import types
+        from operator import getitem
+        from unittest.mock import ANY
+
+        from pycroscope.value import (
+            GenericValue,
+            SyntheticTypeFormValue,
+            TypedValue,
+            assert_is_value,
+        )
+
+        stfv = SyntheticTypeFormValue(
+            GenericValue(list, [TypedValue(int)]), TypedValue(types.GenericAlias), ANY
+        )
+
+        def capybara(i: int) -> None:
+            assert_is_value(getitem(list, int), stfv)

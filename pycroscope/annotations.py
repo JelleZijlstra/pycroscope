@@ -1086,11 +1086,10 @@ def _show_type_param_call_error(
 def _is_assignable_type_param_component(
     expected: Value, actual: Value, ctx: Context
 ) -> bool:
-    can_assign_ctx = _get_can_assign_context(ctx)
-    if can_assign_ctx is None:
+    if ctx.can_assign_ctx is None:
         return True
     return not isinstance(
-        has_relation(expected, actual, Relation.ASSIGNABLE, can_assign_ctx),
+        has_relation(expected, actual, Relation.ASSIGNABLE, ctx.can_assign_ctx),
         CanAssignError,
     )
 
@@ -1362,12 +1361,8 @@ def add_runtime_type_param_scope(
     return result
 
 
-def _get_can_assign_context(ctx: Context) -> CanAssignContext | None:
-    return ctx.can_assign_ctx
-
-
 def _is_assignable_for_alias_arg(expected: Value, actual: Value, ctx: Context) -> bool:
-    can_assign_ctx = _get_can_assign_context(ctx)
+    can_assign_ctx = ctx.can_assign_ctx
     if can_assign_ctx is None:
         return True
 
@@ -1412,7 +1407,7 @@ def _get_generic_type_parameters_for_annotation(
         return tuple(
             make_type_param(tp, ctx=ctx, owner=typ) for tp in runtime_type_params
         )
-    can_assign_ctx = _get_can_assign_context(ctx)
+    can_assign_ctx = ctx.can_assign_ctx
     if can_assign_ctx is None:
         return ()
     return can_assign_ctx.get_type_parameters(typ)
@@ -1493,7 +1488,7 @@ def _runtime_type_alias_from_partial_value(
 ) -> TypeAliasValue | None:
     if partial_value.operation is not PartialValueOperation.SUBSCRIPT:
         return None
-    alias_value = _type_from_subscripted_value(
+    alias_value = type_from_subscripted_value(
         partial_value.root, partial_value.members, ctx
     )
     inferred_type_params = _infer_alias_type_params_from_value(alias_value)
@@ -2326,7 +2321,7 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
         return value.inner_type
     elif isinstance(value, PartialValue):
         if value.operation is PartialValueOperation.SUBSCRIPT:
-            return _type_from_subscripted_value(value.root, value.members, ctx)
+            return type_from_subscripted_value(value.root, value.members, ctx)
         if value.operation is PartialValueOperation.BITOR:
             return _type_from_bitor_value(value.root, value.members, ctx)
         return value.get_fallback_value()
@@ -2447,11 +2442,11 @@ def _annotation_expr_from_subscripted_value(
                     return AnnotationExpr(ctx, AnyValue(AnySource.error))
                 inner = _annotation_expr_from_value(members[0], ctx)
                 return inner.add_qualifier(qualifier, node)
-    val = _type_from_subscripted_value(root, members, ctx)
+    val = type_from_subscripted_value(root, members, ctx)
     return AnnotationExpr(ctx, val)
 
 
-def _type_from_subscripted_value(
+def type_from_subscripted_value(
     root: Value, members: Sequence[Value], ctx: Context
 ) -> Value:
     if isinstance(root, SyntheticTypeFormValue) and isinstance(
@@ -2463,8 +2458,8 @@ def _type_from_subscripted_value(
         self_owner = next(root.get_metadata_of_type(SelfOwnerExtension), None)
         if self_owner is not None:
             with override(ctx, "self_key", self_owner.class_key):
-                return _type_from_subscripted_value(root.value, members, ctx)
-        return _type_from_subscripted_value(root.value, members, ctx)
+                return type_from_subscripted_value(root.value, members, ctx)
+        return type_from_subscripted_value(root.value, members, ctx)
     if _is_self_annotation_value(root):
         ctx.show_error(
             "Self cannot be further subscripted",
@@ -2553,25 +2548,23 @@ def _type_from_subscripted_value(
     if isinstance(root, PartialValue):
         runtime_alias = _runtime_type_alias_from_partial_value(root, ctx)
         if runtime_alias is not None:
-            return _type_from_subscripted_value(runtime_alias, members, ctx)
+            return type_from_subscripted_value(runtime_alias, members, ctx)
         root_type = _type_from_value(root, ctx)
-        return _type_from_subscripted_value(root_type, members, ctx)
+        return type_from_subscripted_value(root_type, members, ctx)
     elif isinstance(root, MultiValuedValue):
         return unite_values(
-            *[
-                _type_from_subscripted_value(subval, members, ctx)
-                for subval in root.vals
-            ]
+            *[type_from_subscripted_value(subval, members, ctx) for subval in root.vals]
         )
     if (
         isinstance(root, SyntheticClassObjectValue)
         and isinstance(root.class_type, TypedDictValue)
         and root.class_key is not None
     ):
-        can_assign_ctx = _get_can_assign_context(ctx)
         typed_dict_type_params: Sequence[TypeParam] = ()
-        if can_assign_ctx is not None:
-            typed_dict_type_params = can_assign_ctx.get_type_parameters(root.class_key)
+        if ctx.can_assign_ctx is not None:
+            typed_dict_type_params = ctx.can_assign_ctx.get_type_parameters(
+                root.class_key
+            )
         packed_variadic_members = _pack_typevartuple_args_from_unpack_members(
             typed_dict_type_params, members, ctx
         )
@@ -2607,10 +2600,11 @@ def _type_from_subscripted_value(
         and type(root.class_type) is TypedValue
     ):
         synthetic_typ = root.class_type.typ
-        can_assign_ctx = _get_can_assign_context(ctx)
         synthetic_type_params: Sequence[TypeParam] = ()
-        if can_assign_ctx is not None:
-            synthetic_type_params = can_assign_ctx.get_type_parameters(synthetic_typ)
+        if ctx.can_assign_ctx is not None:
+            synthetic_type_params = ctx.can_assign_ctx.get_type_parameters(
+                synthetic_typ
+            )
         packed_variadic_members = _pack_typevartuple_args_from_unpack_members(
             synthetic_type_params, members, ctx
         )
@@ -2642,10 +2636,9 @@ def _type_from_subscripted_value(
 
     if isinstance(root, TypedValue) and isinstance(root.typ, ClassOwner):
         synthetic_typ = root.typ
-        can_assign_ctx = _get_can_assign_context(ctx)
         synthetic_type_params_for_str: Sequence[TypeParam] = ()
-        if can_assign_ctx is not None:
-            synthetic_type_params_for_str = can_assign_ctx.get_type_parameters(
+        if ctx.can_assign_ctx is not None:
+            synthetic_type_params_for_str = ctx.can_assign_ctx.get_type_parameters(
                 synthetic_typ
             )
         packed_variadic_members = _pack_typevartuple_args_from_unpack_members(
@@ -2686,7 +2679,7 @@ def _type_from_subscripted_value(
         return AnyValue(AnySource.error)
     runtime_alias = _runtime_type_alias_from_runtime_value(root.val, ctx)
     if runtime_alias is not None:
-        return _type_from_subscripted_value(runtime_alias, members, ctx)
+        return type_from_subscripted_value(runtime_alias, members, ctx)
     root = root.val
     if is_instance_of_typing_name(root, "TypeAliasType"):
         alias_object = root

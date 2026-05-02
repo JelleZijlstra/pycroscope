@@ -11,7 +11,7 @@ import typing
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import replace
 from itertools import product
-from typing import NewType, TypeVar, cast
+from typing import NewType, TypeVar, assert_never, cast
 
 import typing_extensions
 
@@ -19,9 +19,12 @@ import pycroscope
 
 from . import attributes, runtime
 from .annotations import (
+    Context,
     annotation_expr_from_value,
     is_typevarlike,
     make_type_param_from_value,
+    type_from_runtime,
+    type_from_subscripted_value,
     type_from_value,
 )
 from .error_code import Error, ErrorCode
@@ -240,9 +243,7 @@ def _generic_alias_or_stfv(base: ClassKey, args: Value, ctx: CallContext) -> Val
     return SyntheticTypeFormValue(GenericValue(base, type_forms), return_val, ctx.node)
 
 
-def _call(
-    callee: Value, args: Sequence[Value | Composite], ctx: CallContext
-) -> ImplReturn | Value:
+def _call(callee: Value, args: Sequence[Value | Composite], ctx: CallContext) -> Value:
     return ctx.visitor.check_call(
         ctx.node,
         callee,
@@ -254,9 +255,7 @@ def _getitem_impl(ctx: CallContext) -> ImplReturn | Value:
     a = ctx.vars["a"]
     b = ctx.vars["b"]
 
-    def _try_class_and_regular_getitem(
-        val: SimpleType, is_class: bool
-    ) -> Value | ImplReturn:
+    def _try_class_and_regular_getitem(val: SimpleType, is_class: bool) -> Value:
         if is_class:
             cgi = attributes.get_attribute(
                 pycroscope.checker.CheckerAttrContext(
@@ -288,8 +287,33 @@ def _getitem_impl(ctx: CallContext) -> ImplReturn | Value:
         match val:
             case AnyValue():
                 return AnyValue(AnySource.from_another)
-            case KnownValue(val=val) if val is type:
+            case KnownValue(val=value) if value is type:
                 return _generic_alias_or_stfv(type, b, ctx)
+            case KnownValue(val=value):
+                runtime_result = _try_class_and_regular_getitem(
+                    val, is_class=safe_isinstance(value, type)
+                )
+                type_version = type_from_runtime(
+                    value, ctx.visitor, suppress_errors=True
+                )
+                if (
+                    isinstance(type_version, AnyValue)
+                    and type_version.source is AnySource.error
+                ):
+                    return runtime_result
+                args = _extract_getitem_type_args(b, ctx)
+                if args is None:
+                    return runtime_result
+                type_result = type_from_subscripted_value(
+                    val,
+                    args,
+                    Context(
+                        can_assign_ctx=ctx.visitor,
+                        self_key=ctx.visitor.current_class_key,
+                        visitor=ctx.visitor,
+                    ),
+                )
+                return SyntheticTypeFormValue(type_result, runtime_result, ctx.node)
             case SubclassValue():
                 return _try_class_and_regular_getitem(val, is_class=True)
             case TypedValue(typ):
@@ -315,7 +339,7 @@ def _getitem_impl(ctx: CallContext) -> ImplReturn | Value:
                     return _generic_alias_or_stfv(class_type.typ, b, ctx)
                 return _try_class_and_regular_getitem(val, is_class=True)
             case _:
-                return AnyValue(AnySource.inference)
+                assert_never(val)
 
     return call_on_simple(inner, a, ctx)
 
