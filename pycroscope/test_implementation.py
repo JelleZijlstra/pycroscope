@@ -1,5 +1,6 @@
 # static analysis: ignore
 
+
 import pytest
 import typing_extensions
 
@@ -2346,3 +2347,57 @@ class TestOperatorGetItem(TestNameCheckVisitorBase):
 
             assert_type(getitem(cls2, 1), int)
             getitem(cls2, "x")  # E: incompatible_argument
+
+    @assert_passes()
+    def test_typed(self):
+        from operator import getitem
+
+        from typing_extensions import assert_type
+
+        class HasCGIMeta(type):
+            def __class_getitem__(cls, item: int) -> int:
+                return 42
+
+        class HasCGI:
+            def __class_getitem__(cls, item: int) -> int:
+                return 42
+
+        class HasGI:
+            def __getitem__(self, item: int) -> int:
+                return 42
+
+        def capybara(has_cgi_meta: HasCGIMeta, has_cgi: HasCGI, has_gi: HasGI):
+            assert_type(getitem(has_cgi_meta, 1), int)
+            getitem(has_cgi_meta, "x")  # E: incompatible_argument
+
+            getitem(has_cgi, 1)  # E: unsupported_operation
+
+            assert_type(getitem(has_gi, 1), int)
+            getitem(has_gi, "x")  # E: incompatible_argument
+
+    @assert_passes()
+    def test_typed_from_stdlib(self):
+        from collections.abc import Sequence
+        from operator import getitem
+
+        from typing_extensions import assert_type
+
+        def capybara(li: list[int], dsi: dict[str, int], seq: Sequence[int]):
+            assert_type(getitem(li, 0), int)
+            assert_type(getitem(li, slice(None)), list[int])
+            assert_type(getitem(dsi, "key"), int)
+            assert_type(getitem(seq, 0), int)
+            assert_type(getitem(seq, slice(None)), Sequence[int])
+
+    @assert_passes()
+    def test_typeddict(self):
+        from operator import getitem
+
+        from typing_extensions import TypedDict, assert_type
+
+        class TD(TypedDict):
+            x: int
+
+        def capybara(td: TD):
+            assert_type(getitem(td, "x"), int)
+            getitem(td, "y")  # E: invalid_typeddict_key

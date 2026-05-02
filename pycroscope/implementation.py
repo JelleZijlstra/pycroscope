@@ -288,6 +288,31 @@ def _getitem_impl(ctx: CallContext) -> ImplReturn | Value:
                     arg="a",
                 )
                 return AnyValue(AnySource.error)
+            case TypedValue(typ):
+                tobj = ctx.visitor.checker.make_type_object(typ)
+                if tobj.is_assignable_to_type(type):
+                    cgi = tobj.get_attribute(
+                        "__class_getitem__",
+                        AttributePolicy(receiver=original_val, visitor=ctx.visitor),
+                    )
+                    if cgi is not None:
+                        return _call(cgi.value, [ctx.composites["b"]], ctx)
+                gi = tobj.get_attribute(
+                    "__getitem__",
+                    AttributePolicy(
+                        receiver=original_val,
+                        visitor=ctx.visitor,
+                        is_special_lookup=True,
+                    ),
+                )
+                if gi is not None:
+                    return _call(gi.value, [ctx.composites["b"]], ctx)
+                ctx.show_error(
+                    f"{val} is not subscriptable",
+                    ErrorCode.unsupported_operation,
+                    arg="a",
+                )
+                return AnyValue(AnySource.error)
             case (
                 SyntheticModuleValue()
                 | TypeFormValue()
