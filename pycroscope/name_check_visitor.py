@@ -7030,11 +7030,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if isinstance(node, ast.Lambda)
                 else self._check_function_self_usage(info)
             )
-            self._function_decorator_kinds_by_node[node] = info.decorator_kinds
+            decorator_kinds = info.decorator_kinds
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 self._function_returns_self_by_node[node] = _value_contains_self(
                     info.return_annotation
                 )
+                if node.name in IMPLICIT_CLASSMETHODS:
+                    decorator_kinds |= {FunctionDecorator.classmethod}
+            self._function_decorator_kinds_by_node[node] = decorator_kinds
             self.yield_checker.reset_yield_checks()
 
             direct_dataclass_transform_info: DataclassTransformInfo | None = None

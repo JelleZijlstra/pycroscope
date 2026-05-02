@@ -1,4 +1,6 @@
 # static analysis: ignore
+
+
 import pytest
 import typing_extensions
 
@@ -2245,3 +2247,196 @@ class TestRegex(TestNameCheckVisitorBase):
             f(bad)  # E: invalid_regex
             f(1)
             f(unannotated)
+
+
+class TestOperatorGetItem(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_type(self):
+        from operator import getitem
+        from types import GenericAlias
+        from unittest.mock import ANY
+
+        from typing_extensions import Literal, assert_type
+
+        from pycroscope.value import (
+            GenericValue,
+            KnownValue,
+            SyntheticTypeFormValue,
+            assert_is_value,
+        )
+
+        type_1 = GenericAlias(type, (1,))
+        stfv = SyntheticTypeFormValue(
+            GenericValue(type, [TypedValue(int)]), KnownValue(type[int]), ANY
+        )
+
+        def capybara(x):
+            assert_type(getitem(type, x), GenericAlias)
+            assert_type(getitem(type, 1), Literal[type_1])  # E: invalid_annotation
+            assert_is_value(getitem(type, int), stfv)
+
+    @assert_passes()
+    def test_synthetic_class(self):
+        from operator import getitem
+        from typing import Any, Generic, TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        def capybara(obj):
+            class Bare:
+                pass
+
+            getitem(Bare, 1)  # E: unsupported_operation
+
+            class Gen(Generic[T]):
+                pass
+
+            getitem(Gen, 1)  # E: invalid_annotation
+            x: getitem(Gen, int) = obj
+            assert_type(x, Gen[int])
+            y: Gen = x  # E: missing_generic_parameters
+            assert_type(y, Gen[Any])
+
+            class HasCGI:
+                def __class_getitem__(cls, item: int) -> int:
+                    return 42
+
+            assert_type(getitem(HasCGI, 1), int)
+            getitem(HasCGI, "x")  # E: incompatible_argument
+
+            class HasGI:
+                def __getitem__(self, item: int) -> int:
+                    return 42
+
+            # TODO: this errors for the wrong reason, we bind it wrong.
+            # Should be unsupported_operation.
+            getitem(HasGI, 1)  # E: incompatible_call
+
+            class Meta(type):
+                def __getitem__(self, item: int) -> int:
+                    return 42
+
+            class HasMeta(metaclass=Meta):
+                pass
+
+            assert_type(getitem(HasMeta, 1), int)
+            getitem(HasMeta, "x")  # E: incompatible_argument
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_subclass_value(self):
+        from operator import getitem
+
+        from typing_extensions import assert_type
+
+        class HasCGI:
+            def __class_getitem__(cls, item: int) -> int:
+                return 42
+
+        class Meta(type):
+            def __getitem__(self, item: int) -> int:
+                return 42
+
+        class HasMeta(metaclass=Meta):
+            pass
+
+        def capybara(cls: type[HasCGI], cls2: type[HasMeta]):
+            assert_type(getitem(cls, 1), int)
+            getitem(cls, "x")  # E: incompatible_argument
+
+            assert_type(getitem(cls2, 1), int)
+            getitem(cls2, "x")  # E: incompatible_argument
+
+    @assert_passes()
+    def test_typed(self):
+        from operator import getitem
+
+        from typing_extensions import assert_type
+
+        class HasCGIMeta(type):
+            def __class_getitem__(cls, item: int) -> int:
+                return 42
+
+        class HasCGI:
+            def __class_getitem__(cls, item: int) -> int:
+                return 42
+
+        class HasGI:
+            def __getitem__(self, item: int) -> int:
+                return 42
+
+        def capybara(has_cgi_meta: HasCGIMeta, has_cgi: HasCGI, has_gi: HasGI):
+            assert_type(getitem(has_cgi_meta, 1), int)
+            getitem(has_cgi_meta, "x")  # E: incompatible_argument
+
+            getitem(has_cgi, 1)  # E: unsupported_operation
+
+            assert_type(getitem(has_gi, 1), int)
+            getitem(has_gi, "x")  # E: incompatible_argument
+
+    @assert_passes()
+    def test_typed_from_stdlib(self):
+        from collections.abc import Sequence
+        from operator import getitem
+
+        from typing_extensions import assert_type
+
+        def capybara(li: list[int], dsi: dict[str, int], seq: Sequence[int]):
+            assert_type(getitem(li, 0), int)
+            assert_type(getitem(li, slice(None)), list[int])
+            assert_type(getitem(dsi, "key"), int)
+            assert_type(getitem(seq, 0), int)
+            assert_type(getitem(seq, slice(None)), Sequence[int])
+
+    @assert_passes()
+    def test_typeddict(self):
+        from operator import getitem
+
+        from typing_extensions import TypedDict, assert_type
+
+        class TD(TypedDict):
+            x: int
+
+        def capybara(td: TD):
+            assert_type(getitem(td, "x"), int)
+            getitem(td, "y")  # E: invalid_typeddict_key
+
+    @assert_passes()
+    def test_known(self):
+        from operator import getitem
+
+        from typing_extensions import LiteralString, assert_type
+
+        def capybara(i: int) -> None:
+            assert_type(getitem("x", i), LiteralString)
+
+            # Maybe we'll infer Literal["x"] here at some point
+            assert_type(getitem("x", 0), LiteralString)
+            getitem("x", "y")  # E: incompatible_argument
+
+    @assert_passes()
+    def test_known_as_type(self):
+        import types
+        from operator import getitem
+        from typing import TypeVar
+        from unittest.mock import ANY
+
+        from pycroscope.value import (
+            GenericValue,
+            SyntheticTypeFormValue,
+            TypedValue,
+            assert_is_value,
+        )
+
+        T = TypeVar("T")
+
+        stfv = SyntheticTypeFormValue(
+            GenericValue(list, [TypedValue(int)]), TypedValue(types.GenericAlias), ANY
+        )
+
+        def capybara(i: int) -> None:
+            assert_is_value(getitem(list, int), stfv)
+
+            stfv1 = getitem(list, T)
+            assert_is_value(getitem(stfv1, int), stfv)

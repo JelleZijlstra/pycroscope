@@ -41,6 +41,7 @@ from .relations import (
     can_assign_and_used_any,
     has_relation,
     has_relation_from_ctx,
+    intersect_multi,
 )
 from .safe import is_instance_of_typing_name, safe_getattr, safe_str
 from .stacked_scopes import (
@@ -463,6 +464,18 @@ class ImplReturn(NamedTuple):
             unite_values(*[r.return_value for r in rets]),
             OrConstraint.make([r.constraint for r in rets]),
             OrConstraint.make([r.no_return_unless for r in rets]),
+        )
+
+    @classmethod
+    def intersect_impl_rets(
+        cls, rets: Sequence["ImplReturn"], ctx: CanAssignContext
+    ) -> "ImplReturn":
+        if not rets:
+            return ImplReturn(TypedValue(object))
+        return ImplReturn(
+            intersect_multi([r.return_value for r in rets], ctx),
+            AndConstraint.make([r.constraint for r in rets]),
+            AndConstraint.make([r.no_return_unless for r in rets]),
         )
 
 

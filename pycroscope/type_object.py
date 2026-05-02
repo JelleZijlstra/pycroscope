@@ -1477,6 +1477,10 @@ class TypeObject:
                         metaclass_selected, name, policy, is_metaclass=True
                     )
 
+            # TODO: We should have "if policy.is_special_lookup: return None",
+            # but that exposes weird behaviors in dunder lookup that I am not yet prepared
+            # to disentangle.
+
         return self._get_attribute_from_selected(
             declared_selected, name, policy, is_metaclass=False
         )

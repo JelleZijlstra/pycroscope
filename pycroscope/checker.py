@@ -2767,7 +2767,7 @@ class Checker:
         return get_attribute(ctx)
 
 
-@dataclass
+@dataclass(kw_only=True)
 class CheckerAttrContext(AttrContext):
     checker: Checker = field(repr=False)
 

@@ -620,6 +620,18 @@ def type_from_value(
     return _type_from_value(value, ctx)
 
 
+def type_from_subscripted_value(
+    root: Value,
+    members: Sequence[Value],
+    visitor: CanAssignContext | None = None,
+    node: ast.AST | None = None,
+    ctx: Context | None = None,
+) -> Value:
+    if ctx is None:
+        ctx = _DefaultContext(visitor=visitor, node=node)
+    return _type_from_subscripted_value(root, members, ctx)
+
+
 def annotation_expr_from_value(
     value: Value,
     *,
@@ -1087,11 +1099,10 @@ def _show_type_param_call_error(
 def _is_assignable_type_param_component(
     expected: Value, actual: Value, ctx: Context
 ) -> bool:
-    can_assign_ctx = _get_can_assign_context(ctx)
-    if can_assign_ctx is None:
+    if ctx.can_assign_ctx is None:
         return True
     return not isinstance(
-        has_relation(expected, actual, Relation.ASSIGNABLE, can_assign_ctx),
+        has_relation(expected, actual, Relation.ASSIGNABLE, ctx.can_assign_ctx),
         CanAssignError,
     )
 
@@ -1363,12 +1374,8 @@ def add_runtime_type_param_scope(
     return result
 
 
-def _get_can_assign_context(ctx: Context) -> CanAssignContext | None:
-    return ctx.can_assign_ctx
-
-
 def _is_assignable_for_alias_arg(expected: Value, actual: Value, ctx: Context) -> bool:
-    can_assign_ctx = _get_can_assign_context(ctx)
+    can_assign_ctx = ctx.can_assign_ctx
     if can_assign_ctx is None:
         return True
 
@@ -1413,7 +1420,7 @@ def _get_generic_type_parameters_for_annotation(
         return tuple(
             make_type_param(tp, ctx=ctx, owner=typ) for tp in runtime_type_params
         )
-    can_assign_ctx = _get_can_assign_context(ctx)
+    can_assign_ctx = ctx.can_assign_ctx
     if can_assign_ctx is None:
         return ()
     return can_assign_ctx.get_type_parameters(typ)
@@ -2569,10 +2576,11 @@ def _type_from_subscripted_value(
         and isinstance(root.class_type, TypedDictValue)
         and root.class_key is not None
     ):
-        can_assign_ctx = _get_can_assign_context(ctx)
         typed_dict_type_params: Sequence[TypeParam] = ()
-        if can_assign_ctx is not None:
-            typed_dict_type_params = can_assign_ctx.get_type_parameters(root.class_key)
+        if ctx.can_assign_ctx is not None:
+            typed_dict_type_params = ctx.can_assign_ctx.get_type_parameters(
+                root.class_key
+            )
         packed_variadic_members = _pack_typevartuple_args_from_unpack_members(
             typed_dict_type_params, members, ctx
         )
@@ -2608,10 +2616,11 @@ def _type_from_subscripted_value(
         and type(root.class_type) is TypedValue
     ):
         synthetic_typ = root.class_type.typ
-        can_assign_ctx = _get_can_assign_context(ctx)
         synthetic_type_params: Sequence[TypeParam] = ()
-        if can_assign_ctx is not None:
-            synthetic_type_params = can_assign_ctx.get_type_parameters(synthetic_typ)
+        if ctx.can_assign_ctx is not None:
+            synthetic_type_params = ctx.can_assign_ctx.get_type_parameters(
+                synthetic_typ
+            )
         packed_variadic_members = _pack_typevartuple_args_from_unpack_members(
             synthetic_type_params, members, ctx
         )
@@ -2643,10 +2652,9 @@ def _type_from_subscripted_value(
 
     if isinstance(root, TypedValue) and isinstance(root.typ, ClassOwner):
         synthetic_typ = root.typ
-        can_assign_ctx = _get_can_assign_context(ctx)
         synthetic_type_params_for_str: Sequence[TypeParam] = ()
-        if can_assign_ctx is not None:
-            synthetic_type_params_for_str = can_assign_ctx.get_type_parameters(
+        if ctx.can_assign_ctx is not None:
+            synthetic_type_params_for_str = ctx.can_assign_ctx.get_type_parameters(
                 synthetic_typ
             )
         packed_variadic_members = _pack_typevartuple_args_from_unpack_members(
