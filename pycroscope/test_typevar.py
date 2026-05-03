@@ -1624,6 +1624,29 @@ class TestGenericClasses(TestNameCheckVisitorBase):
         """)
 
     @skip_before((3, 12))
+    def test_infer_variance_from_string_forward_reference_return(self):
+        self.assert_passes(
+            """
+            from typing import Iterator
+
+            class Parent[T]:
+                def __iter__(self) -> Iterator[T]:
+                    raise NotImplementedError
+
+            class Child[T](Parent[T]):
+                pass
+
+            class Factory[T]:
+                def make(self) -> "Child[T]":
+                    raise NotImplementedError
+
+            x: Factory[float] = Factory[int]()
+            y: Factory[int] = Factory[float]()  # E: incompatible_assignment
+        """,
+            run_in_both_module_modes=True,
+        )
+
+    @skip_before((3, 12))
     def test_infer_variance_mixed_input_and_output_is_invariant(self):
         self.assert_passes("""
             class Box[T]:

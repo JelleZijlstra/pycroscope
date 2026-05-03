@@ -717,6 +717,17 @@ class ActiveTypeParams:
                 return type_param
         return None
 
+    def get_type_param_by_name(self, name: str) -> TypeParam | None:
+        for scope in reversed(self._scopes):
+            seen_type_params: set[TypeParam] = set()
+            for type_param in scope.bindings.values():
+                if type_param in seen_type_params:
+                    continue
+                seen_type_params.add(type_param)
+                if safe_getattr(type_param.typevar, "__name__", None) == name:
+                    return type_param
+        return None
+
     def declare(
         self,
         type_param: TypeParam,
