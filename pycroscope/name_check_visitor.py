@@ -3830,11 +3830,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                     for base in base_values_for_registration
                 ]
-            variance_declaration_base_indexes = frozenset(
-                i
-                for i, base_info in enumerate(base_type_param_variance_infos)
-                if base_info.is_variance_declaration_base
-            )
             if should_register_generic_bases:
                 self.checker.register_synthetic_type_bases(
                     generic_class_key,
@@ -3879,11 +3874,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 inferred_registration_type_params: Sequence[TypeParam] | None = None
                 if class_scope_type_params:
                     inferred_registration_type_params = (
-                        infer_type_param_variances_from_class_api(
-                            tobj,
-                            self,
-                            excluded_base_indexes=variance_declaration_base_indexes,
-                        )
+                        infer_type_param_variances_from_class_api(tobj, self)
                     )
 
                 if inferred_registration_type_params is not None:
@@ -3937,9 +3928,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     class_scope_object,
                     base_type_param_variance_infos,
                 )
-                self._check_protocol_type_param_variances(
-                    node, tobj, excluded_base_indexes=variance_declaration_base_indexes
-                )
+                self._check_protocol_type_param_variances(node, tobj)
             if (
                 runtime_enum_fallback_class is not None
                 and class_scope_values is not None
@@ -5362,11 +5351,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return value
 
     def _check_protocol_type_param_variances(
-        self,
-        node: ast.ClassDef,
-        tobj: TypeObject,
-        *,
-        excluded_base_indexes: frozenset[int],
+        self, node: ast.ClassDef, tobj: TypeObject
     ) -> None:
         if sys.version_info >= (3, 12) and node.type_params:
             # PEP 695 class type parameters infer variance, so explicit
@@ -5385,10 +5370,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not checked_type_params:
             return
         inferred_type_params = infer_type_param_variances_from_class_api(
-            tobj,
-            self,
-            excluded_base_indexes=excluded_base_indexes,
-            infer_variance_only=False,
+            tobj, self, infer_variance_only=False
         )
         if inferred_type_params is None:
             return
@@ -12045,7 +12027,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 symbol_qualifiers.add(Qualifier.Final)
             if (
                 self.current_tobj is not None
-                and self.current_tobj.is_frozen_dataclass()
+                and self.current_tobj.is_direct_frozen_dataclass()
             ):
                 symbol_qualifiers.add(Qualifier.ReadOnly)
             is_instance_only = False
@@ -14110,8 +14092,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         tobj, on_class = self.checker.get_type_object_for_value(
             root, self.current_class_key
         )
-        is_dataclass, dataclass_frozen = self._get_dataclass_status_for_type(tobj.typ)
-        if is_dataclass and dataclass_frozen:
+        if tobj.is_direct_frozen_dataclass():
             self._show_error_if_checking(
                 node,
                 f"Cannot {wording} attribute {node.attr} of frozen dataclass {tobj.typ}",

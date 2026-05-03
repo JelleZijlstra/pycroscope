@@ -12,7 +12,7 @@ from typing_extensions import assert_never
 
 from .analysis_lib import override
 from .error_code import Error, ErrorCode
-from .safe import is_instance_of_typing_name, safe_getattr
+from .safe import is_instance_of_typing_name, is_typing_name, safe_getattr
 from .value import (
     AnnotatedValue,
     AnyValue,
@@ -145,73 +145,44 @@ def record_variance_polarity(used_polarities: set[int], polarity: int) -> None:
         used_polarities.add(polarity)
 
 
-class Polarity(enum.Enum):
+class _Polarity(enum.Enum):
     COVARIANT = 1
     CONTRAVARIANT = -1
     INVARIANT = 0
 
-    def compose(self, other: "Polarity") -> "Polarity":
-        if self is Polarity.INVARIANT or other is Polarity.INVARIANT:
-            return Polarity.INVARIANT
+    def compose(self, other: "_Polarity") -> "_Polarity":
+        if self is _Polarity.INVARIANT or other is _Polarity.INVARIANT:
+            return _Polarity.INVARIANT
         if self is other:
-            return Polarity.COVARIANT
-        return Polarity.CONTRAVARIANT
+            return _Polarity.COVARIANT
+        return _Polarity.CONTRAVARIANT
 
-    def merge(self, other: "Polarity") -> "Polarity":
+    def merge(self, other: "_Polarity") -> "_Polarity":
         if self is other:
             return self
-        return Polarity.INVARIANT
+        return _Polarity.INVARIANT
 
 
-def polarity_from_variance(variance: Variance) -> Polarity:
+def _polarity_from_variance(variance: Variance) -> _Polarity:
     if variance is Variance.COVARIANT:
-        return Polarity.COVARIANT
+        return _Polarity.COVARIANT
     if variance is Variance.CONTRAVARIANT:
-        return Polarity.CONTRAVARIANT
-    return Polarity.INVARIANT
+        return _Polarity.CONTRAVARIANT
+    return _Polarity.INVARIANT
 
 
-def variance_from_polarity(polarity: Polarity | None, *, is_protocol: bool) -> Variance:
-    if polarity is Polarity.COVARIANT or (is_protocol and polarity is None):
+def _variance_from_polarity(
+    polarity: _Polarity | None, *, is_protocol: bool
+) -> Variance:
+    if polarity is _Polarity.COVARIANT or (is_protocol and polarity is None):
         return Variance.COVARIANT
-    if polarity is Polarity.CONTRAVARIANT:
+    if polarity is _Polarity.CONTRAVARIANT:
         return Variance.CONTRAVARIANT
     return Variance.INVARIANT
 
 
-def get_polarities_from_value(
-    value: Value,
-    type_params: Sequence[TypeParam],
-    *,
-    ctx: CanAssignContext,
-    polarity: Polarity = Polarity.COVARIANT,
-) -> dict[TypeParam, Polarity]:
-    collector = _PolarityCollector(type_params, ctx)
-    collector.collect(value, polarity)
-    return collector.polarities
-
-
-def get_polarities_from_class_symbol(
-    name: str,
-    symbol: ClassSymbol,
-    type_params: Sequence[TypeParam],
-    *,
-    ctx: CanAssignContext,
-    is_frozen_dataclass: bool,
-) -> dict[TypeParam, Polarity]:
-    collector = _PolarityCollector(type_params, ctx)
-    collector.collect_class_symbol(
-        name, symbol, is_frozen_dataclass=is_frozen_dataclass
-    )
-    return collector.polarities
-
-
 def infer_type_param_variances_from_class_api(
-    tobj: "TypeObject",
-    ctx: CanAssignContext,
-    *,
-    excluded_base_indexes: frozenset[int] = frozenset(),
-    infer_variance_only: bool = True,
+    tobj: "TypeObject", ctx: CanAssignContext, *, infer_variance_only: bool = True
 ) -> Sequence[TypeParam] | None:
     type_params = tobj.get_declared_type_params()
     inferable_type_params = tuple(
@@ -224,11 +195,11 @@ def infer_type_param_variances_from_class_api(
         return None
 
     collector = _PolarityCollector(inferable_type_params, ctx)
-    for index, base_value in enumerate(tobj.get_direct_bases()):
-        if index in excluded_base_indexes:
+    for base_value in tobj.get_direct_bases():
+        if _is_type_parameter_declaration_base(base_value):
             continue
-        collector.collect(base_value, Polarity.COVARIANT)
-    is_frozen_dataclass = tobj.is_frozen_dataclass()
+        collector.collect(base_value, _Polarity.COVARIANT)
+    is_frozen_dataclass = tobj.is_direct_frozen_dataclass()
     for name, symbol in tobj.get_declared_symbols().items():
         collector.collect_class_symbol(
             name, symbol, is_frozen_dataclass=is_frozen_dataclass
@@ -239,7 +210,7 @@ def infer_type_param_variances_from_class_api(
         (
             replace(
                 type_param,
-                variance=variance_from_polarity(
+                variance=_variance_from_polarity(
                     collector.polarities.get(type_param), is_protocol=tobj.is_protocol()
                 ),
             )
@@ -266,6 +237,18 @@ def _input_sig_value(value: Value) -> typing.Any | None:
     return None
 
 
+def _is_type_parameter_declaration_base(value: Value) -> bool:
+    if isinstance(value, GenericValue):
+        return is_typing_name(value.typ, "Generic") or is_typing_name(
+            value.typ, "Protocol"
+        )
+    if isinstance(value, TypedValue):
+        return is_typing_name(value.typ, "Generic") or is_typing_name(
+            value.typ, "Protocol"
+        )
+    return False
+
+
 class _PolarityCollector:
     def __init__(self, type_params: Sequence[TypeParam], ctx: CanAssignContext) -> None:
         self._type_params_by_identity = {
@@ -274,9 +257,9 @@ class _PolarityCollector:
             if isinstance(type_param, TypeVarParam)
         }
         self._ctx = ctx
-        self.polarities: dict[TypeParam, Polarity] = {}
+        self.polarities: dict[TypeParam, _Polarity] = {}
 
-    def record(self, type_param: TypeVarParam, polarity: Polarity) -> None:
+    def record(self, type_param: TypeVarParam, polarity: _Polarity) -> None:
         target = self._type_params_by_identity.get(type_param.typevar)
         if target is None:
             return
@@ -285,7 +268,7 @@ class _PolarityCollector:
             polarity if existing is None else existing.merge(polarity)
         )
 
-    def collect(self, value: Value, polarity: Polarity) -> None:
+    def collect(self, value: Value, polarity: _Polarity) -> None:
         if isinstance(value, TypeVarValue):
             self.record(value.typevar_param, polarity)
             return
@@ -318,7 +301,7 @@ class _PolarityCollector:
                 self.collect_generic(class_key, value.members, polarity)
             else:
                 for member in value.members:
-                    self.collect(member, Polarity.INVARIANT)
+                    self.collect(member, _Polarity.INVARIANT)
             return
 
         value = replace_fallback_except(
@@ -389,16 +372,16 @@ class _PolarityCollector:
                 return None
 
     def collect_generic(
-        self, typ: ClassKey, args: Sequence[Value], polarity: Polarity
+        self, typ: ClassKey, args: Sequence[Value], polarity: _Polarity
     ) -> None:
         declared_type_params = self._ctx.get_type_parameters(typ)
         for arg, type_param in zip(args, declared_type_params):
             self.collect(
-                arg, polarity.compose(polarity_from_variance(type_param.variance))
+                arg, polarity.compose(_polarity_from_variance(type_param.variance))
             )
 
     def collect_signature(
-        self, signature: object, polarity: Polarity, *, skip_first_parameter: bool
+        self, signature: object, polarity: _Polarity, *, skip_first_parameter: bool
     ) -> None:
         from .signature import BoundMethodSignature, OverloadedSignature, Signature
 
@@ -415,7 +398,7 @@ class _PolarityCollector:
         for index, param in enumerate(signature.parameters.values()):
             if skip_first_parameter and index == 0:
                 continue
-            self.collect(param.annotation, polarity.compose(Polarity.CONTRAVARIANT))
+            self.collect(param.annotation, polarity.compose(_Polarity.CONTRAVARIANT))
         self.collect(signature.return_value, polarity)
 
     def collect_class_symbol(
@@ -443,20 +426,20 @@ class _PolarityCollector:
             if symbol.initializer is not None:
                 signature = self._ctx.signature_from_value(symbol.initializer)
                 if signature is None:
-                    self.collect(symbol.initializer, Polarity.COVARIANT)
+                    self.collect(symbol.initializer, _Polarity.COVARIANT)
                 else:
                     self.collect_signature(
                         signature,
-                        Polarity.COVARIANT,
+                        _Polarity.COVARIANT,
                         skip_first_parameter=not symbol.is_staticmethod,
                     )
             return
         if symbol.annotation is None:
             return
         attribute_polarity = (
-            Polarity.COVARIANT
+            _Polarity.COVARIANT
             if is_frozen_dataclass or symbol.is_final or symbol.is_readonly
-            else Polarity.INVARIANT
+            else _Polarity.INVARIANT
         )
         self.collect(symbol.annotation, attribute_polarity)
 

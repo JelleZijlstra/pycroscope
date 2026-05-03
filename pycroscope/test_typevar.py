@@ -1658,6 +1658,29 @@ class TestGenericClasses(TestNameCheckVisitorBase):
         """)
 
     @skip_before((3, 12))
+    def test_infer_variance_plain_subclass_of_frozen_dataclass_is_not_frozen(self):
+        self.assert_passes(
+            """
+            from dataclasses import dataclass
+
+            @dataclass(frozen=True)
+            class Base[T]:
+                base: T
+
+            class Child[T](Base[T]):
+                child: T
+
+            def mutate(child: Child[int]) -> None:
+                child.child = 1
+                child.base = 1  # E: incompatible_assignment
+
+            x: Child[object] = Child[int](1)  # E: incompatible_assignment
+            y: Child[int] = Child[object](object())  # E: incompatible_assignment
+        """,
+            run_in_both_module_modes=True,
+        )
+
+    @skip_before((3, 12))
     def test_infer_variance_property_setter_makes_type_param_invariant(self):
         self.assert_passes("""
             class PropBox[T]:
