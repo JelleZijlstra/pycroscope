@@ -1292,10 +1292,6 @@ class TypeObject:
                     return True
         return False
 
-    def is_frozen_dataclass(self) -> bool:
-        _, frozen = self.get_dataclass_frozen_status()
-        return frozen is True
-
     def is_direct_frozen_dataclass(self) -> bool:
         if (dataclass_info := self.get_direct_dataclass_info()) is not None:
             return dataclass_info.frozen is True

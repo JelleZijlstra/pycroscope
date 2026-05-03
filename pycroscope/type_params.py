@@ -670,7 +670,6 @@ class ActiveTypeParams:
         self._legacy_policies: list[_LegacyTypeParamPolicy] = []
         self._variance_collections: list[_VarianceCollectionContext] = []
         self._variance_polarity_stack: list[int] = []
-        self._variance_is_suspended = 0
         self._variance_outside_annotations = 0
         self._subscript_arg_polarities: list[tuple[tuple[int, bool], ...]] = []
         self._scopes: list[TypeParamScope] = []
@@ -905,14 +904,6 @@ class ActiveTypeParams:
             self._variance_polarity_stack.pop()
 
     @contextlib.contextmanager
-    def suspend_variance(self) -> Generator[None]:
-        self._variance_is_suspended += 1
-        try:
-            yield
-        finally:
-            self._variance_is_suspended -= 1
-
-    @contextlib.contextmanager
     def allow_variance_outside_annotations(self) -> Generator[None]:
         self._variance_outside_annotations += 1
         try:
@@ -921,7 +912,7 @@ class ActiveTypeParams:
             self._variance_outside_annotations -= 1
 
     def has_variance_collection(self) -> bool:
-        return bool(self._variance_collections) and not self._variance_is_suspended
+        return bool(self._variance_collections)
 
     def current_variance_polarity(self, base_polarity: int) -> int:
         polarity = base_polarity
@@ -966,10 +957,6 @@ class ActiveTypeParams:
             or self._variance_collections
         ):
             return
-        if self._variance_is_suspended and not (
-            self._legacy_policies or self._has_disallowed_identities()
-        ):
-            return
         if _is_type_param_declaration_node(node):
             return
 
@@ -979,7 +966,6 @@ class ActiveTypeParams:
             if (
                 isinstance(type_param, TypeVarParam)
                 and self._variance_collections
-                and not self._variance_is_suspended
                 and (visitor.in_annotation or self._variance_outside_annotations > 0)
             ):
                 for context in self._variance_collections:
