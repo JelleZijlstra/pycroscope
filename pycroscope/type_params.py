@@ -1,36 +1,62 @@
 import ast
 import contextlib
+import enum
 import sys
+import typing
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from typing import Protocol, TypeGuard
+from typing import TYPE_CHECKING, Protocol, TypeGuard
+
+from typing_extensions import assert_never
 
 from .analysis_lib import override
 from .error_code import Error, ErrorCode
-from .safe import is_instance_of_typing_name
+from .safe import is_instance_of_typing_name, is_typing_name, safe_getattr
 from .value import (
     AnnotatedValue,
+    AnyValue,
+    CallableValue,
+    CanAssignContext,
+    ClassKey,
+    ClassSymbol,
     GenericValue,
     IntersectionValue,
+    KnownValue,
     MultiValuedValue,
+    ParamSpecArgsValue,
+    ParamSpecKwargsValue,
     ParamSpecParam,
     PartialValue,
+    PartialValueOperation,
+    PredicateValue,
     SequenceValue,
     SubclassValue,
+    SyntheticClassObjectValue,
+    SyntheticModuleValue,
+    SyntheticTypeFormValue,
+    TypedValue,
+    TypeFormValue,
     TypeParam,
     TypeParamOwner,
     TypeVarLike,
     TypeVarMap,
     TypeVarParam,
+    TypeVarTupleBindingValue,
     TypeVarTupleParam,
     TypeVarTupleValue,
     TypeVarValue,
+    UnboundMethodValue,
     Value,
+    Variance,
     get_single_typevartuple_param,
+    replace_fallback_except,
     type_param_to_value,
     with_type_param_owner,
 )
+
+if TYPE_CHECKING:
+    from .type_object import TypeObject
 
 if sys.version_info >= (3, 12):
     _TYPE_PARAM_AST_NODE_TYPES = (ast.TypeVar, ast.ParamSpec, ast.TypeVarTuple)
@@ -88,14 +114,6 @@ class TypeParamVisitor(Protocol):
         suppress_errors: bool = False,
     ) -> tuple[Value, object]: ...
 
-    def _merge_type_param_polarities(
-        self,
-        target: dict[object, set[int]],
-        local_polarities: dict[object, set[int]],
-        *,
-        polarity: int,
-    ) -> None: ...
-
     def get_type_param_from_value(self, value: Value) -> TypeParam | None: ...
 
 
@@ -125,6 +143,305 @@ def record_variance_polarity(used_polarities: set[int], polarity: int) -> None:
         used_polarities.update({-1, 1})
     else:
         used_polarities.add(polarity)
+
+
+class _Polarity(enum.Enum):
+    COVARIANT = 1
+    CONTRAVARIANT = -1
+    INVARIANT = 0
+
+    def compose(self, other: "_Polarity") -> "_Polarity":
+        if self is _Polarity.INVARIANT or other is _Polarity.INVARIANT:
+            return _Polarity.INVARIANT
+        if self is other:
+            return _Polarity.COVARIANT
+        return _Polarity.CONTRAVARIANT
+
+    def merge(self, other: "_Polarity") -> "_Polarity":
+        if self is other:
+            return self
+        return _Polarity.INVARIANT
+
+
+def _polarity_from_variance(variance: Variance) -> _Polarity:
+    if variance is Variance.COVARIANT:
+        return _Polarity.COVARIANT
+    if variance is Variance.CONTRAVARIANT:
+        return _Polarity.CONTRAVARIANT
+    return _Polarity.INVARIANT
+
+
+def _variance_from_polarity(
+    polarity: _Polarity | None, *, is_protocol: bool
+) -> Variance:
+    if polarity is _Polarity.COVARIANT or (is_protocol and polarity is None):
+        return Variance.COVARIANT
+    if polarity is _Polarity.CONTRAVARIANT:
+        return Variance.CONTRAVARIANT
+    return Variance.INVARIANT
+
+
+def infer_type_param_variances_from_class_api(
+    tobj: "TypeObject", ctx: CanAssignContext, *, infer_variance_only: bool = True
+) -> Sequence[TypeParam] | None:
+    type_params = tobj.get_declared_type_params()
+    inferable_type_params = tuple(
+        type_param
+        for type_param in type_params
+        if isinstance(type_param, TypeVarParam)
+        and (not infer_variance_only or _type_param_uses_infer_variance(type_param))
+    )
+    if not inferable_type_params:
+        return None
+
+    collector = _PolarityCollector(inferable_type_params, ctx)
+    for base_value in tobj.get_direct_bases():
+        if _is_type_parameter_declaration_base(base_value):
+            continue
+        collector.collect(base_value, _Polarity.COVARIANT)
+    is_frozen_dataclass = tobj.is_direct_frozen_dataclass()
+    for name, symbol in tobj.get_declared_symbols().items():
+        collector.collect_class_symbol(
+            name, symbol, is_frozen_dataclass=is_frozen_dataclass
+        )
+
+    inferable_type_param_set = set(inferable_type_params)
+    return tuple(
+        (
+            replace(
+                type_param,
+                variance=_variance_from_polarity(
+                    collector.polarities.get(type_param), is_protocol=tobj.is_protocol()
+                ),
+            )
+            if type_param in inferable_type_param_set
+            else type_param
+        )
+        for type_param in type_params
+    )
+
+
+def _type_param_uses_infer_variance(type_param: TypeParam) -> bool:
+    if not is_instance_of_typing_name(type_param.typevar, "TypeVar"):
+        return False
+    if type_param.variance is Variance.INFERRED:
+        return True
+    return bool(safe_getattr(type_param.typevar, "__infer_variance__", False))
+
+
+def _input_sig_value(value: Value) -> typing.Any | None:
+    from pycroscope.input_sig import InputSigValue
+
+    if isinstance(value, InputSigValue):
+        return value
+    return None
+
+
+def _is_type_parameter_declaration_base(value: Value) -> bool:
+    if isinstance(value, GenericValue):
+        return is_typing_name(value.typ, "Generic") or is_typing_name(
+            value.typ, "Protocol"
+        )
+    if isinstance(value, TypedValue):
+        return is_typing_name(value.typ, "Generic") or is_typing_name(
+            value.typ, "Protocol"
+        )
+    return False
+
+
+class _PolarityCollector:
+    def __init__(self, type_params: Sequence[TypeParam], ctx: CanAssignContext) -> None:
+        self._type_params_by_identity = {
+            type_param.typevar: type_param
+            for type_param in type_params
+            if isinstance(type_param, TypeVarParam)
+        }
+        self._ctx = ctx
+        self.polarities: dict[TypeParam, _Polarity] = {}
+
+    def record(self, type_param: TypeVarParam, polarity: _Polarity) -> None:
+        target = self._type_params_by_identity.get(type_param.typevar)
+        if target is None:
+            return
+        existing = self.polarities.get(target)
+        self.polarities[target] = (
+            polarity if existing is None else existing.merge(polarity)
+        )
+
+    def collect(self, value: Value, polarity: _Polarity) -> None:
+        if isinstance(value, TypeVarValue):
+            self.record(value.typevar_param, polarity)
+            return
+        if isinstance(value, (ParamSpecArgsValue, ParamSpecKwargsValue)):
+            return
+        if isinstance(value, TypeVarTupleBindingValue):
+            for _, member in value.binding:
+                self.collect(member, polarity)
+            return
+        if isinstance(value, TypeVarTupleValue):
+            return
+        if isinstance(value, TypeFormValue):
+            self.collect(value.inner_type, polarity)
+            return
+        if isinstance(value, SyntheticTypeFormValue):
+            self.collect(value.inner_type, polarity)
+            return
+        input_sig_value = _input_sig_value(value)
+        if input_sig_value is not None:
+            for member in input_sig_value.input_sig.walk_values():
+                if member is not input_sig_value:
+                    self.collect(member, polarity)
+            return
+        if (
+            isinstance(value, PartialValue)
+            and value.operation is PartialValueOperation.SUBSCRIPT
+        ):
+            class_key = self._class_key_from_value(value.root)
+            if class_key is not None:
+                self.collect_generic(class_key, value.members, polarity)
+            else:
+                for member in value.members:
+                    self.collect(member, _Polarity.INVARIANT)
+            return
+
+        value = replace_fallback_except(
+            value,
+            (
+                CallableValue,
+                TypeVarValue,
+                ParamSpecArgsValue,
+                ParamSpecKwargsValue,
+                TypeVarTupleBindingValue,
+                TypeVarTupleValue,
+                TypeFormValue,
+                SyntheticTypeFormValue,
+            ),
+        )
+
+        match value:
+            case TypeVarValue(typevar_param=typevar_param):
+                self.record(typevar_param, polarity)
+            case ParamSpecArgsValue() | ParamSpecKwargsValue():
+                return
+            case TypeVarTupleBindingValue(binding=binding):
+                for _, member in binding:
+                    self.collect(member, polarity)
+            case TypeVarTupleValue():
+                return
+            case TypeFormValue(inner_type=inner_type):
+                self.collect(inner_type, polarity)
+            case SyntheticTypeFormValue(inner_type=inner_type):
+                self.collect(inner_type, polarity)
+            case MultiValuedValue(vals=vals) | IntersectionValue(vals=vals):
+                for subval in vals:
+                    self.collect(subval, polarity)
+            case CallableValue(signature=signature):
+                self.collect_signature(signature, polarity, skip_first_parameter=False)
+            case GenericValue(typ=typ, args=args):
+                self.collect_generic(typ, args, polarity)
+            case SubclassValue(typ=typ):
+                self.collect(typ, polarity)
+            case (
+                AnyValue()
+                | KnownValue()
+                | SyntheticClassObjectValue()
+                | SyntheticModuleValue()
+                | UnboundMethodValue()
+                | TypedValue()
+                | PredicateValue()
+            ):
+                return
+            case _:
+                assert_never(value)
+
+    def _class_key_from_value(self, value: Value) -> ClassKey | None:
+        value = replace_fallback_except(value, (SyntheticClassObjectValue,))
+        match value:
+            case SyntheticClassObjectValue(class_type=class_type):
+                return class_type.typ
+            case GenericValue(typ=typ) | TypedValue(typ=typ):
+                return typ
+            case KnownValue(val=val):
+                origin = typing.get_origin(val)
+                if isinstance(val, type):
+                    return val
+                if isinstance(origin, type):
+                    return origin
+                return None
+            case _:
+                return None
+
+    def collect_generic(
+        self, typ: ClassKey, args: Sequence[Value], polarity: _Polarity
+    ) -> None:
+        declared_type_params = self._ctx.get_type_parameters(typ)
+        for arg, type_param in zip(args, declared_type_params):
+            self.collect(
+                arg, polarity.compose(_polarity_from_variance(type_param.variance))
+            )
+
+    def collect_signature(
+        self, signature: object, polarity: _Polarity, *, skip_first_parameter: bool
+    ) -> None:
+        from .signature import BoundMethodSignature, OverloadedSignature, Signature
+
+        if isinstance(signature, BoundMethodSignature):
+            signature = signature.signature
+        if isinstance(signature, OverloadedSignature):
+            for overload in signature.signatures:
+                self.collect_signature(
+                    overload, polarity, skip_first_parameter=skip_first_parameter
+                )
+            return
+        if not isinstance(signature, Signature):
+            return
+        for index, param in enumerate(signature.parameters.values()):
+            if skip_first_parameter and index == 0:
+                continue
+            self.collect(param.annotation, polarity.compose(_Polarity.CONTRAVARIANT))
+        self.collect(signature.return_value, polarity)
+
+    def collect_class_symbol(
+        self, name: str, symbol: ClassSymbol, *, is_frozen_dataclass: bool
+    ) -> None:
+        if symbol.is_classvar:
+            return
+        if symbol.property_info is not None:
+            if symbol.property_info.fget is not None:
+                self.collect_class_symbol(
+                    name,
+                    symbol.property_info.fget,
+                    is_frozen_dataclass=is_frozen_dataclass,
+                )
+            if symbol.property_info.fset is not None:
+                self.collect_class_symbol(
+                    name,
+                    symbol.property_info.fset,
+                    is_frozen_dataclass=is_frozen_dataclass,
+                )
+            return
+        if symbol.is_method:
+            if name in {"__init__", "__new__"}:
+                return
+            if symbol.initializer is not None:
+                signature = self._ctx.signature_from_value(symbol.initializer)
+                if signature is None:
+                    self.collect(symbol.initializer, _Polarity.COVARIANT)
+                else:
+                    self.collect_signature(
+                        signature,
+                        _Polarity.COVARIANT,
+                        skip_first_parameter=not symbol.is_staticmethod,
+                    )
+            return
+        if symbol.annotation is None:
+            return
+        attribute_polarity = (
+            _Polarity.COVARIANT
+            if is_frozen_dataclass or symbol.is_final or symbol.is_readonly
+            else _Polarity.INVARIANT
+        )
+        self.collect(symbol.annotation, attribute_polarity)
 
 
 def _is_type_param_declaration_node(node: ast.AST) -> bool:
@@ -352,10 +669,7 @@ class ActiveTypeParams:
         self._current_class_type_params: Sequence[TypeParam] | None = None
         self._legacy_policies: list[_LegacyTypeParamPolicy] = []
         self._variance_collections: list[_VarianceCollectionContext] = []
-        self._current_class_type_param_polarities: dict[object, set[int]] | None = None
-        self._current_is_protocol_class: bool = False
         self._variance_polarity_stack: list[int] = []
-        self._variance_is_suspended = 0
         self._variance_outside_annotations = 0
         self._subscript_arg_polarities: list[tuple[tuple[int, bool], ...]] = []
         self._scopes: list[TypeParamScope] = []
@@ -400,6 +714,17 @@ class ActiveTypeParams:
             type_param = scope.bindings.get(identity)
             if type_param is not None:
                 return type_param
+        return None
+
+    def get_type_param_by_name(self, name: str) -> TypeParam | None:
+        for scope in reversed(self._scopes):
+            seen_type_params: set[TypeParam] = set()
+            for type_param in scope.bindings.values():
+                if type_param in seen_type_params:
+                    continue
+                seen_type_params.add(type_param)
+                if safe_getattr(type_param.typevar, "__name__", None) == name:
+                    return type_param
         return None
 
     def declare(
@@ -579,14 +904,6 @@ class ActiveTypeParams:
             self._variance_polarity_stack.pop()
 
     @contextlib.contextmanager
-    def suspend_variance(self) -> Generator[None]:
-        self._variance_is_suspended += 1
-        try:
-            yield
-        finally:
-            self._variance_is_suspended -= 1
-
-    @contextlib.contextmanager
     def allow_variance_outside_annotations(self) -> Generator[None]:
         self._variance_outside_annotations += 1
         try:
@@ -595,76 +912,13 @@ class ActiveTypeParams:
             self._variance_outside_annotations -= 1
 
     def has_variance_collection(self) -> bool:
-        return bool(self._variance_collections) and not self._variance_is_suspended
-
-    def current_class_type_param_polarities(self) -> dict[object, set[int]] | None:
-        return self._current_class_type_param_polarities
+        return bool(self._variance_collections)
 
     def current_variance_polarity(self, base_polarity: int) -> int:
         polarity = base_polarity
         for modifier in self._variance_polarity_stack:
             polarity = compose_observed_variance_polarity(polarity, modifier)
         return polarity
-
-    @contextlib.contextmanager
-    def push_class_type_param_variance_collection(
-        self,
-        type_param_polarities: dict[object, set[int]] | None,
-        *,
-        is_protocol_class: bool,
-    ) -> Generator[None]:
-        with (
-            override(
-                self, "_current_class_type_param_polarities", type_param_polarities
-            ),
-            override(self, "_current_is_protocol_class", is_protocol_class),
-        ):
-            yield
-
-    @contextlib.contextmanager
-    def suspend_class_type_param_variance_collection(self) -> Generator[None]:
-        if self._current_class_type_param_polarities is None:
-            yield
-            return
-        with override(self, "_current_class_type_param_polarities", None):
-            yield
-
-    def function_param_type_param_variance_context(
-        self, *, parameter_index: int, is_staticmethod: bool
-    ) -> AbstractContextManager[None]:
-        if self._current_class_type_param_polarities is None:
-            return contextlib.nullcontext()
-        if (
-            self._current_is_protocol_class
-            and parameter_index == 0
-            and not is_staticmethod
-        ):
-            return self.suspend_variance()
-        return self.local_class_type_param_variance_context(polarity=-1)
-
-    def function_return_type_param_variance_context(
-        self,
-    ) -> AbstractContextManager[None]:
-        if self._current_class_type_param_polarities is None:
-            return contextlib.nullcontext()
-        return self.local_class_type_param_variance_context(polarity=1)
-
-    @contextlib.contextmanager
-    def local_class_type_param_variance_context(
-        self, *, polarity: int
-    ) -> Generator[None]:
-        target = self._current_class_type_param_polarities
-        if target is None:
-            yield
-            return
-        visitor = self._require_visitor()
-        local_polarities: dict[object, set[int]] = {}
-        with (
-            self.collect_variance(local_polarities, polarity=1),
-            self.compose_variance(polarity),
-        ):
-            yield
-        visitor._merge_type_param_polarities(target, local_polarities, polarity=1)
 
     @contextlib.contextmanager
     def push_subscript_arg_polarities(
@@ -703,10 +957,6 @@ class ActiveTypeParams:
             or self._variance_collections
         ):
             return
-        if self._variance_is_suspended and not (
-            self._legacy_policies or self._has_disallowed_identities()
-        ):
-            return
         if _is_type_param_declaration_node(node):
             return
 
@@ -716,7 +966,6 @@ class ActiveTypeParams:
             if (
                 isinstance(type_param, TypeVarParam)
                 and self._variance_collections
-                and not self._variance_is_suspended
                 and (visitor.in_annotation or self._variance_outside_annotations > 0)
             ):
                 for context in self._variance_collections:

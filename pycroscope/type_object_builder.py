@@ -165,7 +165,10 @@ CUSTOM_SYMBOLS: dict[ClassKey, dict[str, ClassSymbol]] = {
 
 
 def _is_frozen_dataclass(typ: type) -> bool:
-    params = safe_getattr(typ, "__dataclass_params__", None)
+    try:
+        params = typ.__dict__.get("__dataclass_params__")
+    except Exception:
+        return False
     return params is not None and getattr(params, "frozen", False) is True
 
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Infer and validate class type-parameter variance from the collected class API in both importable and static fallback analysis, including generic bases and callable member annotations.
+- Treat plain subclasses of frozen dataclasses as mutable for their own annotated attributes, while keeping inherited frozen dataclass fields read-only.
+
 ## Version 0.4.0 (May 2, 2026)
 
 This release aims to strengthen robustness and quality, fixing many issues

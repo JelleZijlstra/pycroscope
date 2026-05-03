@@ -259,11 +259,6 @@ class Context(ErrorContext, CanAssignContext, Protocol):
     def catch_errors(self) -> AbstractContextManager[list[Error]]:
         raise NotImplementedError
 
-    def function_param_type_param_variance_context(
-        self, *, parameter_index: int, is_staticmethod: bool
-    ) -> AbstractContextManager[None]:
-        raise NotImplementedError
-
 
 class AsynqDecorators(PyObjectSequenceOption[object]):
     """Decorators that are equivalent to asynq.asynq."""
@@ -460,10 +455,7 @@ def compute_parameters(
             and not isinstance(node, ast.Lambda)
         )
         if arg.annotation is not None:
-            with ctx.function_param_type_param_variance_context(
-                parameter_index=idx, is_staticmethod=is_staticmethod
-            ):
-                value = ctx.expr_of_annotation(arg.annotation)
+            value = ctx.expr_of_annotation(arg.annotation)
             inner_value, _ = value.maybe_unqualify(
                 set(Qualifier), qualifier_error_code=ErrorCode.invalid_qualifier
             )

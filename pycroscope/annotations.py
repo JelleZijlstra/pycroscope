@@ -171,6 +171,7 @@ from .value import (
     replace_fallback,
     replace_known_sequence_value,
     stringify_object,
+    type_param_to_value,
     typevartuple_binding_to_generic_args,
     unite_values,
 )
@@ -346,6 +347,10 @@ class Context:
         return AnyValue(AnySource.error)
 
     def get_name_from_globals(self, name: str, globals: Mapping[str, Any]) -> Value:
+        if (
+            type_param := self.active_type_params.get_type_param_by_name(name)
+        ) is not None:
+            return type_param_to_value(type_param)
         if name in globals:
             return KnownValue(globals[name])
         elif hasattr(builtins, name):
