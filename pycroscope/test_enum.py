@@ -242,6 +242,52 @@ class TestEnum(TestNameCheckVisitorBase):
         )
 
     @assert_passes(run_in_both_module_modes=True)
+    def test_conditional_enum_members(self):
+        # Per the typing spec, Enum members may be declared inside `if` blocks
+        # whose test is statically known (such as `sys.version_info` checks):
+        # the active branch's members exist, the inactive branch's do not.
+        import sys
+        from enum import Enum
+
+        from typing_extensions import Literal, assert_type
+
+        class Color(Enum):
+            RED = 1
+            if sys.version_info >= (3, 0):
+                GREEN = 2
+            if sys.version_info >= (4, 0):
+                BLUE = 3
+
+        def capybara():
+            assert_type(Color.RED, Literal[Color.RED])
+            assert_type(Color.GREEN, Literal[Color.GREEN])
+            Color.BLUE  # E: undefined_attribute
+
+    def test_conditional_enum_members_after_import_failure(self):
+        # When the module cannot be imported at analysis time we fall back to
+        # synthesizing the Enum class from the AST. That fallback also needs
+        # to honour statically-known `if` blocks so conditional members are
+        # recognized as proper Enum members rather than plain attributes.
+        self.assert_passes(
+            """
+            import sys
+            from enum import Enum
+
+            from typing_extensions import Literal, assert_type
+
+            class Color(Enum):
+                RED = 1
+                if sys.version_info >= (3, 0):
+                    GREEN = 2
+
+            assert_type(Color.RED, Literal[Color.RED])
+            assert_type(Color.GREEN, Literal[Color.GREEN])
+            """,
+            allow_import_failures=True,
+            force_runtime_module_load_failure=True,
+        )
+
+    @assert_passes(run_in_both_module_modes=True)
     def test_enum_declared_value_type_checks_member_assignments(self):
         from enum import Enum
 

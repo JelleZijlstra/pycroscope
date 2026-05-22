@@ -4334,8 +4334,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if runtime_bases is None:
             return None
 
+        statements = self._flatten_static_if_class_body(node.body)
+        if statements is None:
+            return None
+
         members: dict[str, object] = {}
-        for statement in node.body:
+        for statement in statements:
             if isinstance(statement, ast.Expr):
                 if isinstance(statement.value, ast.Constant) and isinstance(
                     statement.value.value, str
@@ -4393,6 +4397,49 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         except Exception:
             self.log(logging.INFO, "unable to synthesize enum runtime class", node.name)
             return None
+
+    def _statically_active_if_branch(
+        self, statement: ast.If
+    ) -> Sequence[ast.stmt] | None:
+        # If ``statement.test`` is statically known to be true, return the body;
+        # if statically false, return the else-branch; if the value cannot be
+        # determined statically, return None.
+        #
+        # The typical case we care about is ``sys.version_info >= (3, 12)``,
+        # which the comparison visitor folds to a known boolean.
+        with self.catch_errors() as errors:
+            val, _ = self.constraint_from_condition(
+                statement.test, check_boolability=False
+            )
+        if errors:
+            return None
+        definite_value = _extract_definite_value(val)
+        if definite_value is True:
+            return statement.body
+        if definite_value is False:
+            return statement.orelse
+        return None
+
+    def _flatten_static_if_class_body(
+        self, statements: Sequence[ast.stmt]
+    ) -> list[ast.stmt] | None:
+        # Return ``statements`` with each ``ast.If`` replaced by the active
+        # branch's body (recursing into nested ifs). Returns None if any
+        # ``ast.If`` has a test that we cannot statically resolve, since in
+        # that case we cannot tell which members would exist at runtime.
+        out: list[ast.stmt] = []
+        for statement in statements:
+            if isinstance(statement, ast.If):
+                branch = self._statically_active_if_branch(statement)
+                if branch is None:
+                    return None
+                inner = self._flatten_static_if_class_body(branch)
+                if inner is None:
+                    return None
+                out.extend(inner)
+            else:
+                out.append(statement)
+        return out
 
     def _runtime_base_from_value(
         self, base_value: Value, *, allow_synthetic_class_base: bool
@@ -4453,7 +4500,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 synthetic_type, name, initializer=value, is_method=False
             )
 
-        for member_name, statement in _iter_enum_assignment_candidates(node):
+        for member_name, statement in _iter_enum_assignment_candidates(
+            node, visitor=self
+        ):
             stmt_forced_member, stmt_forced_nonmember = (
                 _enum_statement_member_decorators(statement)
             )
@@ -4562,7 +4611,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 _set_enum_declared_symbol(member_name, initializer)
             except Exception:
                 continue
-        for member_name, statement in _iter_enum_assignment_candidates(node):
+        for member_name, statement in _iter_enum_assignment_candidates(
+            node, visitor=self
+        ):
             if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
                 continue
             if not isinstance(statement.value, ast.Name):
@@ -16014,9 +16065,19 @@ def _enum_ignore_names(value: Value | None) -> set[str]:
 
 
 def _iter_enum_assignment_candidates(
-    node: ast.ClassDef,
+    node: ast.ClassDef, *, visitor: "NameCheckVisitor | None" = None
 ) -> Iterable[tuple[str, ast.AST]]:
-    for statement in node.body:
+    # Yields ``(name, statement)`` pairs for every member-like statement in the
+    # class body. Pass ``visitor`` to also descend into ``if`` blocks whose test
+    # the visitor can fold to a known boolean (typically ``sys.version_info``
+    # comparisons); without it, only top-level statements are emitted.
+    yield from _iter_enum_assignment_candidates_in(node.body, visitor)
+
+
+def _iter_enum_assignment_candidates_in(
+    statements: Sequence[ast.stmt], visitor: "NameCheckVisitor | None"
+) -> Iterable[tuple[str, ast.AST]]:
+    for statement in statements:
         if isinstance(statement, ast.Assign):
             for target in statement.targets:
                 if isinstance(target, ast.Name):
@@ -16028,6 +16089,13 @@ def _iter_enum_assignment_candidates(
             statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
         ):
             yield statement.name, statement
+        elif isinstance(statement, ast.If) and visitor is not None:
+            # When the test is not statically known, skip the branch entirely
+            # rather than yielding from one side; we cannot tell which members
+            # would exist at runtime.
+            branch = visitor._statically_active_if_branch(statement)
+            if branch is not None:
+                yield from _iter_enum_assignment_candidates_in(branch, visitor)
 
 
 def _enum_member_wrapper_flags(node: ast.AST) -> tuple[bool, bool]:
