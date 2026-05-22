@@ -21,6 +21,9 @@ from unittest import mock
 import typing_extensions
 from typing_extensions import NoDefault, is_typeddict
 
+if sys.version_info >= (3, 14):
+    from annotationlib import Format
+
 import pycroscope
 
 from . import implementation
@@ -1378,7 +1381,17 @@ class ArgSpecCache:
         try:
             # follow_wrapped=True leads to problems with decorators that
             # mess with the arguments, such as mock.patch.
-            return inspect.signature(obj, follow_wrapped=False)
+            #
+            # On Python 3.14+ request FORWARDREF-format annotations so PEP 649
+            # lazy annotations are not eagerly resolved. Eager resolution would
+            # raise NameError for any annotation referencing a name imported
+            # only under `if TYPE_CHECKING:`.
+            if sys.version_info >= (3, 14):
+                return inspect.signature(
+                    obj, follow_wrapped=False, annotation_format=Format.FORWARDREF
+                )
+            else:
+                return inspect.signature(obj, follow_wrapped=False)  # pragma: no cover
         except (TypeError, ValueError, AttributeError):
             # TypeError if signature() does not support the object, ValueError
             # if it cannot provide a signature, and AttributeError if we're on

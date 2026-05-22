@@ -638,3 +638,39 @@ class TestPytestRaises(TestNameCheckVisitorBase):
                 pass
 
             pytest.raises()  # E: incompatible_call
+
+
+@skip_before((3, 14))
+def test_safe_get_signature_handles_type_checking_annotations() -> None:
+    """On Python 3.14+, a function whose unquoted annotation references a name
+    imported only under ``if TYPE_CHECKING:`` must remain introspectable.
+
+    PEP 649 makes annotations lazy, so the unquoted ``Iterator[int]`` return
+    annotation below becomes a deferred ``__annotate__`` expression that
+    raises ``NameError`` if anything forces eager evaluation.
+    """
+    checker = Checker()
+    ns: dict[str, object] = {}
+    exec(
+        """
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
+def f(x: int) -> Iterator[int]:
+    raise NotImplementedError
+""",
+        ns,
+        ns,
+    )
+    f = ns["f"]
+    # Sanity check that this setup really does exercise the bug: reading
+    # __annotations__ at runtime must raise NameError, because `Iterator`
+    # only exists in the TYPE_CHECKING namespace.
+    with pytest.raises(NameError):
+        _ = f.__annotations__
+    sig = checker.arg_spec_cache.get_argspec(f)
+    assert isinstance(sig, Signature)
+    assert "x" in sig.parameters
