@@ -4260,10 +4260,10 @@ def _can_use_static_complement_law(value: Value) -> bool:
 
 
 def _has_exact_complement(values: Sequence[Value]) -> bool:
-    positive_values = [value for value in values if not isinstance(value, NotValue)]
-    if not positive_values:
-        return False
     negative_values = [value.value for value in values if isinstance(value, NotValue)]
+    if not negative_values:
+        return False
+    positive_values = [value for value in values if not isinstance(value, NotValue)]
     return any(
         positive_value == negative_value
         and _can_use_static_complement_law(positive_value)
