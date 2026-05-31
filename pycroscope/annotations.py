@@ -76,6 +76,7 @@ from .extensions import (
     ExternalType,
     Intersection,
     NoReturnGuard,
+    Not,
     Overlapping,
     ParameterTypeGuard,
     TypeGuard,
@@ -125,6 +126,7 @@ from .value import (
     MultiValuedValue,
     NewTypeValue,
     NoReturnGuardExtension,
+    NotValue,
     OverlappingValue,
     ParameterTypeGuardExtension,
     ParamSpecArgsValue,
@@ -906,6 +908,8 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
         return IntersectionValue(
             tuple(_type_from_runtime(subval, ctx) for subval in val.args)
         )
+    elif isinstance(val, Not):
+        return NotValue(_type_from_runtime(val.arg, ctx))
     elif isinstance(val, Overlapping):
         return OverlappingValue(_type_from_runtime(val.arg, ctx))
     elif isinstance(val, ExternalType):

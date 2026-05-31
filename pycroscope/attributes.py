@@ -41,6 +41,7 @@ from .value import (
     KnownValue,
     MultiValuedValue,
     NewTypeValue,
+    NotValue,
     OverlappingValue,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
@@ -274,7 +275,7 @@ def _get_attribute_from_value(
             # A better solution would be to get better at understanding
             # attributes on TypedValue(object).
             return UNINITIALIZED_VALUE, None
-        case PredicateValue() | TypeFormValue():
+        case PredicateValue() | TypeFormValue() | NotValue():
             return _get_attribute_from_value(TypedValue(object), ctx)
         case SyntheticTypeFormValue(runtime_type=runtime_type):
             return _get_attribute_from_value(gradualize(runtime_type), ctx)

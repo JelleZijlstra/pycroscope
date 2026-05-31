@@ -279,6 +279,41 @@ class Intersection:
 
 
 @dataclass(frozen=True)
+class Not:
+    """The negation of another type.
+
+    ``Not[T]`` contains all values that are not members of ``T``. This is most
+    useful in intersections such as ``Intersection[Sequence[str], Not[str]]``.
+
+    """
+
+    arg: object
+
+    def __class_getitem__(cls, param: object) -> Any:
+        if isinstance(param, tuple):
+            if len(param) != 1:
+                raise TypeError(f"{cls.__name__}[...] should have exactly one argument")
+            (param,) = param
+        return cls(param)
+
+    @property
+    def __parameters__(self) -> tuple["TypeVar", ...]:
+        if isinstance(self.arg, TypeVar):
+            return (self.arg,)
+        if hasattr(self.arg, "__parameters__"):
+            return self.arg.__parameters__
+        return ()
+
+    def __getitem__(self, item: object) -> Any:
+        return types.GenericAlias(
+            self, item  # static analysis: ignore[incompatible_argument]
+        )
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        raise TypeError(f"{self} is not callable")
+
+
+@dataclass(frozen=True)
 class Overlapping:
     """A type that accepts values whose type overlaps with another type.
 

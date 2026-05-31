@@ -285,6 +285,7 @@ from .value import (
     MultiValuedValue,
     NewTypeValue,
     NoReturnConstraintExtension,
+    NotValue,
     OverlapMode,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
@@ -16258,6 +16259,7 @@ def _runtime_object_for_enum_member(value: Value) -> object:
             SubclassValue,
             TypeFormValue,
             PredicateValue,
+            NotValue,
         ),
     ):
         return object()
@@ -16391,6 +16393,7 @@ def _known_string_sequence_from_simple_value(
             SubclassValue,
             TypeFormValue,
             PredicateValue,
+            NotValue,
         ),
     ):
         return None
@@ -16514,6 +16517,7 @@ def _is_absent_dataclass_default_value(value: Value) -> bool:
             SubclassValue,
             TypeFormValue,
             PredicateValue,
+            NotValue,
         ),
     ):
         return False
@@ -17207,6 +17211,7 @@ def _is_runtime_literal_index(value: Value) -> bool:
             SubclassValue,
             TypeFormValue,
             PredicateValue,
+            NotValue,
         ),
     ):
         return False

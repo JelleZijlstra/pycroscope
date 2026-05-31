@@ -86,6 +86,7 @@ from .value import (
     KnownValue,
     KnownValueWithTypeVars,
     MultiValuedValue,
+    NotValue,
     ParamSpecParam,
     PartialValue,
     PartialValueOperation,
@@ -2242,6 +2243,7 @@ def _iter_class_keys_from_simple_value(value: SimpleType) -> list[ClassKey]:
             UnboundMethodValue,
             TypeFormValue,
             PredicateValue,
+            NotValue,
         ),
     ):
         return []

@@ -2929,6 +2929,37 @@ class SubclassValue(Value):
 
 
 @dataclass(frozen=True, order=False)
+class NotValue(Value):
+    """Represents ``Not[T]``."""
+
+    value: Value
+
+    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+        return NotValue(self.value.substitute_typevars(typevars))
+
+    def walk_values(self) -> Iterable[Value]:
+        yield self
+        yield from self.value.walk_values()
+
+    def get_fallback_value(self) -> Value:
+        return TypedValue(object)
+
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
+        return SubclassValue(TypedValue(object))
+
+    def can_overlap(
+        self, other: Value, ctx: CanAssignContext, mode: OverlapMode
+    ) -> CanAssignError | None:
+        overlap = pycroscope.relations.intersect_values(self, other, ctx)
+        if overlap is NO_RETURN_VALUE:
+            return CanAssignError(f"{self} and {other} cannot overlap")
+        return None
+
+    def __str__(self) -> str:
+        return f"Not[{self.value}]"
+
+
+@dataclass(frozen=True, order=False)
 class IntersectionValue(Value):
     """Represents the intersection of multiple values."""
 
@@ -3999,6 +4030,7 @@ SimpleType: typing_extensions.TypeAlias = (
     | SubclassValue
     | TypeFormValue
     | PredicateValue
+    | NotValue
 )
 
 BasicType: typing_extensions.TypeAlias = (

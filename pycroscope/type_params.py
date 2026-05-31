@@ -24,6 +24,7 @@ from .value import (
     IntersectionValue,
     KnownValue,
     MultiValuedValue,
+    NotValue,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
     ParamSpecParam,
@@ -314,6 +315,7 @@ class _PolarityCollector:
                 TypeVarTupleBindingValue,
                 TypeVarTupleValue,
                 TypeFormValue,
+                NotValue,
                 SyntheticTypeFormValue,
             ),
         )
@@ -330,6 +332,8 @@ class _PolarityCollector:
                 return
             case TypeFormValue(inner_type=inner_type):
                 self.collect(inner_type, polarity)
+            case NotValue(value=inner_type):
+                self.collect(inner_type, polarity.compose(_Polarity.CONTRAVARIANT))
             case SyntheticTypeFormValue(inner_type=inner_type):
                 self.collect(inner_type, polarity)
             case MultiValuedValue(vals=vals) | IntersectionValue(vals=vals):

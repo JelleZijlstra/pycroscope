@@ -36,6 +36,7 @@ from .value import (
     IntersectionValue,
     KnownValue,
     MultiValuedValue,
+    NotValue,
     PredicateValue,
     SimpleType,
     SubclassValue,
@@ -188,6 +189,7 @@ def _is_async_simple_value(
             SubclassValue,
             TypeFormValue,
             PredicateValue,
+            NotValue,
         ),
     ):
         return False

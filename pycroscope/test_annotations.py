@@ -1119,6 +1119,37 @@ class TestCallable(TestNameCheckVisitorBase):
             f(s)  # E: incompatible_argument
             bare(i)
 
+    @assert_passes()
+    def test_not_annotation(self):
+        from typing_extensions import Literal
+
+        from pycroscope.extensions import Intersection, Not
+
+        def takes_not_int(x: Not[int]) -> None:
+            pass
+
+        def takes_not_literal_one(x: Not[Literal[1]]) -> None:
+            pass
+
+        def takes_not_bool(x: Not[bool]) -> None:
+            pass
+
+        def takes_int(x: int) -> None:
+            pass
+
+        def takes_int_not_bool(x: Intersection[int, Not[bool]]) -> None:
+            takes_int(x)
+            takes_not_bool(x)
+            takes_not_int(x)  # E: incompatible_argument
+
+        def capybara(i: int, s: str, b: bool) -> None:
+            takes_not_int(s)
+            takes_not_int(i)  # E: incompatible_argument
+            takes_not_int(b)  # E: incompatible_argument
+            takes_not_literal_one(2)
+            takes_not_literal_one(1)  # E: incompatible_argument
+            takes_int_not_bool(i)  # E: incompatible_argument
+
     @skip_if_not_installed("asynq")
     @assert_passes()
     def test_asynq_callable(self):

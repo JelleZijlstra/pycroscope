@@ -90,6 +90,7 @@ from .value import (
     MultiValuedValue,
     NoReturnConstraintExtension,
     NoReturnGuardExtension,
+    NotValue,
     ParameterTypeGuardExtension,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
@@ -3406,6 +3407,7 @@ def _widen_typevartuple_inferred_simple_value(value: SimpleType) -> Value:
             UnboundMethodValue,
             TypeFormValue,
             PredicateValue,
+            NotValue,
         ),
     ):
         return value

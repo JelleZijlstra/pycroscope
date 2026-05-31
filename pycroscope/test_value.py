@@ -15,7 +15,7 @@ from . import tests, value
 from .checker import Checker
 from .name_check_visitor import NameCheckVisitor
 from .predicates import MaxLen, MinLen
-from .relations import extract_type_form, intersect_values, is_subtype
+from .relations import extract_type_form, intersect_values, is_subtype, subtract_values
 from .signature import ELLIPSIS_PARAM, Signature
 from .stacked_scopes import Composite
 from .test_node_visitor import skip_if_not_installed
@@ -33,6 +33,7 @@ from .value import (
     KnownValue,
     KVPair,
     MultiValuedValue,
+    NotValue,
     OverlapMode,
     OverlappingValue,
     SequenceValue,
@@ -999,6 +1000,53 @@ def test_intersection_value() -> None:
     assert_can_assign(never, never)
     assert_can_assign(NO_RETURN_VALUE, never)
     assert_can_assign(never, NO_RETURN_VALUE)
+
+
+def test_not_value() -> None:
+    not_int = NotValue(TypedValue(int))
+    not_bool = NotValue(TypedValue(bool))
+
+    assert str(not_int) == "Not[int]"
+    assert_can_assign(TypedValue(object), not_int)
+    assert_can_assign(not_int, TypedValue(str))
+    assert_cannot_assign(not_int, TypedValue(int))
+    assert_cannot_assign(not_int, TypedValue(bool))
+    assert_cannot_assign(not_bool, TypedValue(int))
+
+    assert_can_assign(not_int, NotValue(TypedValue(object)))
+    assert_cannot_assign(NotValue(TypedValue(object)), not_int)
+    assert_can_assign(NotValue(NO_RETURN_VALUE), TypedValue(str))
+    assert_cannot_assign(NotValue(TypedValue(object)), TypedValue(str))
+
+
+def test_not_value_intersection() -> None:
+    assert intersect_values(
+        TypedValue(str), NotValue(TypedValue(int)), CTX
+    ) == TypedValue(str)
+    assert (
+        intersect_values(TypedValue(bool), NotValue(TypedValue(int)), CTX)
+        is NO_RETURN_VALUE
+    )
+    assert intersect_values(TypedValue(object), NotValue(TypedValue(str)), CTX) == (
+        NotValue(TypedValue(str))
+    )
+    assert intersect_values(
+        TypedValue(int) | TypedValue(str), NotValue(TypedValue(str)), CTX
+    ) == TypedValue(int)
+
+
+def test_subtract_values_uses_not_value_intersection() -> None:
+    assert subtract_values(
+        TypedValue(int) | TypedValue(str), TypedValue(str), CTX
+    ) == intersect_values(
+        TypedValue(int) | TypedValue(str), NotValue(TypedValue(str)), CTX
+    )
+    assert subtract_values(
+        AnyValue(AnySource.explicit), TypedValue(str), CTX
+    ) == AnyValue(AnySource.explicit)
+    assert subtract_values(
+        TypedValue(object), NotValue(TypedValue(str)), CTX
+    ) == TypedValue(str)
 
 
 def test_unannotated_any_intersection_simplifies() -> None:
