@@ -2941,9 +2941,6 @@ class NotValue(Value):
         yield self
         yield from self.value.walk_values()
 
-    def get_fallback_value(self) -> Value:
-        return TypedValue(object)
-
     def get_type_value(self, ctx: CanAssignContext) -> Value:
         return SubclassValue(TypedValue(object))
 
@@ -2959,7 +2956,13 @@ class NotValue(Value):
         return f"Not[{self.value}]"
 
 
-@dataclass(frozen=True, order=False)
+def _value_sets_equal(left: Sequence[Value], right: Sequence[Value]) -> bool:
+    return all(
+        any(left_val == right_val for right_val in right) for left_val in left
+    ) and all(any(right_val == left_val for left_val in left) for right_val in right)
+
+
+@dataclass(frozen=True, order=False, eq=False)
 class IntersectionValue(Value):
     """Represents the intersection of multiple values."""
 
@@ -2974,6 +2977,14 @@ class IntersectionValue(Value):
             assert not isinstance(
                 val, MultiValuedValue
             ), "IntersectionValues cannot contain MultiValuedValues"
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, IntersectionValue):
+            return NotImplemented
+        return _value_sets_equal(self.vals, other.vals)
+
+    def __hash__(self) -> int:
+        return hash(frozenset(self.vals))
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         return IntersectionValue(
@@ -4232,6 +4243,36 @@ def _is_unreachable(value: Value) -> bool:
     return isinstance(value, AnyValue) and value.source is AnySource.unreachable
 
 
+def _can_use_static_complement_law(value: Value) -> bool:
+    if isinstance(value, KnownValue):
+        return True
+    if isinstance(value, SequenceValue):
+        return value.typ is tuple and all(
+            _can_use_static_complement_law(member) for _, member in value.members
+        )
+    if isinstance(value, TypedDictValue):
+        return all(
+            _can_use_static_complement_law(entry.typ) for entry in value.items.values()
+        ) and (
+            value.extra_keys is None or _can_use_static_complement_law(value.extra_keys)
+        )
+    return False
+
+
+def _has_exact_complement(values: Sequence[Value]) -> bool:
+    positive_values = [value for value in values if not isinstance(value, NotValue)]
+    if not positive_values:
+        return False
+    negative_values = [value.value for value in values if isinstance(value, NotValue)]
+    return any(
+        positive_value == negative_value
+        and _can_use_static_complement_law(positive_value)
+        and _can_use_static_complement_law(negative_value)
+        for positive_value in positive_values
+        for negative_value in negative_values
+    )
+
+
 def unite_values(*values: Value) -> Value:
     """Unite multiple values into a single :class:`Value`.
 
@@ -4274,6 +4315,8 @@ def unite_values(*values: Value) -> Value:
         return NO_RETURN_VALUE
     if num_unreachable:
         existing = [val for i, val in enumerate(existing) if not reachabilities[i]]
+    if _has_exact_complement(existing):
+        return TypedValue(object)
     if num == 1:
         return existing[0]
     else:

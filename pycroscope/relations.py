@@ -641,16 +641,6 @@ def _has_relation(
         elif intersect_values(original_right, left.value, ctx) is NO_RETURN_VALUE:
             return {}
         return CanAssignError(f"{right} is not {relation.description} {left}")
-    if isinstance(right, NotValue):
-        normalized_right = _normalize_not_value(right, ctx)
-        if normalized_right is not right:
-            return _has_relation(left, normalized_right, relation_ctx)
-        if left == TypedValue(object):
-            return {}
-        if relation is Relation.ASSIGNABLE and isinstance(left, AnyValue):
-            return {}
-        return CanAssignError(f"{right} is not {relation.description} {left}")
-
     # NewTypeValue
     if isinstance(left, NewTypeValue):
         if isinstance(right, NewTypeValue):
@@ -770,6 +760,16 @@ def _has_relation(
             bounds_maps.append(can_assign)
         return unify_bounds_maps(bounds_maps)
     assert not isinstance(right, (TypeVarValue, AnnotatedValue))
+
+    if isinstance(right, NotValue):
+        normalized_right = _normalize_not_value(right, ctx)
+        if normalized_right is not right:
+            return _has_relation(left, normalized_right, relation_ctx)
+        if left == TypedValue(object):
+            return {}
+        if relation is Relation.ASSIGNABLE and isinstance(left, AnyValue):
+            return {}
+        return CanAssignError(f"{right} is not {relation.description} {left}")
 
     # AnyValue
     if isinstance(left, AnyValue):
@@ -2510,8 +2510,6 @@ def _normalize_not_value(value: NotValue, ctx: CanAssignContext) -> GradualType:
 def subtract_values(left: Value, right: Value, ctx: CanAssignContext) -> GradualType:
     if isinstance(right, NotValue):
         return intersect_values(left, right.value, ctx)
-    if isinstance(right, AnyValue):
-        return gradualize(left)
     vals = []
     decomposed = left.decompose()
     if decomposed is None:
@@ -2707,7 +2705,7 @@ def _intersect_not_value(
 ) -> TypeOrIrreducible:
     normalized_left = _normalize_not_value(left, ctx)
     if normalized_left is not left:
-        return _intersect_values_inner(normalized_left, right, ctx)
+        return intersect_values(normalized_left, right, ctx)
     if isinstance(right, AnyValue):
         return right
     if right == TypedValue(object):
@@ -2717,7 +2715,7 @@ def _intersect_not_value(
     if isinstance(right, NotValue):
         normalized_right = _normalize_not_value(right, ctx)
         if normalized_right is not right:
-            return _intersect_values_inner(left, normalized_right, ctx)
+            return intersect_values(left, normalized_right, ctx)
         return Irreducible
     if is_subtype(left.value, right, ctx):
         return NO_RETURN_VALUE

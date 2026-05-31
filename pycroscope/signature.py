@@ -1115,7 +1115,10 @@ class Signature:
                 varname = self._get_typeguard_varname(composites)
                 if varname is not None and ctx.visitor is not None:
                     constraint = Constraint(
-                        varname, ConstraintType.intersect_with, True, guard.guarded_type
+                        varname,
+                        ConstraintType.precise_intersect_with,
+                        True,
+                        guard.guarded_type,
                     )
                     constraints.append(constraint)
 

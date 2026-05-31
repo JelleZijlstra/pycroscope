@@ -500,8 +500,8 @@ def test_strong_container_is_not_assignable_to_known_non_empty_weak_literal() ->
     )
 
     assert isinstance(result, CanAssignError)
-    assert result.message == (
-        "list[int] may be empty and cannot satisfy"
+    assert (
+        result.message == "list[int] may be empty and cannot satisfy"
         " known-non-empty <list containing [Literal[1]]>"
     )
 
@@ -977,6 +977,8 @@ class D(B, C):
 def test_intersection_value() -> None:
     val = TypedValue(int) & TypedValue(str)
     assert str(val) == "int & str"
+    assert val == TypedValue(str) & TypedValue(int)
+    assert (val | (TypedValue(str) & TypedValue(int))) == val
 
     assert_can_assign(val, val)
     assert_can_assign(TypedValue(object), val)
@@ -1017,6 +1019,25 @@ def test_not_value() -> None:
     assert_cannot_assign(NotValue(TypedValue(object)), not_int)
     assert_can_assign(NotValue(NO_RETURN_VALUE), TypedValue(str))
     assert_cannot_assign(NotValue(TypedValue(object)), TypedValue(str))
+    assert_can_assign(TypedValue(int) | not_int, not_int)
+
+
+def test_not_value_union() -> None:
+    literal_one = KnownValue(1)
+    tuple_value = SequenceValue(tuple, [(False, KnownValue(1))])
+    typed_dict_value = value.TypedDictValue({"x": value.TypedDictEntry(KnownValue(1))})
+    not_int = NotValue(TypedValue(int))
+    any_explicit = AnyValue(AnySource.explicit)
+
+    assert (literal_one | NotValue(literal_one)) == TypedValue(object)
+    assert (NotValue(literal_one) | literal_one) == TypedValue(object)
+    assert (TypedValue(str) | literal_one | NotValue(literal_one)) == TypedValue(object)
+    assert (tuple_value | NotValue(tuple_value)) == TypedValue(object)
+    assert (typed_dict_value | NotValue(typed_dict_value)) == TypedValue(object)
+    assert isinstance(TypedValue(int) | not_int, MultiValuedValue)
+    assert (any_explicit | NotValue(any_explicit)) == (
+        any_explicit | NotValue(any_explicit)
+    )
 
 
 def test_not_value_intersection() -> None:

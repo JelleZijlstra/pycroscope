@@ -5,6 +5,9 @@
 - Infer and validate class type-parameter variance from the collected class API in both importable and static fallback analysis, including generic bases and callable member annotations.
 - Treat plain subclasses of frozen dataclasses as mutable for their own annotated attributes, while keeping inherited frozen dataclass fields read-only.
 - Add basic support for `pycroscope.extensions.Not[T]` negation types, including assignability and intersection simplification.
+- Simplify unions containing an exact fully static `Not[T]` complement pair, such as `Literal[1] | Not[Literal[1]]`, to `object`.
+- Deduplicate unions containing equivalent intersections written in different orders, such as `Any & int` and `int & Any`.
+- Preserve `Not[T]` intersections in negative `TypeIs[T]` narrowing, while keeping other narrowing paths pragmatic.
 
 ## Version 0.4.0 (May 2, 2026)
 
