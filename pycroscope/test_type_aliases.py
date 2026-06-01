@@ -56,6 +56,65 @@ class TestRecursion(TestNameCheckVisitorBase):
             "hi",
         ]
 
+    @skip_before((3, 12))
+    def test_recursive_gradual_alias_materializations(self):
+        self.assert_passes("""
+            from typing import Any
+
+            type R = list[tuple[Any, R]]
+            type InnerUnion = list[tuple[int, InnerUnion] | tuple[str, InnerUnion]]
+            type Alternating = list[tuple[int, list[tuple[str, Alternating]]]]
+            type AllFloat = list[tuple[float, AllFloat]]
+            type AnyTail = list[tuple[int, AnyTail | Any]]
+            type AltTail = list[tuple[int, list[tuple[str, AltTail]]]]
+            type RecFirstAny = tuple[RecFirstAny | Any, int]
+            type RecFirstGood = tuple[RecFirstGood, int]
+            type RecFirstBad = tuple[RecFirstBad, str]
+
+            def takes_r(x: R) -> None:
+                pass
+
+            def takes_inner_union(x: InnerUnion) -> None:
+                pass
+
+            def takes_alternating(x: Alternating) -> None:
+                pass
+
+            def takes_any_tail(x: AnyTail) -> None:
+                pass
+
+            def takes_alt_tail(x: AltTail) -> None:
+                pass
+
+            def takes_rec_first(x: RecFirstAny) -> None:
+                pass
+
+            def accepts_materializations(
+                inner_union: InnerUnion, alternating: Alternating, all_float: AllFloat
+            ) -> None:
+                takes_r(inner_union)
+                takes_r(alternating)
+                takes_r(all_float)
+
+            def accepts_recursion_before_sibling_constraints(
+                rec_first_good: RecFirstGood,
+            ) -> None:
+                takes_rec_first(rec_first_good)
+
+            def rejects_static_mismatches(all_float: AllFloat) -> None:
+                takes_inner_union(all_float)  # E: incompatible_argument
+                takes_alternating(all_float)  # E: incompatible_argument
+
+            def rejects_gradual_tail_mismatches(
+                any_tail: AnyTail, alt_tail: AltTail
+            ) -> None:
+                takes_any_tail(alt_tail)  # E: incompatible_argument
+                takes_alt_tail(any_tail)  # E: incompatible_argument
+
+            def rejects_after_recursive_goal(rec_first_bad: RecFirstBad) -> None:
+                takes_rec_first(rec_first_bad)  # E: incompatible_argument
+        """)
+
     @assert_passes()
     def test_explicit_typealias_cycle_detection(self):
         from typing import TypeAlias, Union
