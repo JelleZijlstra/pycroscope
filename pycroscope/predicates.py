@@ -30,6 +30,7 @@ from .value import (
     IntersectionValue,
     KnownValue,
     MultiValuedValue,
+    NotValue,
     Predicate,
     PredicateValue,
     SequenceValue,
@@ -283,6 +284,8 @@ class HasAttr(Predicate):
                 return self._intersect_with_value(other, ctx, is_final=tobj.is_final())
             case SubclassValue():
                 return self._intersect_with_value(other, ctx, is_final=False)
+            case NotValue():
+                return None
             case _:
                 assert_never(other)
 
@@ -386,6 +389,8 @@ def _has_relation_min_or_max_len(
             if max_len is not None and value_max is not None:
                 return value_max <= max_len
             return False
+        case NotValue():
+            return False
         case _:
             assert_never(value)
 
@@ -479,6 +484,8 @@ def _intersect_min_or_max_len(
                             for members in expanded
                         )
                     )
+            return None
+        case NotValue():
             return None
         case _:
             assert_never(value)

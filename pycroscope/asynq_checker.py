@@ -25,6 +25,7 @@ from .value import (
     IntersectionValue,
     KnownValue,
     MultiValuedValue,
+    NotValue,
     PredicateValue,
     SimpleType,
     SubclassValue,
@@ -220,6 +221,7 @@ def _is_impure_async_simple(value: SimpleType) -> bool:
             TypedValue,
             SubclassValue,
             TypeFormValue,
+            NotValue,
             PredicateValue,
         ),
     ):
@@ -302,6 +304,7 @@ def _stringify_async_simple_value(value: SimpleType) -> str:
             SyntheticModuleValue,
             SubclassValue,
             TypeFormValue,
+            NotValue,
             PredicateValue,
         ),
     ):

@@ -9,6 +9,8 @@ class TestTypeIs(TestNameCheckVisitorBase):
     def testTypeIsBasic(self):
         from typing_extensions import TypeIs, assert_type
 
+        from pycroscope.extensions import Not
+
         class Point:
             pass
 
@@ -19,7 +21,7 @@ class TestTypeIs(TestNameCheckVisitorBase):
             if is_point(a):
                 assert_type(a, Point)
             else:
-                assert_type(a, object)
+                assert_type(a, Not[Point])
 
     @assert_passes()
     def testTypeIsTypeArgsNone(self):
@@ -619,6 +621,8 @@ class TestTypeIs(TestNameCheckVisitorBase):
 
         from typing_extensions import TypeIs
 
+        from pycroscope.value import IntersectionValue, NotValue
+
         class A: ...
 
         def f(x: List[Any]) -> TypeIs[List[str]]:
@@ -629,7 +633,14 @@ class TestTypeIs(TestNameCheckVisitorBase):
                 return
             assert_is_value(
                 x,
-                (
+                IntersectionValue(
+                    (
+                        GenericValue(list, [AnyValue(AnySource.explicit)]),
+                        NotValue(GenericValue(list, [TypedValue(str)])),
+                        TypedValue(A),
+                    )
+                )
+                | (
                     GenericValue(list, [AnyValue(AnySource.explicit)])
                     & GenericValue(list, [TypedValue(str)])
                 )
@@ -888,7 +899,11 @@ class TestTypeIs(TestNameCheckVisitorBase):
 
     @assert_passes()
     def testStaticMethodTypeIs(self):
+        from typing import Union
+
         from typing_extensions import TypeIs, assert_type
+
+        from pycroscope.extensions import Not
 
         def typeguard(h: object) -> TypeIs[int]:
             return False
@@ -901,7 +916,7 @@ class TestTypeIs(TestNameCheckVisitorBase):
         def capybara(x: object):
             if Y().typeguard(x):
                 assert_type(x, int)
-            assert_type(x, object)
+            assert_type(x, Union[int, Not[int]])
             if Y.typeguard(x):
                 assert_type(x, int)
 
@@ -1025,7 +1040,7 @@ class TestTypeIs(TestNameCheckVisitorBase):
             if is_any(a):
                 assert_type(a, Any)
             else:
-                assert_type(a, object)
+                assert_type(a, Any)
 
             if is_any(b):
                 assert_type(b, Any)
@@ -1035,7 +1050,7 @@ class TestTypeIs(TestNameCheckVisitorBase):
             if is_any(c):
                 assert_type(c, Intersection[int, Any])
             else:
-                assert_type(c, int)
+                assert_type(c, Intersection[Any, int])
 
     @assert_passes()
     def test_type_is_awaitable_any(self):
@@ -1044,7 +1059,7 @@ class TestTypeIs(TestNameCheckVisitorBase):
 
         from typing_extensions import TypeIs, assert_type
 
-        from pycroscope.extensions import Intersection
+        from pycroscope.extensions import Intersection, Not
 
         def is_awaitable_any(val: object) -> TypeIs[Awaitable[Any]]:
             return isinstance(val, Awaitable)
@@ -1065,7 +1080,13 @@ class TestTypeIs(TestNameCheckVisitorBase):
                 x: int = await val
                 return x
             else:
-                assert_type(val, int | Awaitable[int])
+                assert_type(
+                    val,
+                    Union[
+                        Intersection[int, Not[Awaitable[Any]]],
+                        Intersection[Awaitable[int], Not[Awaitable[Any]]],
+                    ],
+                )
 
         async def object_capybara(val: int | Awaitable[int]):
             if is_awaitable_object(val):
@@ -1073,4 +1094,4 @@ class TestTypeIs(TestNameCheckVisitorBase):
                     val, Union[Intersection[int, Awaitable[object]], Awaitable[int]]
                 )
             else:
-                assert_type(val, int)
+                assert_type(val, Intersection[int, Not[Awaitable[object]]])

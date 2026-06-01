@@ -24,6 +24,7 @@ from .value import (
     IntersectionValue,
     KnownValue,
     MultiValuedValue,
+    NotValue,
     PredicateValue,
     SequenceValue,
     SimpleType,
@@ -197,7 +198,7 @@ def _get_boolability_no_mvv(value: SimpleType) -> Boolability:
         if isinstance(value.typ, ClassOwner):
             return Boolability.boolable  # TODO deal with synthetic types
         return _get_type_boolability(value.typ)
-    elif isinstance(value, (TypeFormValue, PredicateValue)):
+    elif isinstance(value, (TypeFormValue, PredicateValue, NotValue)):
         return Boolability.boolable
     else:
         assert_never(value)

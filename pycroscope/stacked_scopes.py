@@ -52,6 +52,7 @@ from .value import (
     ConstraintExtension,
     KnownValue,
     MultiValuedValue,
+    NotValue,
     ParamSpecParam,
     PredicateValue,
     ReferencingValue,
@@ -249,6 +250,8 @@ class ConstraintType(enum.Enum):
     """`constraint.value` is an :class:`pycroscope.value.Extension` to annotate the value with."""
     intersect_with = 9
     """`constraint.value` is a :class:`pycroscope.value.Value` to intersect with."""
+    precise_intersect_with = 10
+    """Like `intersect_with`, but negative narrowing preserves `T & Not[U]`."""
 
 
 class AbstractConstraint:
@@ -435,6 +438,12 @@ class Constraint(AbstractConstraint):
                 yield intersect_values(value, self.value, ctx)
             else:
                 yield subtract_values(value, self.value, ctx)
+
+        elif self.constraint_type == ConstraintType.precise_intersect_with:
+            if self.positive:
+                yield intersect_values(value, self.value, ctx)
+            else:
+                yield intersect_values(value, NotValue(self.value), ctx)
 
         else:
             assert_never(self.constraint_type)

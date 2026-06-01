@@ -32,6 +32,7 @@ from .value import (
     IntersectionValue,
     KnownValue,
     MultiValuedValue,
+    NotValue,
     PredicateValue,
     SequenceValue,
     SimpleType,
@@ -392,6 +393,7 @@ def _should_suggest_simple_type(value: SimpleType) -> bool:
             SyntheticModuleValue,
             UnboundMethodValue,
             PredicateValue,
+            NotValue,
         ),
     ):
         return False
@@ -482,6 +484,7 @@ def _prepare_simple_type(value: SimpleType, ctx: CanAssignContext | None) -> Val
             UnboundMethodValue,
             TypeFormValue,
             PredicateValue,
+            NotValue,
         ),
     ):
         return value

@@ -44,6 +44,7 @@ from .value import (
     KnownValue,
     KnownValueWithTypeVars,
     MultiValuedValue,
+    NotValue,
     PartialValue,
     PartialValueOperation,
     PredicateValue,
@@ -288,7 +289,14 @@ def iter_base_type_values_from_simple(
         if isinstance(value.typ, TypedValue):
             yield value.typ
     elif isinstance(
-        value, (SyntheticModuleValue, UnboundMethodValue, TypeFormValue, PredicateValue)
+        value,
+        (
+            SyntheticModuleValue,
+            UnboundMethodValue,
+            TypeFormValue,
+            PredicateValue,
+            NotValue,
+        ),
     ):
         pass
     else:

@@ -98,6 +98,7 @@ from .value import (
     KVPair,
     MultiValuedValue,
     NewTypeValue,
+    NotValue,
     ParameterTypeGuardExtension,
     PartialCallValue,
     PartialValue,
@@ -356,6 +357,7 @@ def _getitem_impl(ctx: CallContext) -> ImplReturn | Value:
                 | TypeFormValue()
                 | PredicateValue()
                 | UnboundMethodValue()
+                | NotValue()
             ):
                 ctx.show_error(
                     f"{val} is not subscriptable",

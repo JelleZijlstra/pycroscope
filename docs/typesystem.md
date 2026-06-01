@@ -9,6 +9,7 @@ In addition to the standard Python type system, pycroscope supports a number of 
 - Callable literals: you can declare a parameter as `Literal[some_function]` and it will accept any callable assignable to `some_function`. Pycroscope also supports Literals of various other types in addition to those supported by [PEP 586](https://www.python.org/dev/peps/pep-0586/).
 - `pycroscope.extensions.AsynqCallable` is a variant of `Callable` that applies to `asynq` functions.
 - `pycroscope.extensions.Overlapping[T]` accepts values whose types overlap with `T` (that is, where `T & U` is not `Never`).
+- `pycroscope.extensions.Not[T]` is a negation type that accepts values outside `T`; it is most useful together with `pycroscope.extensions.Intersection`.
 - `pycroscope.extensions.ParameterTypeGuard` is a generalization of PEP 649's `TypeGuard` that allows guards on any parameter to a function. To use it, return `Annotated[bool, ParameterTypeGuard["arg", SomeType]]`.
 - `pycroscope.extensions.ExternalType` is a way to refer to a type that cannot
   be referenced by name in contexts where using `if TYPE_CHECKING` is not possible.
@@ -45,6 +46,26 @@ def bad_callable(not_x: int, y: str = "") -> None:
     pass
 
 takes_template(bad_callable)  # rejected
+```
+
+### Negation types
+
+`Not[T]` represents values that are not members of `T`. For example, `Not[int]`
+accepts a `str` but rejects an `int` or a `bool`. The implementation simplifies
+basic intersections with negation types, so `Intersection[int | str, Not[str]]`
+is treated as `int`.
+
+```python
+from pycroscope.extensions import Intersection, Not
+
+def takes_not_str(x: Not[str]) -> None:
+    pass
+
+takes_not_str(1)  # accepted
+takes_not_str("x")  # rejected
+
+def takes_int_but_not_bool(x: Intersection[int, Not[bool]]) -> None:
+    pass
 ```
 
 ### AsynqCallable

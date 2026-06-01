@@ -47,6 +47,7 @@ from pycroscope.value import (
     LowerBound,
     MultiValuedValue,
     NewTypeValue,
+    NotValue,
     OverlappingValue,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
@@ -620,6 +621,26 @@ def _has_relation(
         right_inner = gradualize(right.get_fallback_value())
         return _has_relation(left, right_inner, relation_ctx.with_original_right(right))
 
+    # NotValue
+    if isinstance(left, NotValue):
+        normalized_left = _normalize_not_value(left, ctx)
+        if normalized_left is not left:
+            return _has_relation(normalized_left, original_right, relation_ctx)
+        if isinstance(right, NotValue):
+            normalized_right = _normalize_not_value(right, ctx)
+            if normalized_right is not right:
+                return _has_relation(left, normalized_right, relation_ctx)
+            # ~R is a subtype of ~L exactly when L is a subtype of R.
+            can_assign = _has_relation(
+                gradualize(right.value), gradualize(left.value), relation_ctx
+            )
+            if not isinstance(can_assign, CanAssignError):
+                return can_assign
+        elif relation is Relation.ASSIGNABLE and isinstance(right, AnyValue):
+            return {}
+        elif intersect_values(original_right, left.value, ctx) is NO_RETURN_VALUE:
+            return {}
+        return CanAssignError(f"{right} is not {relation.description} {left}")
     # NewTypeValue
     if isinstance(left, NewTypeValue):
         if isinstance(right, NewTypeValue):
@@ -739,6 +760,16 @@ def _has_relation(
             bounds_maps.append(can_assign)
         return unify_bounds_maps(bounds_maps)
     assert not isinstance(right, (TypeVarValue, AnnotatedValue))
+
+    if isinstance(right, NotValue):
+        normalized_right = _normalize_not_value(right, ctx)
+        if normalized_right is not right:
+            return _has_relation(left, normalized_right, relation_ctx)
+        if left == TypedValue(object):
+            return {}
+        if relation is Relation.ASSIGNABLE and isinstance(left, AnyValue):
+            return {}
+        return CanAssignError(f"{right} is not {relation.description} {left}")
 
     # AnyValue
     if isinstance(left, AnyValue):
@@ -1527,6 +1558,7 @@ def extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssignE
         value,
         (
             NewTypeValue,
+            NotValue,
             ParamSpecArgsValue,
             ParamSpecKwargsValue,
             PredicateValue,
@@ -2458,7 +2490,26 @@ def intersect_values(left: Value, right: Value, ctx: CanAssignContext) -> Gradua
     return value
 
 
+def _normalize_not_value(value: NotValue, ctx: CanAssignContext) -> GradualType:
+    inner = gradualize(value.value)
+    if inner is NO_RETURN_VALUE:
+        return TypedValue(object)
+    if inner == TypedValue(object):
+        return NO_RETURN_VALUE
+    if isinstance(inner, AnyValue):
+        return inner
+    if isinstance(inner, NotValue):
+        return gradualize(inner.value)
+    if isinstance(inner, MultiValuedValue):
+        return intersect_multi([NotValue(subval) for subval in inner.vals], ctx)
+    if isinstance(inner, IntersectionValue):
+        return gradualize(unite_values(*[NotValue(subval) for subval in inner.vals]))
+    return value
+
+
 def subtract_values(left: Value, right: Value, ctx: CanAssignContext) -> GradualType:
+    if isinstance(right, NotValue):
+        return intersect_values(left, right.value, ctx)
     vals = []
     decomposed = left.decompose()
     if decomposed is None:
@@ -2500,6 +2551,11 @@ def _intersect_values_inner(
             return gradualize(_flatten_intersection(left, right, ctx=ctx))
         else:
             return Irreducible
+
+    if isinstance(left, NotValue):
+        return _intersect_not_value(left, right, ctx)
+    if isinstance(right, NotValue):
+        return _intersect_not_value(right, left, ctx)
 
     if (result := _simple_intersection(left, right, ctx)) is not None:
         return result
@@ -2626,6 +2682,11 @@ def _intersect_alias(
 def _intersect_basic_types(
     left: BasicType, right: BasicType, ctx: CanAssignContext
 ) -> TypeOrIrreducible:
+    if isinstance(left, NotValue):
+        return _intersect_not_value(left, right, ctx)
+    if isinstance(right, NotValue):
+        return _intersect_not_value(right, left, ctx)
+
     if isinstance(left, MultiValuedValue):
         return _intersect_union(left, right, ctx)
     if isinstance(right, MultiValuedValue):
@@ -2637,6 +2698,30 @@ def _intersect_basic_types(
         return _intersect_intersection(right, left, ctx)
 
     return _intersect_simple_types(left, right, ctx)
+
+
+def _intersect_not_value(
+    left: NotValue, right: GradualType, ctx: CanAssignContext
+) -> TypeOrIrreducible:
+    normalized_left = _normalize_not_value(left, ctx)
+    if normalized_left is not left:
+        return intersect_values(normalized_left, right, ctx)
+    if isinstance(right, AnyValue):
+        return right
+    if right == TypedValue(object):
+        return left
+    if isinstance(right, (IntersectionValue, MultiValuedValue)):
+        return gradualize(_flatten_intersection(left, right, ctx=ctx))
+    if isinstance(right, NotValue):
+        normalized_right = _normalize_not_value(right, ctx)
+        if normalized_right is not right:
+            return intersect_values(left, normalized_right, ctx)
+        return Irreducible
+    if is_subtype(left.value, right, ctx):
+        return NO_RETURN_VALUE
+    if intersect_values(left.value, right, ctx) is NO_RETURN_VALUE:
+        return right
+    return Irreducible
 
 
 def _simple_intersection(
@@ -2684,6 +2769,10 @@ def _simple_intersection(
 def _intersect_simple_types(
     left: SimpleType, right: SimpleType, ctx: CanAssignContext
 ) -> TypeOrIrreducible:
+    if isinstance(left, NotValue):
+        return _intersect_not_value(left, right, ctx)
+    if isinstance(right, NotValue):
+        return _intersect_not_value(right, left, ctx)
     if isinstance(left, PredicateValue):
         return _intersect_predicate(left, right, ctx)
     if isinstance(right, PredicateValue):
