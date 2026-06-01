@@ -2,6 +2,9 @@
 # If a listed case starts passing, or an unlisted case starts failing,
 # the conformance CI workflow should fail and this file should be updated.
 
+# https://github.com/python/typing/pull/2298
+narrowing_typeis
+
 # Doesn't detect when you use a TypeVar in the wrong place
 generics_syntax_scoping
 
