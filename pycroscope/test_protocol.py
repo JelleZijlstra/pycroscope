@@ -156,6 +156,110 @@ class TestProtocol(TestNameCheckVisitorBase):
         def f(xs: list[int]) -> None:
             assert_type(mysum(xs), int)
 
+    def test_recursive_gradual_protocol_materializations(self):
+        self.assert_passes("""
+            from __future__ import annotations
+
+            from typing import Any, Protocol
+
+            class ProtoR(Protocol):
+                def items(self) -> list[tuple[Any, ProtoR]]: ...
+
+            class ProtoInnerUnion(Protocol):
+                def items(
+                    self,
+                ) -> list[tuple[int, ProtoInnerUnion] | tuple[str, ProtoInnerUnion]]: ...
+
+            class ProtoAlternatingInt(Protocol):
+                def items(self) -> list[tuple[int, ProtoAlternatingStr]]: ...
+
+            class ProtoAlternatingStr(Protocol):
+                def items(self) -> list[tuple[str, ProtoAlternatingInt]]: ...
+
+            class ProtoAllFloat(Protocol):
+                def items(self) -> list[tuple[float, ProtoAllFloat]]: ...
+
+            class ProtoAnyTail(Protocol):
+                def items(self) -> list[tuple[int, ProtoAnyTail | Any]]: ...
+
+            class ProtoAltTail(Protocol):
+                def items(self) -> list[tuple[int, list[tuple[str, ProtoAltTail]]]]: ...
+
+            class AttrProtoAnyTail(Protocol):
+                items: list[tuple[int, AttrProtoAnyTail | Any]]
+
+            class AttrProtoAltTail(Protocol):
+                items: list[tuple[int, list[tuple[str, AttrProtoAltTail]]]]
+
+            def takes_r(x: ProtoR) -> None:
+                pass
+
+            def takes_inner_union(x: ProtoInnerUnion) -> None:
+                pass
+
+            def takes_alternating(x: ProtoAlternatingInt) -> None:
+                pass
+
+            def takes_any_tail(x: ProtoAnyTail) -> None:
+                pass
+
+            def takes_alt_tail(x: ProtoAltTail) -> None:
+                pass
+
+            def takes_attr_any_tail(x: AttrProtoAnyTail) -> None:
+                pass
+
+            def takes_attr_alt_tail(x: AttrProtoAltTail) -> None:
+                pass
+
+            def accepts_materializations(
+                inner_union: ProtoInnerUnion,
+                alternating: ProtoAlternatingInt,
+                all_float: ProtoAllFloat,
+            ) -> None:
+                takes_r(inner_union)
+                takes_r(alternating)
+                takes_r(all_float)
+
+            def rejects_static_mismatches(all_float: ProtoAllFloat) -> None:
+                takes_inner_union(all_float)  # E: incompatible_argument
+                takes_alternating(all_float)  # E: incompatible_argument
+
+            def rejects_gradual_tail_mismatches(
+                any_tail: ProtoAnyTail, alt_tail: ProtoAltTail
+            ) -> None:
+                takes_any_tail(alt_tail)  # E: incompatible_argument
+                takes_alt_tail(any_tail)  # E: incompatible_argument
+
+            def rejects_data_attribute_gradual_tail_mismatches(
+                any_tail: AttrProtoAnyTail, alt_tail: AttrProtoAltTail
+            ) -> None:
+                takes_attr_any_tail(alt_tail)  # E: incompatible_argument
+                takes_attr_alt_tail(any_tail)  # E: incompatible_argument
+        """)
+
+    def test_recursive_gradual_protocol_data_attributes_in_code_only_mode(self):
+        self.assert_passes(
+            """
+            from __future__ import annotations
+
+            from typing import Any, Protocol
+
+            class ProtoAnyTail(Protocol):
+                items: list[tuple[int, ProtoAnyTail | Any]]
+
+            class ProtoAltTail(Protocol):
+                items: list[tuple[int, list[tuple[str, ProtoAltTail]]]]
+
+            def takes_any_tail(x: ProtoAnyTail) -> None:
+                pass
+
+            def caller(x: ProtoAltTail) -> None:
+                takes_any_tail(x)  # E: incompatible_argument
+            """,
+            is_code_only=True,
+        )
+
     @assert_passes(allow_import_failures=True)
     def test_explicit_protocol_abstract_instantiation_in_unimportable_module(self):
         from abc import ABC, abstractmethod
