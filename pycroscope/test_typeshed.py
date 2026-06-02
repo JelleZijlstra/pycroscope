@@ -929,23 +929,31 @@ class TestGetGenericBases:
         )
 
     def test_parse_result(self):
+        parse_result_base_args = [[]]
+        if sys.version_info >= (3, 14):
+            parse_result_base_args = [
+                [TypedValue(str)],
+                [TypedValue(str), TypedValue(str)],
+            ]
+
         self.check(
-            {
-                collections.abc.Iterable: [AnyValue(AnySource.generic_argument)],
-                collections.abc.Reversible: [AnyValue(AnySource.generic_argument)],
-                collections.abc.Container: [AnyValue(AnySource.explicit)],
-                collections.abc.Collection: [AnyValue(AnySource.generic_argument)],
-                collections.abc.Sequence: [AnyValue(AnySource.generic_argument)],
-                urllib.parse.ParseResult: [],
-                urllib.parse._ParseResultBase: (
-                    [TypedValue(str)] if sys.version_info >= (3, 14) else []
-                ),
-                tuple: [AnyValue(AnySource.generic_argument)],
-                urllib.parse._ResultMixinStr: [],
-                urllib.parse._NetlocResultMixinBase: [TypedValue(str)],
-                urllib.parse._NetlocResultMixinStr: [],
-                urllib.parse._ResultMixinStr: [],
-            },
+            [
+                {
+                    collections.abc.Iterable: [AnyValue(AnySource.generic_argument)],
+                    collections.abc.Reversible: [AnyValue(AnySource.generic_argument)],
+                    collections.abc.Container: [AnyValue(AnySource.explicit)],
+                    collections.abc.Collection: [AnyValue(AnySource.generic_argument)],
+                    collections.abc.Sequence: [AnyValue(AnySource.generic_argument)],
+                    urllib.parse.ParseResult: [],
+                    urllib.parse._ParseResultBase: base_args,
+                    tuple: [AnyValue(AnySource.generic_argument)],
+                    urllib.parse._ResultMixinStr: [],
+                    urllib.parse._NetlocResultMixinBase: [TypedValue(str)],
+                    urllib.parse._NetlocResultMixinStr: [],
+                    urllib.parse._ResultMixinStr: [],
+                }
+                for base_args in parse_result_base_args
+            ],
             urllib.parse.ParseResult,
         )
 

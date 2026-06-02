@@ -745,6 +745,14 @@ def _annotation_expr_from_runtime(val: object, ctx: Context) -> AnnotationExpr:
         return AnnotationExpr(ctx, _type_from_runtime(val, ctx))
 
 
+def _make_intersection_value(members: Sequence[Value], ctx: Context) -> Value:
+    if not members:
+        return TypedValue(object)
+    if ctx.can_assign_ctx is None:
+        return IntersectionValue(tuple(members))
+    return intersect_multi(members, ctx.can_assign_ctx)
+
+
 def _type_from_runtime(val: Any, ctx: Context) -> Value:
     if isinstance(val, str):
         if (result := ctx.is_being_evaluted(val)) is not None:
@@ -905,8 +913,8 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
         if not val.args:
             ctx.show_error("Intersection[] is missing arguments")
             return AnyValue(AnySource.error)
-        return IntersectionValue(
-            tuple(_type_from_runtime(subval, ctx) for subval in val.args)
+        return _make_intersection_value(
+            [_type_from_runtime(subval, ctx) for subval in val.args], ctx
         )
     elif isinstance(val, Not):
         return NotValue(_type_from_runtime(val.arg, ctx))
@@ -2843,8 +2851,8 @@ def _type_from_subscripted_value(
         if not members:
             ctx.show_error("Intersection[] is missing arguments")
             return AnyValue(AnySource.error)
-        return IntersectionValue(
-            tuple(_type_from_value(subval, ctx) for subval in members)
+        return _make_intersection_value(
+            [_type_from_value(subval, ctx) for subval in members], ctx
         )
     elif root is Overlapping:
         if not _require_exact_argument_count(members, 1, "Overlapping", ctx):
