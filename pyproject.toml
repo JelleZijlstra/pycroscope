@@ -48,6 +48,12 @@ docs = [
   "sphinx==7.4.7",
   "pygments==2.20.0",
 ]
+test-runner = [
+  "pytest",
+]
+coverage = [
+  "pytest-cov",
+]
 
 [project.urls]
 Homepage = "https://github.com/JelleZijlstra/pycroscope"

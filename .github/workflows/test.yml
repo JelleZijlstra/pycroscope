@@ -28,21 +28,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
-      - name: install dependencies
-        if: matrix.python-version != '3.14'
-        run: pip install .[tests,asynq,codemod] pytest
-      - name: install dependencies with coverage
-        if: matrix.python-version == '3.14'
-        run: pip install .[tests,asynq,codemod] pytest pytest-cov
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
       - name: test
         if: matrix.python-version != '3.14'
-        run: pytest pycroscope
+        run: uv run --frozen --extra tests --extra asynq --extra codemod pytest pycroscope
       - name: test with coverage
         if: matrix.python-version == '3.14'
-        run: pytest --cov=pycroscope --cov-report=term-missing --cov-report=json:coverage.json pycroscope tools/test_duplicate_tests.py
+        run: uv run --frozen --extra tests --extra asynq --extra codemod --group coverage pytest --cov=pycroscope --cov-report=term-missing --cov-report=json:coverage.json pycroscope tools/test_duplicate_tests.py
       - name: check pinned full coverage
         if: matrix.python-version == '3.14'
-        run: python tools/check_full_coverage.py coverage.json tools/full_coverage_files.txt
+        run: uv run --frozen --group coverage python tools/check_full_coverage.py coverage.json tools/full_coverage_files.txt
 
   test-no-deps:
     runs-on: ubuntu-latest
@@ -52,7 +48,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: 3.13
-      - name: install
-        run: pip install . pytest
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
       - name: test-no-deps
-        run: pytest pycroscope
+        run: uv run --frozen --group test-runner pytest pycroscope
