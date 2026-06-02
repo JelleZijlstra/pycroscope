@@ -14,11 +14,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
-        run: pip install .[tests] pytest
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
 
       - name: Run unit tests for conformance tooling
-        run: pytest tools/test_conformance_ci.py
+        run: uv run --frozen --extra tests pytest tools/test_conformance_ci.py
 
       - name: Check out typing conformance suite
         uses: actions/checkout@v6
@@ -27,4 +27,4 @@ jobs:
           path: typing
 
       - name: Run conformance gate
-        run: python tools/conformance_ci.py --typing-repo typing
+        run: uv run --frozen python tools/conformance_ci.py --typing-repo typing

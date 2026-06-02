@@ -17,8 +17,5 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
-      - name: Install pycroscope
-        run: pip install .
-
       - name: Run third-party checks
-        run: python tools/third_party_ci.py
+        run: uv run --frozen python tools/third_party_ci.py
