@@ -288,16 +288,27 @@ class TestDataclass(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_dataclass_slots_semantics_for_intersection_instances(self):
+        from dataclasses import dataclass
+
         from pycroscope.extensions import Intersection
 
+        @dataclass(slots=True)
         class SlottedA:
-            __slots__ = ("x",)
+            x: int
 
-        class SlottedB:
-            __slots__ = ("x",)
+        class Marker:
+            __slots__ = ()
 
-        def mutate(value: Intersection[SlottedA, SlottedB]) -> None:
+        class Both(SlottedA, Marker):
+            __slots__ = ()
+
+        def accepts(value: Intersection[SlottedA, Marker]) -> None:
+            pass
+
+        def mutate(value: Intersection[SlottedA, Marker]) -> None:
             value.y = 3  # E: incompatible_assignment
+
+        accepts(Both(1))
 
     @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_init_and_match_args_after_import_failure(self):

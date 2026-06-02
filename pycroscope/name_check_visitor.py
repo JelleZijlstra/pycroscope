@@ -14562,6 +14562,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             # If the value is an intersection, we need to get the attribute from each
             # of the intersection's values.
             results = []
+            nonexistent_errors = []
             for subval in root_composite.value.vals:
                 composite = Composite(
                     subval, root_composite.varname, root_composite.node
@@ -14579,6 +14580,35 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     if record_reads and node is not None:
                         self._record_attr_read_for_value(subval, attr, node)
                     results.append(subresult)
+                else:
+                    attr_ctx = _AttrContext(
+                        composite,
+                        attr,
+                        self,
+                        node=node,
+                        ignore_none=ignore_none,
+                        record_reads=False,
+                    )
+                    missing = attributes.get_attribute_result(attr_ctx)
+                    if isinstance(missing, attributes.NonexistentAttribute):
+                        nonexistent_errors.append(
+                            missing.error
+                            or CanAssignError(f"{subval} has no attribute {attr!r}")
+                        )
+            if nonexistent_errors:
+                if node is not None:
+                    self._show_error_if_checking(
+                        node,
+                        f"Intersection value {root_composite.value} has no attribute {attr!r}",
+                        ErrorCode.undefined_attribute,
+                        detail=str(
+                            CanAssignError(
+                                "Some members of intersection definitely have no such attribute",
+                                children=nonexistent_errors,
+                            )
+                        ),
+                    )
+                return AnyValue(AnySource.error)
             if not results and use_fallback and node is not None:
                 for subval in root_composite.value.vals:
                     subresult = self._get_attribute_fallback(
@@ -14607,8 +14637,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             record_reads=record_reads,
             self_value=resolved_self_value,
         )
-        result, error = attributes.get_attribute_with_error(ctx)
-        if error is not None:
+        result = attributes.get_attribute_result(ctx)
+        if not isinstance(result, Value):
             result = UNINITIALIZED_VALUE
         root_info = _attribute_root_class_info(root_composite.value)
         if (
@@ -14631,8 +14661,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     record_reads=record_reads,
                     self_value=resolved_self_value,
                 )
-                result, error = attributes.get_attribute_with_error(mangled_ctx)
-                if error is not None:
+                result = attributes.get_attribute_result(mangled_ctx)
+                if not isinstance(result, Value):
                     result = UNINITIALIZED_VALUE
         if result is UNINITIALIZED_VALUE and use_fallback and node is not None:
             return self._get_attribute_fallback(root_composite.value, attr, node)

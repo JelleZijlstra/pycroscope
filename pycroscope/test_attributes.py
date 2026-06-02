@@ -167,6 +167,112 @@ class TestAttributes(TestNameCheckVisitorBase):
             assert_type(sys.modules, dict[str, types.ModuleType])
 
     @assert_passes()
+    def test_intersection_attribute_candidates(self):
+        from typing import Annotated, Any, NewType, Protocol, TypeAlias, TypeVar
+
+        from typing_extensions import Literal, assert_type, final
+
+        from pycroscope.extensions import Intersection, Not
+
+        class P1(Protocol):
+            @property
+            def attr(self) -> int | str:
+                raise NotImplementedError
+
+        class P2(Protocol):
+            @property
+            def attr(self) -> str | bytes:
+                raise NotImplementedError
+
+        class C:
+            pass
+
+        class HasAttr:
+            attr: int
+
+        @final
+        class FinalNoAttr:
+            pass
+
+        FinalNoAttrAlias: TypeAlias = FinalNoAttr
+        NewBool = NewType("NewBool", bool)
+        T = TypeVar("T")
+        BoundFinal = TypeVar("BoundFinal", bound=FinalNoAttr)
+
+        def protocol_attribute_candidates(value: Intersection[P1, P2, C]) -> None:
+            assert_type(value.attr, str)
+            value.other_attr  # E: attribute_is_never_set
+
+        def ordinary_class_candidate_wins_over_indeterminate(
+            value: Intersection[HasAttr, C],
+        ) -> None:
+            assert_type(value.attr, int)
+
+        def nonexistent_candidate_wins(value: Intersection[bool, Any]) -> None:
+            value.attr  # E: undefined_attribute
+
+        def final_class_nonexistent_candidate_wins(
+            value: Intersection[FinalNoAttr, Any],
+        ) -> None:
+            value.attr  # E: undefined_attribute
+
+        def literal_nonexistent_candidate_wins(
+            value: Intersection[Literal[True], Any],
+        ) -> None:
+            value.attr  # E: undefined_attribute
+
+        def union_of_nonexistent_candidates_wins(
+            value: Intersection[Literal[True] | Literal[False], Any],
+        ) -> None:
+            value.attr  # E: undefined_attribute
+
+        def union_with_nonexistent_arm_errors(
+            value: Intersection[C | FinalNoAttr, Any],
+        ) -> None:
+            value.attr  # E: undefined_attribute
+
+        def annotated_final_nonexistent_candidate_wins(
+            value: Intersection[Annotated[FinalNoAttr, "metadata"], Any],
+        ) -> None:
+            value.attr  # E: undefined_attribute
+
+        def alias_nonexistent_candidate_wins(
+            value: Intersection[FinalNoAttrAlias, Any],
+        ) -> None:
+            value.attr  # E: undefined_attribute
+
+        def newtype_fallback_nonexistent_candidate_wins(
+            value: Intersection[NewBool, Any],
+        ) -> None:
+            value.attr  # E: undefined_attribute
+
+        def any_candidate_wins_over_indeterminate(value: Intersection[C, Any]) -> None:
+            assert_type(value.attr, Any)
+
+        def any_candidate_wins_over_unbounded_typevar(
+            value: Intersection[T, Any],
+        ) -> None:
+            assert_type(value.attr, Any)
+
+        def any_candidate_wins_over_nonfinal_class_object(
+            value: Intersection[type[C], Any],
+        ) -> None:
+            assert_type(value.attr, Any)
+
+        def final_class_object_nonexistent_candidate_wins(
+            value: Intersection[type[FinalNoAttr], Any],
+        ) -> None:
+            value.attr  # E: undefined_attribute
+
+        def bounded_typevar_nonexistent_candidate_wins(
+            value: Intersection[BoundFinal, Any],
+        ) -> None:
+            value.attr  # E: undefined_attribute
+
+        def not_candidate_is_indeterminate(value: Intersection[Not[int], Any]) -> None:
+            assert_type(value.attr, Any)
+
+    @assert_passes()
     def test_generic(self):
         from typing import Generic, TypeVar
 
