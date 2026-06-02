@@ -14,7 +14,6 @@ from typing_extensions import assert_never
 from pycroscope.input_sig import ActualArguments
 from pycroscope.relations import intersect_multi, intersect_values
 from pycroscope.signature import (
-    ANY_SIGNATURE,
     ARGS,
     Argument,
     BoundArgs,
@@ -127,11 +126,7 @@ def _determine_signatures(
     noncallable = []
     for member in callee.vals:
         signature = get_signature(member)
-        if signature is ANY_SIGNATURE:
-            signatures.append(ANY_SIGNATURE)
-        elif isinstance(signature, Signature):
-            signatures.append(signature)
-        elif isinstance(signature, OverloadedSignature):
+        if isinstance(signature, (Signature, OverloadedSignature)):
             signatures.append(signature)
         elif _is_definitely_non_callable(member, ctx.can_assign_ctx):
             noncallable.append(member)
@@ -151,10 +146,6 @@ def _determine_signatures(
 
 def _is_definitely_non_callable(value: Value, ctx: CanAssignContext) -> bool:
     value = replace_fallback(value)
-    if isinstance(value, AnnotatedValue):
-        return _is_definitely_non_callable(value.value, ctx)
-    if isinstance(value, (AnyValue, PredicateValue, NotValue, TypeVarValue)):
-        return False
     if isinstance(value, MultiValuedValue):
         return all(_is_definitely_non_callable(subval, ctx) for subval in value.vals)
     if isinstance(value, IntersectionValue):
@@ -162,8 +153,6 @@ def _is_definitely_non_callable(value: Value, ctx: CanAssignContext) -> bool:
     if isinstance(value, SubclassValue):
         return False
     if isinstance(value, TypedValue):
-        return value.get_type_object(ctx).is_final()
-    if isinstance(value, GenericValue):
         return value.get_type_object(ctx).is_final()
     return False
 
