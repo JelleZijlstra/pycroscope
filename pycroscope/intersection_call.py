@@ -17,7 +17,6 @@ from pycroscope.signature import (
     ARGS,
     Argument,
     BoundArgs,
-    CallReturn,
     CheckCallContext,
     ConcreteSignature,
     OverloadedSignature,
@@ -231,75 +230,26 @@ def _apply_member(
     if isinstance(member.original, OverloadedSignature):
         return _apply_overload_member(member, actual_args, ctx)
 
-    returns = []
-    for alternative in member.alternatives:
-        with _catch_call_errors(ctx):
-            ret = alternative.signature.check_call_preprocessed(actual_args, ctx)
-        if not ret.is_error:
-            returns.append(ret.return_value)
-            if not ret.used_any_for_match and ret.remaining_arguments is None:
-                break
-    if not returns:
+    assert isinstance(member.original, Signature)
+    assert len(member.alternatives) == 1
+    signature = member.alternatives[0].signature
+    with _catch_call_errors(ctx):
+        ret = signature.check_call_preprocessed(actual_args, ctx)
+    if ret.is_error:
         return None
-    if any(isinstance(ret, AnyValue) for ret in returns):
-        return AnyValue(AnySource.multiple_overload_matches)
-    return unite_values(*returns)
+    return ret.return_value
 
 
 def _apply_overload_member(
     member: _Member, actual_args: ActualArguments, ctx: CheckCallContext
 ) -> Value | None:
     assert isinstance(member.original, OverloadedSignature)
-    if _overload_member_matched_multiple_arms_with_any(member):
-        return AnyValue(AnySource.multiple_overload_matches)
-
-    signatures = member.original._prefer_variadic_matches(
-        [alternative.signature for alternative in member.alternatives], actual_args
-    )
-
-    any_rets: list[CallReturn] = []
-    union_rets: list[CallReturn] = []
-    union_and_any_rets: list[CallReturn] = []
-    last = len(signatures) - 1
-    for i, signature in enumerate(signatures):
-        with _catch_call_errors(ctx):
-            ret = signature.check_call_preprocessed(
-                actual_args, ctx, is_overload=i != last
-            )
-        if ret.is_error:
-            continue
-        if ret.remaining_arguments is not None:
-            if ret.used_any_for_match:
-                union_and_any_rets.append(ret)
-            else:
-                union_rets.append(ret)
-            actual_args = ret.remaining_arguments
-        elif ret.used_any_for_match:
-            any_rets.append(ret)
-        else:
-            return member.original._unite_rets(
-                any_rets, union_and_any_rets, union_rets, ret, ctx=ctx
-            )
-
-    if any_rets or union_rets or union_and_any_rets:
-        return member.original._unite_rets(
-            any_rets, union_and_any_rets, union_rets, ctx=ctx
-        )
-    return None
-
-
-def _overload_member_matched_multiple_arms_with_any(member: _Member) -> bool:
-    if len(member.alternatives) < 2:
-        return False
-    if (
-        len({alternative.signature.return_value for alternative in member.alternatives})
-        == 1
-    ):
-        return False
-    return any(
-        isinstance(composite.value, AnyValue)
-        for alternative in member.alternatives
-        for _position, composite in alternative.bound_args.values()
+    return member.original.check_call_preprocessed(
+        actual_args,
+        ctx,
+        signatures=[alternative.signature for alternative in member.alternatives],
+        bound_args=[alternative.bound_args for alternative in member.alternatives],
+        allow_no_match=True,
     )
 
 
