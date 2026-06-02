@@ -619,6 +619,30 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             force_runtime_module_load_failure=True,
         )
 
+    def test_code_only_recursive_generic_constructor_widens_literals(self):
+        self.assert_passes(
+            """
+            from __future__ import annotations
+
+            from typing import Generic, TypeVar
+
+            from typing_extensions import assert_type
+
+            T = TypeVar("T")
+
+            class Box(Generic[T]):
+                value: T
+                child: Box[T] | None
+
+                def __init__(self, value: T) -> None:
+                    self.value = value
+
+            def capybara() -> None:
+                assert_type(Box(1).value, int)
+        """,
+            is_code_only=True,
+        )
+
     @assert_passes(run_in_both_module_modes=True)
     def test_code_only_constructor_returns_are_weakened(self):
         from collections import defaultdict

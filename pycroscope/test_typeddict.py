@@ -252,6 +252,113 @@ class TestExtraKeys(TestNameCheckVisitorBase):
 
 
 class TestTypedDict(TestNameCheckVisitorBase):
+    def test_recursive_gradual_typeddict_materializations(self):
+        self.assert_passes("""
+            from __future__ import annotations
+
+            from typing import Any
+
+            from typing_extensions import ReadOnly, TypedDict
+
+            class TDR(TypedDict):
+                items: list[tuple[Any, TDR]]
+
+            class TDInnerUnion(TypedDict):
+                items: list[tuple[int, TDInnerUnion] | tuple[str, TDInnerUnion]]
+
+            class TDAlternatingInt(TypedDict):
+                items: list[tuple[int, TDAlternatingStr]]
+
+            class TDAlternatingStr(TypedDict):
+                items: list[tuple[str, TDAlternatingInt]]
+
+            class TDAllFloat(TypedDict):
+                items: list[tuple[float, TDAllFloat]]
+
+            class TDAnyTail(TypedDict):
+                items: list[tuple[int, TDAnyTail | Any]]
+
+            class TDAltTail(TypedDict):
+                items: list[tuple[int, list[tuple[str, TDAltTail]]]]
+
+            def takes_r(x: TDR) -> None:
+                pass
+
+            def takes_inner_union(x: TDInnerUnion) -> None:
+                pass
+
+            def takes_alternating(x: TDAlternatingInt) -> None:
+                pass
+
+            def takes_any_tail(x: TDAnyTail) -> None:
+                pass
+
+            def takes_alt_tail(x: TDAltTail) -> None:
+                pass
+
+            def accepts_materializations(
+                inner_union: TDInnerUnion,
+                alternating: TDAlternatingInt,
+                all_float: TDAllFloat,
+            ) -> None:
+                takes_r(inner_union)
+                takes_r(alternating)
+                takes_r(all_float)
+
+            def rejects_static_mismatches(all_float: TDAllFloat) -> None:
+                takes_inner_union(all_float)  # E: incompatible_argument
+                takes_alternating(all_float)  # E: incompatible_argument
+
+            def rejects_gradual_tail_mismatches(
+                any_tail: TDAnyTail, alt_tail: TDAltTail
+            ) -> None:
+                takes_any_tail(alt_tail)  # E: incompatible_argument
+                takes_alt_tail(any_tail)  # E: incompatible_argument
+
+            class TDReadOnlyAnyTail(TypedDict):
+                items: ReadOnly[list[tuple[int, TDReadOnlyAnyTail | Any]]]
+
+            class TDReadOnlyAltTail(TypedDict):
+                items: ReadOnly[list[tuple[int, list[tuple[str, TDReadOnlyAltTail]]]]]
+
+            def takes_readonly_any_tail(x: TDReadOnlyAnyTail) -> None:
+                pass
+
+            def takes_readonly_alt_tail(x: TDReadOnlyAltTail) -> None:
+                pass
+
+            def readonly_caller(
+                any_tail: TDReadOnlyAnyTail, alt_tail: TDReadOnlyAltTail
+            ) -> None:
+                takes_readonly_any_tail(alt_tail)  # E: incompatible_argument
+                takes_readonly_alt_tail(any_tail)  # E: incompatible_argument
+        """)
+
+    def test_mutually_recursive_typeddicts_do_not_recurse_forever(self):
+        self.assert_passes("""
+            from __future__ import annotations
+
+            from typing_extensions import TypedDict
+
+            class A1(TypedDict):
+                x: A2
+
+            class A2(TypedDict):
+                x: A1
+
+            class B1(TypedDict):
+                x: B2
+
+            class B2(TypedDict):
+                x: B1
+
+            def takes_a(x: A1) -> None:
+                pass
+
+            def caller(b: B1) -> None:
+                takes_a(b)
+        """)
+
     @assert_passes()
     def test_constructor(self):
         from typing_extensions import NotRequired, TypedDict

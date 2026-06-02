@@ -2095,12 +2095,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None, False
         self.log(logging.INFO, "Checking file", (self.filename, os.getpid()))
         if self.is_code_only:
-            mod_dict = {}
+            mod = types.ModuleType(self.filename)
+            mod.__file__ = self.filename
+            previous_module = sys.modules.get(self.filename, _UNSET)
+            sys.modules[self.filename] = mod
             try:
-                exec(compile(self.contents, self.filename, "exec"), mod_dict)
+                exec(compile(self.contents, self.filename, "exec"), mod.__dict__)
             except KeyboardInterrupt:
+                if previous_module is _UNSET:
+                    sys.modules.pop(self.filename, None)
+                else:
+                    sys.modules[self.filename] = previous_module
                 raise
             except BaseException as e:
+                if previous_module is _UNSET:
+                    sys.modules.pop(self.filename, None)
+                else:
+                    sys.modules[self.filename] = previous_module
                 node = self._get_import_failure_node(e)
                 self.show_error(
                     node,
@@ -2108,8 +2119,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     error_code=ErrorCode.import_failed,
                 )
                 return None, False
-            mod = types.ModuleType(self.filename)
-            mod.__dict__.update(mod_dict)
             return mod, False
         import_paths = self.options.get_value_for(ImportPaths)
 

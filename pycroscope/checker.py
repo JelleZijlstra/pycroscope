@@ -501,8 +501,8 @@ class Checker:
     assumed_compatibilities: list[tuple[TypeObject, TypeObject]] = field(
         default_factory=list
     )
-    alias_assumed_compatibilities: set[tuple[TypeAliasValue, TypeAliasValue]] = field(
-        default_factory=set
+    alias_assumed_compatibilities: list[tuple[TypeAliasValue, TypeAliasValue]] = field(
+        default_factory=list
     )
     vnv_map: dict[str, VariableNameValue] = field(default_factory=dict)
     type_alias_cache: dict[object, TypeAlias] = field(default_factory=dict)
@@ -844,11 +844,12 @@ class Checker:
         self, left: TypeAliasValue, right: TypeAliasValue
     ) -> Generator[None]:
         pair = (left, right)
-        self.alias_assumed_compatibilities.add(pair)
+        self.alias_assumed_compatibilities.append(pair)
         try:
             yield
         finally:
-            self.alias_assumed_compatibilities.discard(pair)
+            new_pair = self.alias_assumed_compatibilities.pop()
+            assert pair == new_pair
 
     def get_relation_cache(self) -> dict[object, object] | None:
         return self._relation_cache

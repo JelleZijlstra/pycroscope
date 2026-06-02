@@ -135,6 +135,7 @@ class RelationContext:
     inferables: tuple[TypeParam, ...] | None = None
     original_left: GradualType | None = None
     original_right: GradualType | None = None
+    relation_goals: tuple[object, ...] = ()
 
     def with_relation(
         self, relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE]
@@ -150,13 +151,15 @@ class RelationContext:
     def check_relation(
         self, left: Value, right: Value, relation: Relation
     ) -> CanAssign:
-        return has_relation(left, right, relation, self.ctx, inferables=self.inferables)
+        return has_relation_from_ctx(
+            left,
+            right,
+            replace(self, relation=relation, original_left=None, original_right=None),
+        )
 
     def has_relation(self, left: Value, right: Value) -> CanAssign:
         return _has_relation(
-            gradualize(left),
-            gradualize(right),
-            replace(self, original_left=None, original_right=None),
+            left, right, replace(self, original_left=None, original_right=None)
         )
 
 
@@ -300,17 +303,30 @@ def has_relation(
 def has_relation_from_ctx(
     left: Value, right: Value, relation_ctx: RelationContext
 ) -> CanAssign:
+    return _has_relation(left, right, relation_ctx)
+
+
+def _has_relation(
+    left: Value, right: Value, relation_ctx: RelationContext
+) -> CanAssign:
     left = gradualize(left)
     right = gradualize(right)
-    cache = _get_relation_cache(relation_ctx.ctx)
-    key = None
+    key = _make_relation_cache_key(
+        left, right, relation_ctx.relation, relation_ctx.inferables
+    )
+    if key in relation_ctx.relation_goals:
+        return {}
+
+    cache = None
+    if not relation_ctx.relation_goals:
+        cache = _get_relation_cache(relation_ctx.ctx)
     if cache is not None:
-        key = _make_relation_cache_key(
-            left, right, relation_ctx.relation, relation_ctx.inferables
-        )
         cached = _get_cached_relation_result(cache, key)
         if cached is not None:
             return cached
+    relation_ctx = replace(
+        relation_ctx, relation_goals=(*relation_ctx.relation_goals, key)
+    )
 
     if relation_ctx.relation in (Relation.EQUIVALENT, Relation.CONSISTENT):
         # EQUIVALENT checks both subtype directions; CONSISTENT checks both assignable directions.
@@ -334,10 +350,9 @@ def has_relation_from_ctx(
             result = unify_bounds_maps([result1, result2])
     else:
         assert relation_ctx.relation in (Relation.SUBTYPE, Relation.ASSIGNABLE)
-        result = _has_relation(left, right, relation_ctx)
+        result = _has_relation_impl(left, right, relation_ctx)
 
-    if key is not None:
-        assert cache is not None
+    if cache is not None:
         _store_cached_relation_result(cache, key, result)
     if not isinstance(result, CanAssignError):
         for tv in result:
@@ -347,26 +362,7 @@ def has_relation_from_ctx(
     return result
 
 
-def _specialized_synthetic_class_type(
-    synthetic_class: SyntheticClassObjectValue, ctx: CanAssignContext
-) -> TypedValue:
-    class_typ = synthetic_class.class_type.typ
-    tobj = synthetic_class.get_type_object(ctx)
-    declared = tobj.get_declared_type_params()
-    if declared:
-        substitutions = TypeVarMap()
-        specialized_args: list[Value] = []
-        for param in declared:
-            specialized_arg = default_value_for_type_param(param).substitute_typevars(
-                substitutions
-            )
-            substitutions = substitutions.with_value(param, specialized_arg)
-            specialized_args.append(specialized_arg)
-        return GenericValue(class_typ, specialized_args)
-    return synthetic_class.class_type
-
-
-def _has_relation(
+def _has_relation_impl(
     left: GradualType, right: GradualType, relation_ctx: RelationContext
 ) -> CanAssign:
     relation = relation_ctx.relation
@@ -910,7 +906,11 @@ def _has_relation(
             elif isinstance(left.typ, TypedValue):
                 left_tobj = left.typ.get_type_object(ctx)
                 return left_tobj.can_assign(
-                    left, TypedValue(right.val), ctx, relation=relation
+                    left,
+                    TypedValue(right.val),
+                    ctx,
+                    relation=relation,
+                    relation_ctx=relation_ctx,
                 )
             else:
                 assert_never(left.typ)
@@ -943,7 +943,9 @@ def _has_relation(
             if left_tobj.is_assignable_to_type(type):
                 return {}
             if isinstance(right.typ, TypedValue):
-                return left_tobj.can_assign(left, right, ctx, relation=relation)
+                return left_tobj.can_assign(
+                    left, right, ctx, relation=relation, relation_ctx=relation_ctx
+                )
             elif isinstance(right.typ, InferenceVarValue):
                 return {
                     right.typ.typevar_param: [UpperBound(right.typ.typevar_param, left)]
@@ -1044,7 +1046,7 @@ def _has_relation(
             and tuple_members_from_value(right, ctx) is not None
         ):
             return left.get_type_object(ctx).can_assign(
-                left, right, ctx, relation=relation
+                left, right, ctx, relation=relation, relation_ctx=relation_ctx
             )
         if relation is Relation.SUBTYPE:
             return CanAssignError(f"{right} is not {relation.description} {left}")
@@ -1080,7 +1082,7 @@ def _has_relation(
             and tuple_members_from_value(left, ctx) is not None
         ):
             return left.get_type_object(ctx).can_assign(
-                left, right, ctx, relation=relation
+                left, right, ctx, relation=relation, relation_ctx=relation_ctx
             )
         if (
             relation is Relation.ASSIGNABLE
@@ -1200,7 +1202,7 @@ def _has_relation(
             else:
                 right_for_check = right
             can_assign = left_tobj.can_assign(
-                left, right_for_check, ctx, relation=relation
+                left, right_for_check, ctx, relation=relation, relation_ctx=relation_ctx
             )
             if isinstance(can_assign, CanAssignError):
                 return can_assign
@@ -1215,7 +1217,7 @@ def _has_relation(
             else:
                 right_for_check = right
             can_assign = left_tobj.can_assign(
-                left, right_for_check, ctx, relation=relation
+                left, right_for_check, ctx, relation=relation, relation_ctx=relation_ctx
             )
             if isinstance(can_assign, CanAssignError):
                 if left_tobj.is_instance(right.val):
@@ -1230,6 +1232,25 @@ def _has_relation(
             return CanAssignError(f"{right} is not {relation.description} {left}")
 
     return CanAssignError(f"{right} is not {relation.description} {left}")
+
+
+def _specialized_synthetic_class_type(
+    synthetic_class: SyntheticClassObjectValue, ctx: CanAssignContext
+) -> TypedValue:
+    class_typ = synthetic_class.class_type.typ
+    tobj = synthetic_class.get_type_object(ctx)
+    declared = tobj.get_declared_type_params()
+    if declared:
+        substitutions = TypeVarMap()
+        specialized_args: list[Value] = []
+        for param in declared:
+            specialized_arg = default_value_for_type_param(param).substitute_typevars(
+                substitutions
+            )
+            substitutions = substitutions.with_value(param, specialized_arg)
+            specialized_args.append(specialized_arg)
+        return GenericValue(class_typ, specialized_args)
+    return synthetic_class.class_type
 
 
 def _coerce_paramspec_generic_arg_for_relation(arg: Value, *, other: Value) -> Value:
@@ -1423,7 +1444,7 @@ def _has_relation_for_generic_arg(
 def _allows_forward_only_invariant_rhs(value: Value) -> bool:
     if isinstance(value, AnnotatedValue):
         return _allows_forward_only_invariant_rhs(value.value)
-    return isinstance(value, GenericValue) and value.weak
+    return isinstance(value, GenericValue) and value.weak and value.typ is not tuple
 
 
 def _get_generic_variances(
@@ -1606,7 +1627,9 @@ def _has_relation_thrift_enum(
         tobj = right.get_type_object(ctx)
         if tobj.is_assignable_to_type(int):
             return {}
-        return left.get_type_object(ctx).can_assign(left, right, ctx, relation=relation)
+        return left.get_type_object(ctx).can_assign(
+            left, right, ctx, relation=relation, relation_ctx=relation_ctx
+        )
     else:
         assert_never(right)
 
@@ -1974,17 +1997,16 @@ def _has_relation_sequence(
 ) -> CanAssign:
     relation = relation_ctx.relation
     ctx = relation_ctx.ctx
+    if left.typ is tuple and right.typ is tuple:
+        return compare_tuple_sequences(left, right, relation_ctx)
+
     # TypeObject.can_assign() does the nominal/container-level compatibility check
-    # for all sequences. For tuple/tuple, it also already performs the full
-    # element-by-element comparison via compare_tuple_sequences(); preserve that
-    # detailed result instead of replacing it with a generic "tuple is not
-    # assignable to tuple" wrapper here.
+    # for all non-tuple sequences. Tuple/tuple comparisons are handled above so
+    # their element-by-element checks keep the active recursive relation goals.
     can_assign = left.get_type_object(ctx).can_assign(
-        left, right, ctx, relation=relation
+        left, right, ctx, relation=relation, relation_ctx=relation_ctx
     )
     if isinstance(can_assign, CanAssignError):
-        if left.typ is tuple and right.typ is tuple:
-            return can_assign
         return CanAssignError(
             f"{stringify_object(right.typ)} is not {relation.description}"
             f" {stringify_object(left.typ)}"
@@ -1992,9 +2014,6 @@ def _has_relation_sequence(
 
     # Non-tuple sequences still need the concrete SequenceValue relation pass
     # below, because the TypeObject check does not compare their known members.
-    if left.typ is tuple and right.typ is tuple:
-        return can_assign
-
     return compare_tuple_sequences(left, right, relation_ctx)
 
 

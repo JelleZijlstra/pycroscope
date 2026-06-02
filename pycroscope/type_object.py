@@ -1672,7 +1672,14 @@ class TypeObject:
         ctx: CanAssignContext,
         *,
         relation: Relation = Relation.ASSIGNABLE,
+        relation_ctx: RelationContext | None = None,
     ) -> CanAssign:
+        if relation_ctx is None:
+            relation_ctx = RelationContext(relation, ctx)
+        else:
+            relation_ctx = replace(
+                relation_ctx, relation=relation, original_left=None, original_right=None
+            )
 
         other_basic = replace_fallback(other_val)
         if not isinstance(other_basic, (KnownValue, TypedValue, SubclassValue)):
@@ -1684,7 +1691,7 @@ class TypeObject:
                 return compare_tuple_sequences(
                     SequenceValue(tuple, self_tuple_members),
                     SequenceValue(tuple, other_tuple_members),
-                    RelationContext(relation, ctx),
+                    relation_ctx,
                 )
         other = other_basic.get_type_object(ctx)
         if class_keys_match(self.typ, other.typ):
@@ -1718,7 +1725,7 @@ class TypeObject:
                 return {}
             with ctx.assume_compatibility(self, other):
                 result = self._is_compatible_with_protocol(
-                    self_val, other_basic, relation, ctx
+                    self_val, other_basic, relation, ctx, relation_ctx
                 )
                 if (
                     isinstance(result, CanAssignError)
@@ -1728,7 +1735,7 @@ class TypeObject:
                     for base in other.get_virtual_bases():
                         assert isinstance(base, TypedValue), (self, base)
                         subresult = self._is_compatible_with_protocol(
-                            self_val, base, relation, ctx
+                            self_val, base, relation, ctx, relation_ctx
                         )
                         if not isinstance(subresult, CanAssignError):
                             result = subresult
@@ -1775,6 +1782,7 @@ class TypeObject:
         other_val: KnownValue | TypedValue | SubclassValue,
         relation: Relation,
         ctx: CanAssignContext,
+        relation_ctx: RelationContext,
     ) -> CanAssign:
         """This type object is a protocol. Is other_val compatible with it?"""
         other_type_obj, is_class = self._get_tobj_for_protocol_rhs(other_val, ctx)
@@ -1884,6 +1892,7 @@ class TypeObject:
                 ctx,
                 inferables=tuple(inferables),
                 strict_variance=strict_variance,
+                relation_ctx=relation_ctx,
             )
             if isinstance(bounds_map, CanAssignError):
                 return CanAssignError(
@@ -3460,6 +3469,7 @@ def is_compatible_attribute(
     inferables: tuple[TypeParam, ...] | None = None,
     *,
     strict_variance: bool = False,
+    relation_ctx: RelationContext | None = None,
 ) -> CanAssign:
     if child_attr.symbol.is_classvar and base_attr.symbol.is_instance_only:
         return CanAssignError(
@@ -3484,7 +3494,16 @@ def is_compatible_attribute(
             f"but not writable on child class {child_attr.owner}"
         )
 
-    relation_ctx = RelationContext(relation, ctx, inferables=inferables)
+    if relation_ctx is None:
+        relation_ctx = RelationContext(relation, ctx, inferables=inferables)
+    else:
+        relation_ctx = replace(
+            relation_ctx,
+            relation=relation,
+            inferables=inferables,
+            original_left=None,
+            original_right=None,
+        )
 
     can_assign = _can_assign_to_base(
         base_attr, child_attr, relation_ctx, strict_variance=strict_variance
