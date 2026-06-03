@@ -4,7 +4,7 @@
 
 - Implement call checking for callable intersection types.
 - Treat definitely missing attributes on intersection members as an error instead of ignoring them, while still allowing indeterminate members to be ignored when another member provides the attribute.
-- Normalize intersection annotations with union operands instead of producing an internal error.
+- Normalize pycroscope extension annotations with PEP 604 union operands, such as `Intersection[A, B | C]`, `A | Intersection[B, C]`, and `int | Not[str]`, instead of producing an internal error.
 - Improve recursive gradual type compatibility for aliases, protocols, and TypedDicts, so recursive `Any` tails no longer hide incompatible nested types and mutually recursive TypedDicts no longer produce internal recursion errors.
 - Infer and validate class type-parameter variance from the collected class API in both importable and static fallback analysis, including generic bases and callable member annotations.
 - Treat plain subclasses of frozen dataclasses as mutable for their own annotated attributes, while keeping inherited frozen dataclass fields read-only.
