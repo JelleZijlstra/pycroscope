@@ -2871,51 +2871,96 @@ class OverloadedSignature:
         actual_args = preprocess_args(args, ctx)
         if actual_args is None:
             return AnyValue(AnySource.error)
-        # We first bind the arguments for each overload, to get the obvious errors
-        # out of the way first.
-        errors_per_overload = []
-        bound_args_per_overload = []
-        for sig in signatures:
-            assert ctx.visitor is not None
-            with ctx.visitor.catch_errors() as caught_errors:
-                bound_args = sig.bind_arguments(actual_args, ctx)
-            bound_args_per_overload.append(bound_args)
-            errors_per_overload.append(caught_errors)
+        return_value = self.check_call_preprocessed(
+            actual_args, ctx, signatures=signatures
+        )
+        assert return_value is not None
+        return return_value
 
-        if not any(bound_args is not None for bound_args in bound_args_per_overload):
-            detail = self._make_detail(errors_per_overload, signatures)
-            ctx.on_error(
-                "Cannot call overloaded function",
-                code=ErrorCode.incompatible_call,
-                detail=str(detail),
-            )
-            return AnyValue(AnySource.error)
+    def check_call_preprocessed(
+        self,
+        actual_args: ActualArguments,
+        ctx: CheckCallContext,
+        *,
+        signatures: Sequence[Signature] | None = None,
+        bound_args: Sequence[BoundArgs] | None = None,
+        allow_no_match: bool = False,
+    ) -> Value | None:
+        """Check a preprocessed call to an overloaded function.
+
+        If ``signatures`` is provided, it contains the candidate overload arms.
+        If ``bound_args`` is provided, it must contain the corresponding
+        bindings for those arms, and they are assumed to have already matched.
+        """
+        candidates = list(self.signatures if signatures is None else signatures)
+        has_explicit_bound_args = bound_args is not None
+        if bound_args is None:
+            errors_per_overload = []
+            sigs = []
+            matched_bound_args = []
+            for sig in candidates:
+                if ctx.visitor is None:
+                    sig_bound_args = sig.bind_arguments(actual_args, ctx)
+                    caught_errors = []
+                else:
+                    with ctx.visitor.catch_errors() as caught_errors:
+                        sig_bound_args = sig.bind_arguments(actual_args, ctx)
+                if sig_bound_args is not None:
+                    sigs.append(sig)
+                    matched_bound_args.append(sig_bound_args)
+                errors_per_overload.append(caught_errors)
+
+            if not sigs:
+                if allow_no_match:
+                    return None
+                detail = self._make_detail(errors_per_overload, candidates)
+                ctx.on_error(
+                    "Cannot call overloaded function",
+                    code=ErrorCode.incompatible_call,
+                    detail=str(detail),
+                )
+                return AnyValue(AnySource.error)
+            bound_args = matched_bound_args
+        else:
+            sigs = candidates
+            if not sigs:
+                if allow_no_match:
+                    return None
+                ctx.on_error(
+                    "Cannot call overloaded function", code=ErrorCode.incompatible_call
+                )
+                return AnyValue(AnySource.error)
+            assert len(sigs) == len(bound_args)
+
+        if has_explicit_bound_args and _overload_matches_multiple_arms_with_any(
+            sigs, bound_args
+        ):
+            return AnyValue(AnySource.multiple_overload_matches)
 
         errors_per_overload = []
         any_rets: list[CallReturn] = []
         union_rets: list[CallReturn] = []
         union_and_any_rets: list[CallReturn] = []
-        sigs = [
-            sig
-            for sig, bound_args in zip(signatures, bound_args_per_overload)
-            if bound_args is not None
-        ]
         sigs = self._prefer_variadic_matches(sigs, actual_args)
-        last = len(sigs) - 1
         for i, sig in enumerate(sigs):
-            assert ctx.visitor is not None
-            with ctx.visitor.catch_errors() as caught_errors:
-                # We can't use check_call_with_bound_args here because we may
-                # rebind the arguments.
+            if ctx.visitor is None:
                 ret = sig.check_call_preprocessed(
-                    actual_args,
-                    ctx,
-                    # We set is_overload to False for the last overload
-                    # because we can't do union decomposition on the last one:
-                    # there's no other overload that could handle the remaining
-                    # union members.
-                    is_overload=i != last,
+                    actual_args, ctx, is_overload=i != len(sigs) - 1
                 )
+                caught_errors = []
+            else:
+                with ctx.visitor.catch_errors() as caught_errors:
+                    # We can't use check_call_with_bound_args here because we may
+                    # rebind the arguments.
+                    ret = sig.check_call_preprocessed(
+                        actual_args,
+                        ctx,
+                        # We set is_overload to False for the last overload
+                        # because we can't do union decomposition on the last one:
+                        # there's no other overload that could handle the remaining
+                        # union members.
+                        is_overload=i != len(sigs) - 1,
+                    )
             errors_per_overload.append(caught_errors)
             if ret.is_error:
                 continue
@@ -2945,6 +2990,8 @@ class OverloadedSignature:
             return self._unite_rets(any_rets, union_and_any_rets, union_rets, ctx=ctx)
 
         # None of the signatures matched
+        if allow_no_match:
+            return None
         errors = list(itertools.chain.from_iterable(errors_per_overload))
         codes = {error["error_code"] for error in errors}
         if len(codes) == 1:
@@ -3102,6 +3149,20 @@ class OverloadedSignature:
         return signatures_have_relation(
             self, other, RelationContext(Relation.ASSIGNABLE, ctx, None)
         )
+
+
+def _overload_matches_multiple_arms_with_any(
+    signatures: Sequence[Signature], bound_args: Sequence[BoundArgs]
+) -> bool:
+    if len(signatures) < 2:
+        return False
+    if len({signature.return_value for signature in signatures}) == 1:
+        return False
+    return any(
+        isinstance(composite.value, AnyValue)
+        for signature_bound_args in bound_args
+        for _position, composite in signature_bound_args.values()
+    )
 
 
 ConcreteSignature = Signature | OverloadedSignature

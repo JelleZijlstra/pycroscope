@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Implement call checking for callable intersection types.
 - Treat definitely missing attributes on intersection members as an error instead of ignoring them, while still allowing indeterminate members to be ignored when another member provides the attribute.
 - Normalize intersection annotations with union operands instead of producing an internal error.
 - Improve recursive gradual type compatibility for aliases, protocols, and TypedDicts, so recursive `Any` tails no longer hide incompatible nested types and mutually recursive TypedDicts no longer produce internal recursion errors.

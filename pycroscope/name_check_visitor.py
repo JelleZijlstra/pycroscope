@@ -15272,7 +15272,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 or self._is_dataclass_field_callee(callee_wrapped),
                 callee=callee_wrapped,
             )
-            if self._is_checking():
+            fallback_callee = replace_fallback(callee_wrapped)
+            if isinstance(fallback_callee, IntersectionValue):
+                from pycroscope import intersection_call
+
+                return_value = intersection_call.check_call(
+                    fallback_callee, arguments, ctx, self.signature_from_value
+                )
+            elif self._is_checking():
                 return_value = extended_argspec.check_call(arguments, ctx)
             else:
                 with self.catch_errors():

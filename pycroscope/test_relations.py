@@ -3,10 +3,18 @@ from types import NoneType
 
 from pycroscope.analysis_lib import override
 from pycroscope.checker import Checker
-from pycroscope.relations import Relation, has_relation
+from pycroscope.relations import Relation, has_relation, intersect_values, unite_multi
 from pycroscope.test_name_check_visitor import TestNameCheckVisitorBase
 from pycroscope.test_node_visitor import assert_passes, skip_before
-from pycroscope.value import GenericValue, KnownValue, TypedValue, class_owner_from_key
+from pycroscope.value import (
+    AnySource,
+    AnyValue,
+    GenericValue,
+    KnownValue,
+    MultiValuedValue,
+    TypedValue,
+    class_owner_from_key,
+)
 
 
 def test_string_backed_context_manager_protocol_specializes_before_runtime_cache() -> (
@@ -64,6 +72,22 @@ def test_string_backed_async_generator_context_manager_inherits_typed_base_aente
     assert (
         str(aenter_sig)
         == "() -> collections.abc.Coroutine[Any[inference], Any[inference], None]"
+    )
+
+
+def test_unite_multi_removes_subtype_arms() -> None:
+    checker = Checker()
+    int_value = TypedValue(int)
+    int_and_any = intersect_values(int_value, AnyValue(AnySource.explicit), checker)
+
+    assert unite_multi([int_value, int_and_any], checker) == int_value
+
+
+def test_unite_multi_keeps_incomparable_arms() -> None:
+    checker = Checker()
+
+    assert unite_multi([TypedValue(int), TypedValue(str)], checker) == MultiValuedValue(
+        [TypedValue(int), TypedValue(str)]
     )
 
 
