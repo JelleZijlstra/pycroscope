@@ -773,7 +773,6 @@ def _top_materialization(value: Value, ctx: CanAssignContext) -> Value:
             | NewTypeValue()
             | OverlappingValue()
             | TypeVarValue()
-            | TypeVarTupleBindingValue()
             | TypeVarTupleValue()
             | ParamSpecArgsValue()
             | ParamSpecKwargsValue()
@@ -795,6 +794,7 @@ def _top_materialization(value: Value, ctx: CanAssignContext) -> Value:
             | TypedValue()
             | SubclassValue()
             | PredicateValue()
+            | TypeVarTupleBindingValue()
         ):
             return value
         case _:
