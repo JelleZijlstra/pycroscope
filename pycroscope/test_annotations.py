@@ -1119,6 +1119,69 @@ class TestCallable(TestNameCheckVisitorBase):
             f(s)  # E: incompatible_argument
             bare(i)
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_extension_annotation_with_pep604_union(self):
+        from typing_extensions import assert_type
+
+        from pycroscope.extensions import AsynqCallable, Intersection, Not, Overlapping
+
+        class A:
+            pass
+
+        class B:
+            pass
+
+        class C:
+            pass
+
+        class AB(A, B):
+            pass
+
+        class AC(A, C):
+            pass
+
+        class BC(B, C):
+            pass
+
+        def takes_intersection_union(x: Intersection[A, B | C]) -> None:
+            assert_type(x, Intersection[A, B] | Intersection[A, C])
+
+        def takes_union_intersection(x: A | Intersection[B, C]) -> None:
+            assert_type(x, A | Intersection[B, C])
+
+        def takes_intersection_not_union(x: Intersection[int | str, Not[str]]) -> None:
+            assert_type(x, int)
+
+        def takes_not_union(x: int | Not[str]) -> None:
+            pass
+
+        def takes_union_not(x: Not[str] | int) -> None:
+            pass
+
+        def takes_overlapping_union(x: int | Overlapping[str]) -> None:
+            pass
+
+        def takes_asynq_callable_union(x: AsynqCallable[..., int] | None) -> None:
+            pass
+
+        def capybara(ab: AB, ac: AC, bc: BC) -> None:
+            takes_intersection_union(ab)
+            takes_intersection_union(ac)
+            takes_intersection_union(bc)  # E: incompatible_argument
+            takes_union_intersection(ab)
+            takes_union_intersection(bc)
+            takes_intersection_not_union(1)
+            takes_intersection_not_union("x")  # E: incompatible_argument
+            takes_not_union(1)
+            takes_not_union(1.0)
+            takes_not_union("x")  # E: incompatible_argument
+            takes_union_not(1)
+            takes_union_not(1.0)
+            takes_union_not("x")  # E: incompatible_argument
+            takes_overlapping_union(1)
+            takes_overlapping_union("x")
+            takes_asynq_callable_union(None)
+
     @assert_passes()
     def test_not_annotation(self):
         from typing_extensions import Literal

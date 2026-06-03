@@ -28,6 +28,7 @@ import ast
 import builtins
 import contextlib
 import enum
+import itertools
 import sys
 import types
 import typing
@@ -748,9 +749,39 @@ def _annotation_expr_from_runtime(val: object, ctx: Context) -> AnnotationExpr:
 def _make_intersection_value(members: Sequence[Value], ctx: Context) -> Value:
     if not members:
         return TypedValue(object)
-    if ctx.can_assign_ctx is None:
-        return IntersectionValue(tuple(members))
-    return intersect_multi(members, ctx.can_assign_ctx)
+    if ctx.can_assign_ctx is not None:
+        return intersect_multi(members, ctx.can_assign_ctx)
+    return _make_intersection_value_without_context(members)
+
+
+def _make_intersection_value_without_context(members: Sequence[Value]) -> Value:
+    simple_members = []
+    union_members = []
+    for member in members:
+        if isinstance(member, IntersectionValue):
+            simple_members.extend(member.vals)
+        elif isinstance(member, MultiValuedValue):
+            union_members.append(member.vals)
+        else:
+            simple_members.append(member)
+    if not union_members:
+        return _intersection_value_from_members(simple_members)
+    return unite_values(
+        *(
+            _intersection_value_from_members((*simple_members, *union_branch))
+            for union_branch in itertools.product(*union_members)
+        )
+    )
+
+
+def _intersection_value_from_members(members: Sequence[Value]) -> IntersectionValue:
+    flattened_members = []
+    for member in members:
+        if isinstance(member, IntersectionValue):
+            flattened_members.extend(member.vals)
+        else:
+            flattened_members.append(member)
+    return IntersectionValue(tuple(flattened_members))
 
 
 def _type_from_runtime(val: Any, ctx: Context) -> Value:
@@ -1690,8 +1721,8 @@ def _type_from_alias_argument_value(arg: Value, ctx: Context) -> Value:
             *[_type_from_alias_argument_value(member, ctx) for member in arg.vals]
         )
     if isinstance(arg, IntersectionValue):
-        return IntersectionValue(
-            tuple(_type_from_alias_argument_value(member, ctx) for member in arg.vals)
+        return _make_intersection_value_without_context(
+            [_type_from_alias_argument_value(member, ctx) for member in arg.vals]
         )
     return _type_from_value(arg, ctx)
 

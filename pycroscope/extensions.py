@@ -237,6 +237,12 @@ class AsynqCallable(metaclass=_AsynqCallableMeta):
             yield from self.args
         yield self.return_type
 
+    def __or__(self, other: object) -> Any:
+        return typing.Union[self, other]  # noqa: UP007
+
+    def __ror__(self, other: object) -> Any:
+        return typing.Union[other, self]  # noqa: UP007
+
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         raise TypeError(f"{self} is not callable")
 
@@ -274,6 +280,12 @@ class Intersection:
             self, item  # static analysis: ignore[incompatible_argument]
         )
 
+    def __or__(self, other: object) -> Any:
+        return typing.Union[self, other]  # noqa: UP007
+
+    def __ror__(self, other: object) -> Any:
+        return typing.Union[other, self]  # noqa: UP007
+
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         raise TypeError(f"{self} is not callable")
 
@@ -309,6 +321,12 @@ class Not:
             self, item  # static analysis: ignore[incompatible_argument]
         )
 
+    def __or__(self, other: object) -> Any:
+        return typing.Union[self, other]  # noqa: UP007
+
+    def __ror__(self, other: object) -> Any:
+        return typing.Union[other, self]  # noqa: UP007
+
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         raise TypeError(f"{self} is not callable")
 
@@ -342,6 +360,12 @@ class Overlapping:
         return types.GenericAlias(
             self, item  # static analysis: ignore[incompatible_argument]
         )
+
+    def __or__(self, other: object) -> Any:
+        return typing.Union[self, other]  # noqa: UP007
+
+    def __ror__(self, other: object) -> Any:
+        return typing.Union[other, self]  # noqa: UP007
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         raise TypeError(f"{self} is not callable")
