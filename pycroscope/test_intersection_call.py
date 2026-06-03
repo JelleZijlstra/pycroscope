@@ -1,5 +1,6 @@
 # static analysis: ignore
 
+
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
 
@@ -147,6 +148,35 @@ class TestIntersectionCall(TestNameCheckVisitorBase):
             value: int | str | bytes,
         ) -> None:
             assert_type(func(value), A | B | C)
+
+    @assert_passes()
+    def test_partitioned_subclass_argument_simplifies_gradual_result(self):
+        from collections.abc import Callable
+        from typing import Any, Union
+
+        from typing_extensions import assert_type
+
+        from pycroscope.extensions import Intersection, Not
+
+        class A: ...
+
+        class B(A): ...
+
+        class C(A): ...
+
+        def partitioned_int_argument(
+            func: Intersection[
+                Callable[[Intersection[int, Not[bool]]], B], Callable[[bool], C]
+            ],
+            value: int,
+            any_val: Any,
+        ) -> None:
+            assert_type(func(value), B | C)
+            assert_type(func(True), C)
+            assert_type(
+                func(any_val),
+                Union[Intersection[B, C], Intersection[Any, B], Intersection[Any, C]],
+            )
 
     @assert_passes()
     def test_uncovered_argument_part_is_invalid(self):

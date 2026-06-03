@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from typing_extensions import assert_never
 
 from pycroscope.input_sig import ActualArguments
-from pycroscope.relations import intersect_multi, intersect_values
+from pycroscope.relations import intersect_multi, intersect_values, unite_multi
 from pycroscope.signature import (
     ARGS,
     Argument,
@@ -63,7 +63,6 @@ from pycroscope.value import (
     Variance,
     gradualize,
     replace_fallback,
-    unite_values,
 )
 
 GetSignature = Callable[[Value], object]
@@ -287,7 +286,7 @@ def _compute_return_type(
     possible_returns = [
         ret for _, _, ret in possible_regions if ret is not NO_RETURN_VALUE
     ]
-    r_top = unite_values(*possible_returns)
+    r_top = unite_multi(possible_returns, ctx.can_assign_ctx)
 
     guaranteed_regions = _guaranteed_regions(members, actual_args, ctx)
     if guaranteed_regions:
@@ -296,14 +295,14 @@ def _compute_return_type(
             bottom_returns.append(
                 _guaranteed_result(region_args, accepting_members, ctx)
             )
-        r_bottom = unite_values(*bottom_returns)
+        r_bottom = unite_multi(bottom_returns, ctx.can_assign_ctx)
     else:
         r_bottom = intersect_multi(possible_returns, ctx.can_assign_ctx)
 
     gradual_top = intersect_values(
         AnyValue(AnySource.explicit), r_top, ctx.can_assign_ctx
     )
-    return unite_values(r_bottom, gradual_top)
+    return unite_multi([r_bottom, gradual_top], ctx.can_assign_ctx)
 
 
 def _possible_regions(
@@ -474,7 +473,7 @@ def _guaranteed_result(
         contribution = _regional_return(kept, region_args, ctx)
         if contribution is not NO_RETURN_VALUE:
             contributions.append(contribution)
-    return unite_values(*contributions)
+    return unite_multi(contributions, ctx.can_assign_ctx)
 
 
 def _valid_with_bottom_domains(
@@ -623,7 +622,7 @@ def _member_parameter_domain(
         ):
             if candidate_position == position:
                 domains.append(materialize(param_type, ctx))
-    return unite_values(*domains)
+    return unite_multi(domains, ctx)
 
 
 def _get_argument_value(
@@ -724,7 +723,9 @@ def _top_materialization(value: Value, ctx: CanAssignContext) -> Value:
         case AnyValue():
             return TypedValue(object)
         case MultiValuedValue(vals=vals):
-            return unite_values(*[_top_materialization(subval, ctx) for subval in vals])
+            return unite_multi(
+                [_top_materialization(subval, ctx) for subval in vals], ctx
+            )
         case IntersectionValue(vals=vals):
             return intersect_multi(
                 [_top_materialization(subval, ctx) for subval in vals], ctx
@@ -808,8 +809,8 @@ def _bottom_materialization(value: Value, ctx: CanAssignContext) -> Value:
         case AnyValue():
             return NO_RETURN_VALUE
         case MultiValuedValue(vals=vals):
-            return unite_values(
-                *[_bottom_materialization(subval, ctx) for subval in vals]
+            return unite_multi(
+                [_bottom_materialization(subval, ctx) for subval in vals], ctx
             )
         case IntersectionValue(vals=vals):
             return intersect_multi(

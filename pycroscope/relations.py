@@ -2496,6 +2496,30 @@ def intersect_multi(values: Sequence[Value], ctx: CanAssignContext) -> GradualTy
     return gradualize(result)
 
 
+def unite_multi(values: Sequence[Value], ctx: CanAssignContext) -> Value:
+    """Unite multiple values, removing arms that are implied by other arms."""
+    united = unite_values(*values)
+    if not isinstance(united, MultiValuedValue):
+        return united
+
+    kept = []
+    for i, value in enumerate(united.vals):
+        should_drop = False
+        for j, other in enumerate(united.vals):
+            if i == j or not is_subtype(other, value, ctx):
+                continue
+            if is_subtype(value, other, ctx):
+                should_drop = j < i
+            else:
+                should_drop = True
+            if should_drop:
+                break
+        if should_drop:
+            continue
+        kept.append(value)
+    return unite_values(*kept)
+
+
 def intersect_values(left: Value, right: Value, ctx: CanAssignContext) -> GradualType:
     value = _intersect_values_inner(left, right, ctx)
     if value is Irreducible:
