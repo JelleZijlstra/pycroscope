@@ -783,6 +783,8 @@ def _has_relation_impl(
         return {}  # everything is assignable to Any
     if isinstance(right, AnyValue):
         if relation is Relation.SUBTYPE:
+            if left == TypedValue(object):
+                return {}
             return CanAssignError("Any is not a subtype of anything")
         return {}  # Any is assignable to everything
     assert not isinstance(left, NewTypeValue)

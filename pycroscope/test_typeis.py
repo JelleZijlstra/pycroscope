@@ -648,6 +648,38 @@ class TestTypeIs(TestNameCheckVisitorBase):
             )
 
     @assert_passes()
+    def testTypeIsNegativeNarrowingGenericAnyToObject(self):
+        from typing import Any, Generic, TypeVar
+
+        from typing_extensions import Never, TypeIs, assert_type
+
+        from pycroscope.extensions import Intersection, Not
+
+        T_contra = TypeVar("T_contra", contravariant=True)
+
+        class Sink(Generic[T_contra]):
+            pass
+
+        def is_sink(x: object) -> TypeIs[Sink[Never]]:
+            return False
+
+        def takes_sink(x: int | Sink[Any]) -> None:
+            assert not is_sink(x)
+            assert_type(x, Intersection[int, Not[Sink[Never]]])
+
+        T_co = TypeVar("T_co", covariant=True)
+
+        class Source(Generic[T_co]):
+            pass
+
+        def is_source(x: object) -> TypeIs[Source[object]]:
+            return False
+
+        def takes_source(x: int | Source[Any]) -> None:
+            assert not is_source(x)
+            assert_type(x, Intersection[int, Not[Source[object]]])
+
+    @assert_passes()
     def testTypeIsMultipleCondition(self):
         from typing_extensions import TypeIs, assert_type
 

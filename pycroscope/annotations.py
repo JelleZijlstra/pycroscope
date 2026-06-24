@@ -2885,6 +2885,10 @@ def _type_from_subscripted_value(
         return _make_intersection_value(
             [_type_from_value(subval, ctx) for subval in members], ctx
         )
+    elif root is Not:
+        if not _require_exact_argument_count(members, 1, "Not", ctx):
+            return AnyValue(AnySource.error)
+        return NotValue(_type_from_value(members[0], ctx))
     elif root is Overlapping:
         if not _require_exact_argument_count(members, 1, "Overlapping", ctx):
             return AnyValue(AnySource.error)
