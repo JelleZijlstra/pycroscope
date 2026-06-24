@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Narrow negative `TypeIs` checks against covariant generic `Any` arms more precisely when the checked type uses `object`.
+- Normalize `Not[...]` inside expected-type expressions such as `assert_type(x, Intersection[A, Not[B]])`.
 - Implement call checking for callable intersection types.
 - Treat definitely missing attributes on intersection members as an error instead of ignoring them, while still allowing indeterminate members to be ignored when another member provides the attribute.
 - Normalize pycroscope extension annotations with PEP 604 union operands, such as `Intersection[A, B | C]`, `A | Intersection[B, C]`, and `int | Not[str]`, instead of producing an internal error.

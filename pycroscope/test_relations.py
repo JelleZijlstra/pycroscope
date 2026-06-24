@@ -83,6 +83,14 @@ def test_unite_multi_removes_subtype_arms() -> None:
     assert unite_multi([int_value, int_and_any], checker) == int_value
 
 
+def test_any_is_subtype_of_object_only() -> None:
+    checker = Checker()
+    any_value = AnyValue(AnySource.explicit)
+
+    assert has_relation(TypedValue(object), any_value, Relation.SUBTYPE, checker) == {}
+    assert has_relation(TypedValue(int), any_value, Relation.SUBTYPE, checker) != {}
+
+
 def test_unite_multi_keeps_incomparable_arms() -> None:
     checker = Checker()
 
