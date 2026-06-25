@@ -1326,10 +1326,17 @@ class TestAttributes(TestNameCheckVisitorBase):
 
         from qcore.caching import cached_per_instance
 
-        wrapper_assignments = functools.WRAPPER_ASSIGNMENTS
-        functools.WRAPPER_ASSIGNMENTS = tuple(
-            attr for attr in wrapper_assignments if attr != "__annotate__"
-        )
+        real_wraps = functools.wraps
+
+        def wraps_without_annotate(
+            wrapped,
+            assigned=functools.WRAPPER_ASSIGNMENTS,
+            updated=functools.WRAPPER_UPDATES,
+        ):
+            assigned = tuple(attr for attr in assigned if attr != "__annotate__")
+            return real_wraps(wrapped, assigned=assigned, updated=updated)
+
+        functools.wraps = wraps_without_annotate
         try:
 
             class C:
@@ -1338,7 +1345,7 @@ class TestAttributes(TestNameCheckVisitorBase):
                     return 42
 
         finally:
-            functools.WRAPPER_ASSIGNMENTS = wrapper_assignments
+            functools.wraps = real_wraps
 
         def capybara():
             c = C()
