@@ -73,12 +73,9 @@ ParamSpecLike = (
     ExternalType["typing.ParamSpec"] | ExternalType["typing_extensions.ParamSpec"]
 )
 if sys.version_info >= (3, 11):
-    TypeVarTupleLike = (
-        ExternalType["typing.TypeVarTuple"]
-        | ExternalType["typing_extensions.TypeVarTuple"]
-    )
+    TypeVarTupleLike = typing.TypeVarTuple | typing_extensions.TypeVarTuple
 else:
-    TypeVarTupleLike = ExternalType["typing_extensions.TypeVarTuple"]
+    TypeVarTupleLike = typing_extensions.TypeVarTuple
 TypeVarLike = TypeVarType | ParamSpecLike | TypeVarTupleLike
 SequenceMember = tuple[bool, "Value"]
 SequenceMembers = tuple[SequenceMember, ...]
@@ -3266,7 +3263,7 @@ class TypeVarTupleValue(Value):
 
     @property
     def typevar(self) -> TypeVarTupleLike:
-        return self.typevar_tuple_param.typevar
+        return typing.cast(TypeVarTupleLike, self.typevar_tuple_param.typevar)
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         return typevars.get_value(self.typevar_tuple_param, self)
