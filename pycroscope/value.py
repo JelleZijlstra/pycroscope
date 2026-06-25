@@ -3263,7 +3263,8 @@ class TypeVarTupleValue(Value):
 
     @property
     def typevar(self) -> TypeVarTupleLike:
-        return typing.cast(TypeVarTupleLike, self.typevar_tuple_param.typevar)
+        typevar = self.typevar_tuple_param.typevar
+        return typevar  # static analysis: ignore[incompatible_return_value]
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         return typevars.get_value(self.typevar_tuple_param, self)
