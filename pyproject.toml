@@ -31,6 +31,7 @@ dependencies = [
 [project.optional-dependencies]
 tests = [
   "pytest",
+  "typing_extensions==4.16.0rc1",
   "mypy_extensions",
   "attrs",
   "pydantic",

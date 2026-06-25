@@ -2169,9 +2169,7 @@ class TestTypeParameterConstructs(TestNameCheckVisitorBase):
         print(GoodTypeVarTuple)
 
         def make_bad_typevartuple() -> None:
-            # Currently two errors: one because the runtime version of TypeVarTuple
-            # doesn't support bound, another because we explicitly don't support it either.
-            # E: incompatible_call
+            # pycroscope explicitly does not support TypeVarTuple bounds.
             BadTypeVarTuple = TypeVarTuple(
                 "BadTypeVarTuple", bound=int  # E: incompatible_call
             )

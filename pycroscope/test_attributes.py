@@ -1,11 +1,18 @@
 # static analysis: ignore
 
+import sys
+
 import pytest
 from typing_extensions import assert_type
 
 from .extensions import LiteralOnly
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes, skip_before, skip_if_not_installed
+from .test_node_visitor import (
+    assert_passes,
+    skip_before,
+    skip_if,
+    skip_if_not_installed,
+)
 from .value import (
     AnnotatedValue,
     AnySource,
@@ -1318,6 +1325,9 @@ class TestAttributes(TestNameCheckVisitorBase):
             print(inst.reveal())
 
     @skip_if_not_installed("qcore")
+    # qcore can crash before pycroscope runs when its Cython wrapper copies
+    # a Python 3.14 PEP 649 __annotate__ function from an annotated method.
+    @skip_if(sys.version_info >= (3, 14))
     @assert_passes()
     def test_cached_per_instance(self):
         from qcore.caching import cached_per_instance
