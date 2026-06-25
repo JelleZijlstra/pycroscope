@@ -1325,8 +1325,8 @@ class TestAttributes(TestNameCheckVisitorBase):
             print(inst.reveal())
 
     @skip_if_not_installed("qcore")
-    # In the typing_extensions RC test environment, qcore crashes before
-    # pycroscope runs when it decorates a Python 3.14 annotated method.
+    # qcore can crash before pycroscope runs when its Cython wrapper copies
+    # a Python 3.14 PEP 649 __annotate__ function from an annotated method.
     @skip_if(sys.version_info >= (3, 14))
     @assert_passes()
     def test_cached_per_instance(self):
