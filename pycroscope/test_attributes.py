@@ -1325,9 +1325,9 @@ class TestAttributes(TestNameCheckVisitorBase):
             print(inst.reveal())
 
     @skip_if_not_installed("qcore")
-    # qcore's decorator crashes at runtime on 3.14.6+ because functools.wraps
+    # qcore's decorator crashes at runtime on 3.14+ because functools.wraps
     # copies the PEP 649 __annotate__ function onto a cyfunction wrapper.
-    @skip_if(sys.version_info >= (3, 14, 6))
+    @skip_if(sys.version_info >= (3, 14))
     @assert_passes()
     def test_cached_per_instance(self):
         from qcore.caching import cached_per_instance
