@@ -1,11 +1,18 @@
 # static analysis: ignore
 
+import sys
+
 import pytest
 from typing_extensions import assert_type
 
 from .extensions import LiteralOnly
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes, skip_before, skip_if_not_installed
+from .test_node_visitor import (
+    assert_passes,
+    skip_before,
+    skip_if,
+    skip_if_not_installed,
+)
 from .value import (
     AnnotatedValue,
     AnySource,
@@ -1318,34 +1325,17 @@ class TestAttributes(TestNameCheckVisitorBase):
             print(inst.reveal())
 
     @skip_if_not_installed("qcore")
-    # Keep the sample running even when qcore cannot copy a PEP 649
-    # __annotate__ function onto its cyfunction wrapper at runtime.
+    # In the typing_extensions RC test environment, qcore crashes before
+    # pycroscope runs when it decorates a Python 3.14 annotated method.
+    @skip_if(sys.version_info >= (3, 14))
     @assert_passes()
     def test_cached_per_instance(self):
-        import functools
-
         from qcore.caching import cached_per_instance
 
-        real_wraps = functools.wraps
-
-        def wraps_without_annotate(
-            wrapped,
-            assigned=functools.WRAPPER_ASSIGNMENTS,
-            updated=functools.WRAPPER_UPDATES,
-        ):
-            assigned = tuple(attr for attr in assigned if attr != "__annotate__")
-            return real_wraps(wrapped, assigned=assigned, updated=updated)
-
-        functools.wraps = wraps_without_annotate
-        try:
-
-            class C:
-                @cached_per_instance()
-                def f(self) -> int:
-                    return 42
-
-        finally:
-            functools.wraps = real_wraps
+        class C:
+            @cached_per_instance()
+            def f(self) -> int:
+                return 42
 
         def capybara():
             c = C()
