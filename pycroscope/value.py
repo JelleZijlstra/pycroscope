@@ -73,9 +73,12 @@ ParamSpecLike = (
     ExternalType["typing.ParamSpec"] | ExternalType["typing_extensions.ParamSpec"]
 )
 if sys.version_info >= (3, 11):
-    TypeVarTupleLike = typing.TypeVarTuple | typing_extensions.TypeVarTuple
+    TypeVarTupleLike = (
+        ExternalType["typing.TypeVarTuple"]
+        | ExternalType["typing_extensions.TypeVarTuple"]
+    )
 else:
-    TypeVarTupleLike = typing_extensions.TypeVarTuple
+    TypeVarTupleLike = ExternalType["typing_extensions.TypeVarTuple"]
 TypeVarLike = TypeVarType | ParamSpecLike | TypeVarTupleLike
 SequenceMember = tuple[bool, "Value"]
 SequenceMembers = tuple[SequenceMember, ...]
