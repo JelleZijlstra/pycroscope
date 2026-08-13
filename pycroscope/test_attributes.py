@@ -1,12 +1,12 @@
 # static analysis: ignore
 
 import sys
-from typing import Generic, TypeVar, overload
+from typing import Generic, TypeVar
 
 import pytest
 from typing_extensions import assert_type, deprecated
 
-from .extensions import LiteralOnly
+from .extensions import LiteralOnly, overload
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import (
     assert_passes,
