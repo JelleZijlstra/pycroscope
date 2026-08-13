@@ -6,7 +6,7 @@ from .test_node_visitor import assert_passes
 class TestNamedTuple(TestNameCheckVisitorBase):
     @assert_passes(allow_import_failures=True)
     def test_namedtuple_after_import_failure(self):
-        from typing import Generic, NamedTuple, TypeVar
+        from typing import ClassVar, Generic, NamedTuple, TypeVar
 
         from typing_extensions import assert_type
 
@@ -53,6 +53,9 @@ class TestNamedTuple(TestNameCheckVisitorBase):
 
         class Point3(NamedTuple):
             _y: int  # E: invalid_namedtuple
+
+        class Point4(NamedTuple):
+            x: ClassVar[int]  # E: invalid_qualifier
 
         class Location(NamedTuple):
             altitude: float = 0.0

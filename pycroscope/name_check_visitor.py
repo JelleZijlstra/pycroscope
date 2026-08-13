@@ -11919,13 +11919,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self.scopes.scope_type() is ScopeType.class_scope:
             self._record_namedtuple_class_field(node)
 
-        # TODO: handle TypeAlias and ClassVar
         is_final = Qualifier.Final in qualifiers
         has_classvar = Qualifier.ClassVar in qualifiers
         if has_classvar and self.scopes.scope_type() != ScopeType.class_scope:
             self._show_error_if_checking(
                 node.annotation,
                 "ClassVar can only be used for assignments in class body",
+                error_code=ErrorCode.invalid_qualifier,
+            )
+        if (
+            has_classvar
+            and self.current_tobj is not None
+            and self.current_tobj.is_direct_namedtuple()
+        ):
+            self._show_error_if_checking(
+                node.annotation,
+                "ClassVar cannot be used for NamedTuple fields",
                 error_code=ErrorCode.invalid_qualifier,
             )
         if (
