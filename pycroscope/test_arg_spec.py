@@ -8,7 +8,13 @@ from typing_extensions import ParamSpec, Self, TypeVar, TypeVarTuple
 
 from .checker import Checker
 from .maybe_asynq import asynq
-from .signature import BoundMethodSignature, ParameterKind, Signature, SigParameter
+from .signature import (
+    BoundMethodSignature,
+    OverloadedSignature,
+    ParameterKind,
+    Signature,
+    SigParameter,
+)
 from .stacked_scopes import Composite
 from .test_name_check_visitor import (
     ConfiguredNameCheckVisitor,
@@ -75,6 +81,23 @@ def test_get_type_parameters_ignores_non_iterable_runtime_type_params() -> None:
         __type_params__ = property(lambda self: ())
 
     assert checker.arg_spec_cache.get_type_parameters(Weird) == []
+
+
+def test_get_argspec_preserves_overload_only_callable_registry(monkeypatch) -> None:
+    from . import arg_spec
+
+    def callback(value: int) -> int: ...
+
+    first_overload = callback
+
+    def callback(value: str) -> str: ...
+
+    overloads = [first_overload, callback]
+    checker = Checker()
+    monkeypatch.setattr(arg_spec, "_GET_OVERLOADS", [lambda _: overloads])
+    signature = checker.arg_spec_cache.get_argspec(first_overload)
+    assert isinstance(signature, OverloadedSignature)
+    assert len(signature.signatures) == 2
 
 
 @skip_before((3, 12))

@@ -201,6 +201,13 @@ def _filter_overloads_for_callable(
     implementation_code = _get_overload_callable_code(obj)
     if implementation_code is None:
         return list(overloads)
+    if any(
+        _get_overload_callable_code(overload) is implementation_code
+        for overload in overloads
+    ):
+        # Overload-only protocols leave one of their declarations as the runtime
+        # member. There is no concrete implementation to use as a boundary.
+        return list(overloads)
     earlier_implementation_lines = []
     for earlier_implementation in earlier_implementations:
         earlier_code = _get_overload_callable_code(earlier_implementation)
