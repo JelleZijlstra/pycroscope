@@ -433,8 +433,7 @@ class TestCanAssign:
             {"a": TypedDictEntry(TypedValue(int)), "b": TypedDictEntry(TypedValue(int))}
         )
         # This is still OK because TypedDicts are allowed to have extra keys.
-        # TODO change to can
-        self.cannot(
+        self.can(
             three_ints_sig,
             Signature.make([P("a", annotation=smaller_td, kind=K.VAR_KEYWORD)]),
         )
@@ -2012,6 +2011,185 @@ class TestUnpack(TestNameCheckVisitorBase):
             capybara()  # E: incompatible_call
             capybara(a="x", b="x")  # E: incompatible_argument
             capybara(a=1, b="x", c=3)  # E: incompatible_call
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_kwargs_forwarding_respects_closed_and_extra_items(self):
+        from typing import Never
+
+        from typing_extensions import ReadOnly, TypedDict, Unpack
+
+        class Open(TypedDict):
+            name: str
+
+        class ExplicitOpen(TypedDict, closed=False):
+            name: str
+
+        class Closed(TypedDict, closed=True):
+            name: str
+
+        class NeverExtra(TypedDict, extra_items=Never):
+            name: str
+
+        class ExtraInt(TypedDict, extra_items=int):
+            name: str
+
+        class ReadOnlyExtraInt(TypedDict, extra_items=ReadOnly[int]):
+            name: str
+
+        def exact(name: str) -> None: ...
+
+        def object_tail(name: str, **kwargs: object) -> None: ...
+
+        def int_tail(name: str, **kwargs: int) -> None: ...
+
+        def str_tail(name: str, **kwargs: str) -> None: ...
+
+        def optional_str(name: str, *, label: str = "", **kwargs: int) -> None: ...
+
+        def optional_int(name: str, *, label: int = 0, **kwargs: int) -> None: ...
+
+        def forward_open(**kwargs: Unpack[Open]) -> None:
+            exact(**kwargs)
+            object_tail(**kwargs)
+            int_tail(**kwargs)  # E: incompatible_argument
+            optional_str(**kwargs)  # E: incompatible_argument
+
+        def forward_explicit_open(**kwargs: Unpack[ExplicitOpen]) -> None:
+            exact(**kwargs)
+            int_tail(**kwargs)  # E: incompatible_argument
+
+        def forward_closed(**kwargs: Unpack[Closed]) -> None:
+            exact(**kwargs)
+            int_tail(**kwargs)
+
+        def forward_never(**kwargs: Unpack[NeverExtra]) -> None:
+            exact(**kwargs)
+            int_tail(**kwargs)
+
+        def forward_extra(**kwargs: Unpack[ExtraInt]) -> None:
+            exact(**kwargs)  # E: incompatible_call
+            object_tail(**kwargs)
+            str_tail(**kwargs)  # E: incompatible_argument
+            int_tail(**kwargs)
+            optional_str(**kwargs)  # E: incompatible_argument
+            optional_int(**kwargs)
+
+        def forward_readonly_extra(**kwargs: Unpack[ReadOnlyExtraInt]) -> None:
+            exact(**kwargs)  # E: incompatible_call
+            object_tail(**kwargs)
+            str_tail(**kwargs)  # E: incompatible_argument
+            int_tail(**kwargs)
+            optional_str(**kwargs)  # E: incompatible_argument
+            optional_int(**kwargs)
+
+        def direct(
+            opened: Open,
+            explicit_open: ExplicitOpen,
+            closed: Closed,
+            never: NeverExtra,
+            extra: ExtraInt,
+            readonly_extra: ReadOnlyExtraInt,
+        ) -> None:
+            exact(**opened)
+            int_tail(**opened)  # E: incompatible_argument
+            exact(**explicit_open)
+            int_tail(**explicit_open)  # E: incompatible_argument
+            exact(**closed)
+            exact(**never)
+            exact(**extra)  # E: incompatible_call
+            object_tail(**extra)
+            str_tail(**extra)  # E: incompatible_argument
+            int_tail(**extra)
+            optional_str(**extra)  # E: incompatible_argument
+            exact(**readonly_extra)  # E: incompatible_call
+            str_tail(**readonly_extra)  # E: incompatible_argument
+
+        def union_calls(
+            open_or_closed: Open | Closed,
+            extra_or_closed: ExtraInt | Closed,
+            open_or_extra: Open | ExtraInt,
+        ) -> None:
+            exact(**open_or_closed)
+            int_tail(**open_or_closed)  # E: incompatible_argument
+            exact(**extra_or_closed)  # E: incompatible_call
+            object_tail(**extra_or_closed)
+            int_tail(**extra_or_closed)
+            exact(**open_or_extra)  # E: incompatible_call
+            object_tail(**open_or_extra)
+            int_tail(**open_or_extra)  # E: incompatible_argument
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_callable_assignment_respects_closed_and_extra_items(self):
+        from typing import Never, Protocol
+
+        from typing_extensions import ReadOnly, TypedDict, Unpack
+
+        class Open(TypedDict):
+            name: str
+
+        class ExplicitOpen(TypedDict, closed=False):
+            name: str
+
+        class Closed(TypedDict, closed=True):
+            name: str
+
+        class NeverExtra(TypedDict, extra_items=Never):
+            name: str
+
+        class ExtraInt(TypedDict, extra_items=int):
+            name: str
+
+        class ReadOnlyExtraInt(TypedDict, extra_items=ReadOnly[int]):
+            name: str
+
+        class AcceptsOpen(Protocol):
+            def __call__(self, **kwargs: Unpack[Open]) -> None: ...
+
+        class AcceptsExplicitOpen(Protocol):
+            def __call__(self, **kwargs: Unpack[ExplicitOpen]) -> None: ...
+
+        class AcceptsClosed(Protocol):
+            def __call__(self, **kwargs: Unpack[Closed]) -> None: ...
+
+        class AcceptsNever(Protocol):
+            def __call__(self, **kwargs: Unpack[NeverExtra]) -> None: ...
+
+        class AcceptsExtraInt(Protocol):
+            def __call__(self, **kwargs: Unpack[ExtraInt]) -> None: ...
+
+        class AcceptsReadOnlyExtraInt(Protocol):
+            def __call__(self, **kwargs: Unpack[ReadOnlyExtraInt]) -> None: ...
+
+        def exact(name: str) -> None: ...
+
+        def object_tail(name: str, **kwargs: object) -> None: ...
+
+        def int_tail(name: str, **kwargs: int) -> None: ...
+
+        def str_tail(name: str, **kwargs: str) -> None: ...
+
+        def optional_str(name: str, *, label: str = "", **kwargs: int) -> None: ...
+
+        def optional_int(name: str, *, label: int = 0, **kwargs: int) -> None: ...
+
+        open_exact: AcceptsOpen = exact  # E: incompatible_assignment
+        open_object: AcceptsOpen = object_tail
+        open_int: AcceptsOpen = int_tail  # E: incompatible_assignment
+        explicit_open_exact: AcceptsExplicitOpen = exact  # E: incompatible_assignment
+        explicit_open_object: AcceptsExplicitOpen = object_tail
+        explicit_open_int: AcceptsExplicitOpen = int_tail  # E: incompatible_assignment
+        closed_exact: AcceptsClosed = exact
+        never_exact: AcceptsNever = exact
+        extra_exact: AcceptsExtraInt = exact  # E: incompatible_assignment
+        extra_object: AcceptsExtraInt = object_tail
+        extra_int: AcceptsExtraInt = int_tail
+        extra_str: AcceptsExtraInt = str_tail  # E: incompatible_assignment
+        extra_optional_str: AcceptsExtraInt = optional_str  # E: incompatible_assignment
+        extra_optional_int: AcceptsExtraInt = optional_int
+        readonly_exact: AcceptsReadOnlyExtraInt = exact  # E: incompatible_assignment
+        readonly_object: AcceptsReadOnlyExtraInt = object_tail
+        readonly_int: AcceptsReadOnlyExtraInt = int_tail
+        readonly_str: AcceptsReadOnlyExtraInt = str_tail  # E: incompatible_assignment
 
     @assert_passes()
     def test_invalid(self):

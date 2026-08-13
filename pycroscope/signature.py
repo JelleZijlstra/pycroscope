@@ -1430,12 +1430,15 @@ class Signature:
                         dict, [TypedValue(str), AnyValue(AnySource.ellipsis_callable)]
                     )
                 elif actual_args.star_kwargs is not None:
-                    value_value = unite_values(
-                        *(pair.value for pair in kv_pairs), actual_args.star_kwargs
+                    kv_pairs.append(
+                        KVPair(
+                            TypedValue(str),
+                            actual_args.star_kwargs,
+                            is_many=True,
+                            is_required=actual_args.kwargs_required,
+                        )
                     )
-                    star_kwargs_value = GenericValue(
-                        dict, [TypedValue(str), value_value]
-                    )
+                    star_kwargs_value = DictIncompleteValue(dict, kv_pairs)
                 else:
                     if not kv_pairs:
                         star_kwargs_value = DictIncompleteValue(dict, [])
@@ -1983,7 +1986,9 @@ class Signature:
             self, other, RelationContext(Relation.ASSIGNABLE, ctx, None)
         )
 
-    def _expand_typed_dict_kwargs(self) -> "Signature":
+    def _expand_typed_dict_kwargs(
+        self, *, include_open_extras: bool = False
+    ) -> "Signature":
         params: list[SigParameter] = []
         expanded = False
         for param in self.parameters.values():
@@ -2003,13 +2008,28 @@ class Signature:
                             annotation=entry.typ,
                         )
                     )
-                if annotation.extra_keys is not None:
+                if (
+                    annotation.extra_keys is not None
+                    and annotation.extra_keys is not NO_RETURN_VALUE
+                ):
+                    extra_keys = annotation.extra_keys
+                elif include_open_extras and annotation.extra_keys is None:
+                    extra_keys = TypedValue(object)
+                else:
+                    extra_keys = None
+                if extra_keys is not None:
+                    extra_param_name = param.name
+                    used_param_names = {existing.name for existing in params}
+                    unnamed_index = len(params)
+                    while extra_param_name in used_param_names:
+                        extra_param_name = f"@{unnamed_index}"
+                        unnamed_index += 1
                     params.append(
                         SigParameter(
-                            param.name,
+                            extra_param_name,
                             ParameterKind.VAR_KEYWORD,
                             annotation=GenericValue(
-                                dict, [TypedValue(str), annotation.extra_keys]
+                                dict, [TypedValue(str), extra_keys]
                             ),
                         )
                     )
@@ -2567,6 +2587,7 @@ def preprocess_args(
                 continue
             items = {}
             extra_values = []
+            extra_kwargs_required: list[bool | None] = []
             if arg.value is NO_RETURN_VALUE:
                 new_value = GenericValue(dict, [TypedValue(str), NO_RETURN_VALUE])
                 processed_args.append((Composite(new_value), KWARGS))
@@ -2578,9 +2599,10 @@ def preprocess_args(
                 result = _preprocess_kwargs_no_mvv(subval, ctx)
                 if result is None:
                     return None
-                new_items, new_value = result
+                new_items, new_value, new_kwargs_required = result
                 if new_value is not None:
                     extra_values.append(new_value)
+                    extra_kwargs_required.append(new_kwargs_required)
                 for key, (required, value) in new_items.items():
                     if key in items:
                         old_required, old_value = items[key]
@@ -2597,7 +2619,13 @@ def preprocess_args(
                 else:
                     processed_args.append((Composite(value), PossibleArg(key)))
             if extra_values:
-                kwargs_requireds.append(not items)
+                kwargs_requireds.append(
+                    any(required is True for required in extra_kwargs_required)
+                    or (
+                        not items
+                        and any(required is None for required in extra_kwargs_required)
+                    )
+                )
                 new_value = GenericValue(
                     dict, [TypedValue(str), unite_values(*extra_values)]
                 )
@@ -2690,27 +2718,42 @@ def preprocess_args(
 
 def _preprocess_kwargs_no_mvv(
     value: Value, ctx: CheckCallContext
-) -> tuple[dict[str, tuple[bool, Value]], Value | None] | None:
+) -> tuple[dict[str, tuple[bool, Value]], Value | None, bool | None] | None:
     """Preprocess a Value passed as **kwargs.
 
     Two possible return types:
 
     - None if there was a blocking error (the passed in type is not a mapping).
-    - A pair of two values:
+    - A tuple of three values:
         - An {argument: (required, Value)} dict if we know the precise arguments (e.g.,
             for a TypedDict).
         - A single Value if the argument is a mapping, but we don't know all the precise keys.
             This is None if all the keys are known. The Value represents the values in the
             mapping (all the keys must be strings).
+        - Whether the possible extra keys must be consumed by a ``**kwargs``
+            parameter. This is true for an explicit ``extra_items`` type, false
+            for an open TypedDict, and None for other mapping values, whose
+            existing behavior depends on whether any keys are known.
 
     """
     value = replace_known_sequence_value(value)
     if isinstance(value, TypedDictValue):
-        return {
-            key: (entry.required, entry.typ) for key, entry in value.items.items()
-        }, None
+        items = {key: (entry.required, entry.typ) for key, entry in value.items.items()}
+        if value.extra_keys is NO_RETURN_VALUE:
+            return items, None, False
+        if value.extra_keys is None:
+            # Open TypedDicts may contain hidden values of type object. We retain
+            # those values so typed parameters are checked, but allow the tail to
+            # go unused to preserve the ecosystem-compatible behavior for calls
+            # to an exact signature.
+            return items, TypedValue(object), False
+        return items, value.extra_keys, True
     elif isinstance(value, DictIncompleteValue):
-        return _preprocess_kwargs_kv_pairs(value.kv_pairs, ctx)
+        result = _preprocess_kwargs_kv_pairs(value.kv_pairs, ctx)
+        if result is None:
+            return None
+        items, extra_value = result
+        return items, extra_value, None
     else:
         mapping_tv_map = relations.get_tv_map(
             MappingValue,
@@ -2728,9 +2771,13 @@ def _preprocess_kwargs_no_mvv(
         value_type = mapping_tv_map.get_typevar(
             VParam, AnyValue(AnySource.generic_argument)
         )
-        return _preprocess_kwargs_kv_pairs(
+        result = _preprocess_kwargs_kv_pairs(
             [KVPair(key_type, value_type, is_many=True)], ctx
         )
+        if result is None:
+            return None
+        items, extra_value = result
+        return items, extra_value, None
 
 
 def _preprocess_kwargs_kv_pairs(
@@ -4095,18 +4142,22 @@ def signatures_have_relation(
     my_kwargs = left.get_param_of_kind(ParameterKind.VAR_KEYWORD)
     their_kwargs = right.get_param_of_kind(ParameterKind.VAR_KEYWORD)
     their_ellipsis = right.get_param_of_kind(ParameterKind.ELLIPSIS)
-    if my_kwargs is not None and isinstance(my_kwargs.get_annotation(), TypedDictValue):
+    my_kwargs_annotation = my_kwargs.get_annotation() if my_kwargs is not None else None
+    if isinstance(my_kwargs_annotation, TypedDictValue):
         accepts_arbitrary_keywords = (
             their_kwargs is not None
             or their_ellipsis is not None
             or right.get_param_of_kind(ParameterKind.PARAM_SPEC) is not None
         )
-        if not accepts_arbitrary_keywords:
+        if (
+            my_kwargs_annotation.extra_keys is not NO_RETURN_VALUE
+            and not accepts_arbitrary_keywords
+        ):
             return CanAssignError(
                 f"{right} does not accept arbitrary keyword arguments"
             )
-    left = left._expand_typed_dict_kwargs()
-    right = right._expand_typed_dict_kwargs()
+    left = left._expand_typed_dict_kwargs(include_open_extras=True)
+    right = right._expand_typed_dict_kwargs(include_open_extras=True)
 
     their_return = right.return_value
     my_return = left.return_value
