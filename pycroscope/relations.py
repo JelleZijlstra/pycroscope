@@ -2904,6 +2904,21 @@ def _intersect_simple_types(
 def _intersect_typed(
     left: TypedValue, right: TypedValue, ctx: CanAssignContext
 ) -> TypeOrIrreducible:
+    if (
+        isinstance(left, SequenceValue)
+        and left.typ is tuple
+        and isinstance(right, SequenceValue)
+        and right.typ is tuple
+    ):
+        left_members = left.get_member_sequence()
+        right_members = right.get_member_sequence()
+        if (
+            left_members is not None
+            and right_members is not None
+            and len(left_members) != len(right_members)
+        ):
+            return NO_RETURN_VALUE
+
     if isinstance(left, TypedDictValue) and isinstance(right, TypedDictValue):
         return _intersect_typeddict(left, right, ctx)
 
@@ -2930,8 +2945,8 @@ def _intersect_typed(
     # TODO: Consider more options for reducing the intersection:
     # - Certain cases involving incompatible metaclasses can return to Never
     # - Possibly some cases with attributes of incompatible types (possibly debatable)
-    # - Cases involving SequenceValue, DictIncompleteValue, and other concrete subclasses of
-    #   TypedValue
+    # - Cases involving compatible SequenceValues, DictIncompleteValue, and other concrete
+    #   subclasses of TypedValue
     return Irreducible
 
 

@@ -679,6 +679,23 @@ class TestTypeIs(TestNameCheckVisitorBase):
             assert not is_source(x)
             assert_type(x, Intersection[int, Not[Source[object]]])
 
+    @assert_passes(run_in_both_module_modes=True)
+    def testTypeIsNegativeNarrowingFixedTuples(self):
+        from typing import TypeVar
+
+        from typing_extensions import TypeIs, assert_type
+
+        T = TypeVar("T")
+
+        def is_two_element_tuple(val: tuple[T, ...]) -> TypeIs[tuple[T, T]]:
+            return len(val) == 2
+
+        def capybara(names: tuple[str, str] | tuple[str, str, str]) -> None:
+            if is_two_element_tuple(names):
+                assert_type(names, tuple[str, str])
+            else:
+                assert_type(names, tuple[str, str, str])
+
     @assert_passes()
     def testTypeIsMultipleCondition(self):
         from typing_extensions import TypeIs, assert_type
