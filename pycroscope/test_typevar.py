@@ -336,6 +336,27 @@ class TestTypeVar(TestNameCheckVisitorBase):
             ...
 
     @assert_passes(run_in_both_module_modes=True)
+    def test_nested_typevar_in_implicit_generic_base(self):
+        from collections.abc import Sequence
+        from typing import Generic, TypeVar
+
+        T = TypeVar("T")
+
+        class Field(Generic[T]):
+            def serialize(self, value: T) -> str:
+                return repr(value)
+
+            def validate(self, value: T) -> None:
+                pass
+
+        class SequenceField(Field[Sequence[T]]):
+            def prepare(self, value: Sequence[T]) -> str:
+                return self.serialize(value)
+
+            def validate(self, value: Sequence[T]) -> None:
+                super().validate(value)
+
+    @assert_passes(run_in_both_module_modes=True)
     def test_typevar_scoping_in_annotations(self):
         from typing import Generic, TypeVar
 

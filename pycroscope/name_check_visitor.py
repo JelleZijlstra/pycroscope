@@ -3740,7 +3740,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             effective_type_param_values = (
                 type_param_values
                 if type_param_values
-                else self._type_params_from_base_values(base_values)
+                else self._type_params_from_base_values(
+                    [
+                        self._canonicalize_generic_base_value(base)
+                        for base in base_values
+                    ]
+                )
             )
             annotation_type_param_values = (
                 self._type_params_from_base_annotations_for_default_rules(node.bases)
@@ -3840,6 +3845,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                     for base in base_values_for_registration
                 ]
+            base_values_for_registration = [
+                self._canonicalize_generic_base_value(base)
+                for base in base_values_for_registration
+            ]
             if should_register_generic_bases:
                 self.checker.register_synthetic_type_bases(
                     generic_class_key,
@@ -5937,6 +5946,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._value_for_variance_annotation(base_node) for base_node in node.bases
         ]
         return analyzed_bases
+
+    def _canonicalize_generic_base_value(self, value: Value) -> Value:
+        if (
+            not isinstance(value, PartialValue)
+            or value.operation is not PartialValueOperation.SUBSCRIPT
+            or self._is_type_parameter_base(value)
+        ):
+            return value
+        normalized = type_from_value(value, self, value.node, suppress_errors=True)
+        if isinstance(normalized, AnyValue):
+            return value
+        return normalized
 
     def _check_duplicate_type_params_in_generic_bases(
         self, node: ast.ClassDef, base_values: Sequence[Value]
