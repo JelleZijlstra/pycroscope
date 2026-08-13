@@ -644,7 +644,7 @@ requires-dist = [
     { name = "qcore", marker = "extra == 'full'", specifier = ">=0.5.1" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=1.1.0" },
     { name = "typeshed-client", specifier = ">=2.1.0" },
-    { name = "typing-extensions", specifier = ">=4.14.0" },
+    { name = "typing-extensions", specifier = ">=4.16.0" },
     { name = "typing-extensions", marker = "extra == 'tests'", specifier = "==4.16.0" },
 ]
 provides-extras = ["tests", "asynq", "codemod", "full"]
