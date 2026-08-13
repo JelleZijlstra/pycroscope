@@ -136,6 +136,10 @@ class RelationContext:
     original_left: GradualType | None = None
     original_right: GradualType | None = None
     relation_goals: tuple[object, ...] = ()
+    inference_mode: bool = False
+
+    def should_infer_type_params(self) -> bool:
+        return self.inference_mode or self.inferables is not None
 
     def with_relation(
         self, relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE]
@@ -191,10 +195,17 @@ def _make_relation_cache_key(
     right: Value,
     relation: Relation,
     inferables: tuple[TypeParam, ...] | None = None,
+    inference_mode: bool = False,
 ) -> tuple[
-    tuple[str, object], tuple[str, object], Relation, tuple[TypeParam, ...] | None
+    tuple[str, object], tuple[str, object], Relation, tuple[TypeParam, ...] | None, bool
 ]:
-    return (_relation_key_piece(left), _relation_key_piece(right), relation, inferables)
+    return (
+        _relation_key_piece(left),
+        _relation_key_piece(right),
+        relation,
+        inferables,
+        inference_mode,
+    )
 
 
 def _get_cached_relation_result(
@@ -312,7 +323,11 @@ def _has_relation(
     left = gradualize(left)
     right = gradualize(right)
     key = _make_relation_cache_key(
-        left, right, relation_ctx.relation, relation_ctx.inferables
+        left,
+        right,
+        relation_ctx.relation,
+        relation_ctx.inferables,
+        relation_ctx.inference_mode,
     )
     if key in relation_ctx.relation_goals:
         return {}
@@ -1300,7 +1315,11 @@ def _has_relation_for_generic_arg_pair(
             right.input_sig,
             relation_ctx.relation,
             relation_ctx.ctx,
-            relation_ctx.inferables if relation_ctx.inferables is not None else (),
+            (
+                relation_ctx.inferables
+                if relation_ctx.should_infer_type_params()
+                else ()
+            ),
         )
     if isinstance(left, pycroscope.input_sig.InputSigValue) or isinstance(
         right, pycroscope.input_sig.InputSigValue
@@ -2178,6 +2197,8 @@ def _unpack_fixed_tuple_generic_arg(value: Value) -> list[Value] | None:
         if all(not is_many for is_many, _ in value.binding):
             return [member for _, member in value.binding]
         return None
+    if isinstance(value, pycroscope.input_sig.InputSigValue):
+        return None
     normalized = replace_known_sequence_value(value)
     if isinstance(normalized, SequenceValue) and normalized.typ is tuple:
         members = normalized.get_member_sequence()
@@ -2401,7 +2422,7 @@ def get_tv_map(
     ctx: CanAssignContext,
     inferables: tuple[TypeParam, ...] | None = None,
 ) -> TypeVarMap | CanAssignError:
-    relation_ctx = RelationContext(relation, ctx, inferables)
+    relation_ctx = RelationContext(relation, ctx, inferables, inference_mode=True)
     return get_tv_map_from_ctx(left, right, relation_ctx)
 
 

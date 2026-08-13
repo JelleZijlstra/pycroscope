@@ -1045,7 +1045,7 @@ def make_type_param_from_value(
 def _extract_boolean_arg(pcv: PartialCallValue, arg_name: str) -> bool | None:
     arg_val = pcv.arguments.get(arg_name, NO_ARG_SENTINEL)
     if arg_val is NO_ARG_SENTINEL:
-        return None
+        return False
     if isinstance(arg_val, KnownValue) and isinstance(arg_val.val, bool):
         return arg_val.val
     return None

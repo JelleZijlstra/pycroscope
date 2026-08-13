@@ -2402,11 +2402,7 @@ class Signature:
             return None
         if self_annotation_value is not None:
             tv_map = relations.get_tv_map(
-                self_annotation,
-                self_annotation_value,
-                Relation.ASSIGNABLE,
-                ctx,
-                inferables=tuple(iter_type_params_in_value(self_annotation)),
+                self_annotation, self_annotation_value, Relation.ASSIGNABLE, ctx
             )
             if isinstance(tv_map, CanAssignError):
                 return None
