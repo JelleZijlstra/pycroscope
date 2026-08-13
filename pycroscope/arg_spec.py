@@ -112,6 +112,7 @@ from .value import (
     is_iterable,
     iter_type_params_in_value,
     make_coro_type,
+    pack_typevartuple_binding,
     type_param_to_value,
     with_type_param_owner,
 )
@@ -1594,8 +1595,9 @@ class ArgSpecCache:
     ) -> list[Value]:
         """Map concrete generic args to declared type parameters.
 
-        TypeVarTuple parameters consume zero or more type arguments and are
-        represented as tuple values during substitution.
+        The returned list has one canonical value per declared parameter:
+        ParamSpecs use InputSigValue and TypeVarTuples use
+        TypeVarTupleBindingValue.
         """
 
         if not type_params:
@@ -1662,12 +1664,6 @@ class ArgSpecCache:
             variadic_arg = generic_args[variadic_index]
             if isinstance(variadic_arg, (TypeVarTupleValue, TypeVarTupleBindingValue)):
                 return list(generic_args)
-        # TODO: This still materializes a TypeVarTuple slot as SequenceValue(tuple, ...)
-        # while other code paths use TypeVarTupleBindingValue for the same concept.
-        # That split makes empty and partially-specialized variadics easy to mishandle.
-        # Refactor this helper to produce the same canonical binding wrapper as
-        # match_typevar_arguments()/TypeVarMap, then update the downstream callers to
-        # consume that single representation.
         split = self._split_variadic_generic_args(
             type_params, generic_args, variadic_index
         )
@@ -1693,13 +1689,19 @@ class ArgSpecCache:
                     )
                 )
             elif i == variadic_index:
-                value = SequenceValue(
-                    tuple,
-                    [
-                        (False, member)
-                        for member in generic_args[variadic_start:variadic_end]
-                    ],
-                )
+                variadic_args = generic_args[variadic_start:variadic_end]
+                if (
+                    not variadic_args
+                    and type_params[i].default is not None
+                    and use_defaults_for_omitted_args
+                ):
+                    value = self._default_type_argument_for_param(
+                        type_params[i], variadic_substitutions, use_defaults=True
+                    )
+                else:
+                    value = TypeVarTupleBindingValue(
+                        pack_typevartuple_binding(variadic_args)
+                    )
             else:
                 suffix_index = i - variadic_index - 1
                 value = (

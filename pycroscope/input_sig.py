@@ -139,6 +139,12 @@ def input_sigs_have_relation(
             return CanAssignError("Cannot be assigned to")
         return {}
     elif isinstance(left, ParamSpecParam):
+        if isinstance(right, AnySig) and relation is Relation.ASSIGNABLE:
+            return {}
+        if inferables is not None and left not in inferables:
+            if isinstance(right, ParamSpecParam) and left == right:
+                return {}
+            return CanAssignError(f"Cannot assign {right} to rigid ParamSpec {left}")
         return {left: [LowerBound(left, InputSigValue(right))]}
     elif isinstance(left, ActualArguments):
         if left == right:
@@ -150,6 +156,10 @@ def input_sigs_have_relation(
                 return CanAssignError("Cannot be assigned")
             return {}
         elif isinstance(right, ParamSpecParam):
+            if inferables is not None and right not in inferables:
+                return CanAssignError(
+                    f"Cannot assign rigid ParamSpec {right} to {left}"
+                )
             return {right: [UpperBound(right, InputSigValue(left))]}
         elif isinstance(right, ActualArguments):
             # TODO: pass inferables

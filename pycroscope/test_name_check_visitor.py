@@ -3186,7 +3186,7 @@ class TestTaxonomyDistilledRegressions(TestNameCheckVisitorBase):
     def test_paramspec_callable_protocol_assignment_does_not_internal_error(self):
         from typing import Any, ParamSpec, Protocol
 
-        P = ParamSpec("P")
+        P = ParamSpec("P", contravariant=True)
 
         class Proto3(Protocol):
             def __call__(self, a: int, *args: Any, **kwargs: Any) -> None: ...

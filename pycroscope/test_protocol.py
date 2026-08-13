@@ -49,7 +49,7 @@ class TestProtocol(TestNameCheckVisitorBase):
     def test_unknown_attribute_assignment_on_protocol_typed_callable(self):
         from typing import Callable, ParamSpec, Protocol, TypeVar, cast
 
-        P = ParamSpec("P")
+        P = ParamSpec("P", contravariant=True)
         R = TypeVar("R", covariant=True)
 
         class CallableWithAttr(Protocol[P, R]):

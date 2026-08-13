@@ -514,8 +514,9 @@ class TestAnnotations(TestNameCheckVisitorBase):
         assert type_from_value(KnownValue(Array[()])) == GenericValue(Array, [])
 
     @skip_before((3, 12))
-    def test_type_from_runtime_preserves_runtime_paramspec_specialization(self):
+    def test_type_from_runtime_canonicalizes_runtime_paramspec_specialization(self):
         from .annotations import Context, type_from_runtime
+        from .input_sig import coerce_paramspec_specialization_to_input_sig
 
         namespace: dict[str, object] = {}
         exec("class Callback[**P]:\n    pass", namespace)
@@ -526,8 +527,10 @@ class TestAnnotations(TestNameCheckVisitorBase):
         ) == GenericValue(
             Callback,
             [
-                SequenceValue(
-                    tuple, [(False, TypedValue(int)), (False, TypedValue(str))]
+                coerce_paramspec_specialization_to_input_sig(
+                    SequenceValue(
+                        tuple, [(False, TypedValue(int)), (False, TypedValue(str))]
+                    )
                 )
             ],
         )

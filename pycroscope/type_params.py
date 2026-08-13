@@ -189,8 +189,7 @@ def infer_type_param_variances_from_class_api(
     inferable_type_params = tuple(
         type_param
         for type_param in type_params
-        if isinstance(type_param, TypeVarParam)
-        and (not infer_variance_only or _type_param_uses_infer_variance(type_param))
+        if not infer_variance_only or _type_param_uses_infer_variance(type_param)
     )
     if not inferable_type_params:
         return None
@@ -222,9 +221,34 @@ def infer_type_param_variances_from_class_api(
     )
 
 
+def find_incompatible_callable_type_param_variances(
+    type_params: Sequence[TypeParam],
+    parameter_annotations: Sequence[Value],
+    return_annotation: Value | None,
+    ctx: CanAssignContext,
+) -> tuple[TypeParam, ...]:
+    explicit_type_params = tuple(
+        type_param
+        for type_param in type_params
+        if isinstance(type_param, (ParamSpecParam, TypeVarTupleParam))
+        if type_param.variance in (Variance.COVARIANT, Variance.CONTRAVARIANT)
+    )
+    if not explicit_type_params:
+        return ()
+    collector = _PolarityCollector(explicit_type_params, ctx)
+    for annotation in parameter_annotations:
+        collector.collect(annotation, _Polarity.CONTRAVARIANT)
+    if return_annotation is not None:
+        collector.collect(return_annotation, _Polarity.COVARIANT)
+    return tuple(
+        type_param
+        for type_param in explicit_type_params
+        if (observed := collector.polarities.get(type_param)) is not None
+        and observed is not _polarity_from_variance(type_param.variance)
+    )
+
+
 def _type_param_uses_infer_variance(type_param: TypeParam) -> bool:
-    if not is_instance_of_typing_name(type_param.typevar, "TypeVar"):
-        return False
     if type_param.variance is Variance.INFERRED:
         return True
     return bool(safe_getattr(type_param.typevar, "__infer_variance__", False))
@@ -253,14 +277,12 @@ def _is_type_parameter_declaration_base(value: Value) -> bool:
 class _PolarityCollector:
     def __init__(self, type_params: Sequence[TypeParam], ctx: CanAssignContext) -> None:
         self._type_params_by_identity = {
-            type_param.typevar: type_param
-            for type_param in type_params
-            if isinstance(type_param, TypeVarParam)
+            type_param.typevar: type_param for type_param in type_params
         }
         self._ctx = ctx
         self.polarities: dict[TypeParam, _Polarity] = {}
 
-    def record(self, type_param: TypeVarParam, polarity: _Polarity) -> None:
+    def record(self, type_param: TypeParam, polarity: _Polarity) -> None:
         target = self._type_params_by_identity.get(type_param.typevar)
         if target is None:
             return
@@ -274,12 +296,16 @@ class _PolarityCollector:
             self.record(value.typevar_param, polarity)
             return
         if isinstance(value, (ParamSpecArgsValue, ParamSpecKwargsValue)):
+            target = self._type_params_by_identity.get(value.param_spec)
+            if target is not None:
+                self.record(target, polarity)
             return
         if isinstance(value, TypeVarTupleBindingValue):
             for _, member in value.binding:
                 self.collect(member, polarity)
             return
         if isinstance(value, TypeVarTupleValue):
+            self.record(value.typevar_tuple_param, polarity)
             return
         if isinstance(value, TypeFormValue):
             self.collect(value.inner_type, polarity)
@@ -289,6 +315,9 @@ class _PolarityCollector:
             return
         input_sig_value = _input_sig_value(value)
         if input_sig_value is not None:
+            if isinstance(input_sig_value.input_sig, ParamSpecParam):
+                self.record(input_sig_value.input_sig, polarity)
+                return
             for member in input_sig_value.input_sig.walk_values():
                 if member is not input_sig_value:
                     self.collect(member, polarity)
@@ -323,13 +352,17 @@ class _PolarityCollector:
         match value:
             case TypeVarValue(typevar_param=typevar_param):
                 self.record(typevar_param, polarity)
-            case ParamSpecArgsValue() | ParamSpecKwargsValue():
-                return
+            case ParamSpecArgsValue(param_spec=param_spec) | ParamSpecKwargsValue(
+                param_spec=param_spec
+            ):
+                target = self._type_params_by_identity.get(param_spec)
+                if target is not None:
+                    self.record(target, polarity)
             case TypeVarTupleBindingValue(binding=binding):
                 for _, member in binding:
                     self.collect(member, polarity)
-            case TypeVarTupleValue():
-                return
+            case TypeVarTupleValue(typevar_tuple_param=typevar_tuple_param):
+                self.record(typevar_tuple_param, polarity)
             case TypeFormValue(inner_type=inner_type):
                 self.collect(inner_type, polarity)
             case NotValue(value=inner_type):
@@ -387,7 +420,12 @@ class _PolarityCollector:
     def collect_signature(
         self, signature: object, polarity: _Polarity, *, skip_first_parameter: bool
     ) -> None:
-        from .signature import BoundMethodSignature, OverloadedSignature, Signature
+        from .signature import (
+            BoundMethodSignature,
+            OverloadedSignature,
+            ParameterKind,
+            Signature,
+        )
 
         if isinstance(signature, BoundMethodSignature):
             signature = signature.signature
@@ -402,7 +440,22 @@ class _PolarityCollector:
         for index, param in enumerate(signature.parameters.values()):
             if skip_first_parameter and index == 0:
                 continue
-            self.collect(param.annotation, polarity.compose(_Polarity.CONTRAVARIANT))
+            annotation = param.annotation
+            if (
+                param.kind is ParameterKind.VAR_POSITIONAL
+                and isinstance(annotation, GenericValue)
+                and annotation.typ is tuple
+                and len(annotation.args) == 1
+            ):
+                annotation = annotation.args[0]
+            elif (
+                param.kind is ParameterKind.VAR_KEYWORD
+                and isinstance(annotation, GenericValue)
+                and annotation.typ is dict
+                and len(annotation.args) == 2
+            ):
+                annotation = annotation.args[1]
+            self.collect(annotation, polarity.compose(_Polarity.CONTRAVARIANT))
         self.collect(signature.return_value, polarity)
 
     def collect_class_symbol(
@@ -428,6 +481,10 @@ class _PolarityCollector:
             if name in {"__init__", "__new__"}:
                 return
             if symbol.initializer is not None:
+                if symbol.is_classmethod and self._collect_classmethod_wrapper(
+                    symbol.initializer, _Polarity.COVARIANT
+                ):
+                    return
                 signature = self._ctx.signature_from_value(symbol.initializer)
                 if signature is None:
                     self.collect(symbol.initializer, _Polarity.COVARIANT)
@@ -446,6 +503,26 @@ class _PolarityCollector:
             else _Polarity.INVARIANT
         )
         self.collect(symbol.annotation, attribute_polarity)
+
+    def _collect_classmethod_wrapper(self, value: Value, polarity: _Polarity) -> bool:
+        if (
+            not isinstance(value, GenericValue)
+            or value.typ is not classmethod
+            or len(value.args) != 3
+        ):
+            return False
+        input_sig_value = _input_sig_value(value.args[1])
+        if input_sig_value is None:
+            return False
+        from pycroscope.input_sig import FullSignature
+
+        if not isinstance(input_sig_value.input_sig, FullSignature):
+            return False
+        self.collect_signature(
+            input_sig_value.input_sig.sig, polarity, skip_first_parameter=False
+        )
+        self.collect(value.args[2], polarity)
+        return True
 
 
 def _is_type_param_declaration_node(node: ast.AST) -> bool:
@@ -967,10 +1044,8 @@ class ActiveTypeParams:
         type_param = visitor.get_type_param_from_value(value)
         if type_param is not None:
             self._check_direct_type_param_usage(node, type_param)
-            if (
-                isinstance(type_param, TypeVarParam)
-                and self._variance_collections
-                and (visitor.in_annotation or self._variance_outside_annotations > 0)
+            if self._variance_collections and (
+                visitor.in_annotation or self._variance_outside_annotations > 0
             ):
                 for context in self._variance_collections:
                     used_polarities = context.type_param_polarities.get(

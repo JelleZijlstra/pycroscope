@@ -136,6 +136,10 @@ class RelationContext:
     original_left: GradualType | None = None
     original_right: GradualType | None = None
     relation_goals: tuple[object, ...] = ()
+    inference_mode: bool = False
+
+    def should_infer_type_params(self) -> bool:
+        return self.inference_mode or self.inferables is not None
 
     def with_relation(
         self, relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE]
@@ -191,10 +195,17 @@ def _make_relation_cache_key(
     right: Value,
     relation: Relation,
     inferables: tuple[TypeParam, ...] | None = None,
+    inference_mode: bool = False,
 ) -> tuple[
-    tuple[str, object], tuple[str, object], Relation, tuple[TypeParam, ...] | None
+    tuple[str, object], tuple[str, object], Relation, tuple[TypeParam, ...] | None, bool
 ]:
-    return (_relation_key_piece(left), _relation_key_piece(right), relation, inferables)
+    return (
+        _relation_key_piece(left),
+        _relation_key_piece(right),
+        relation,
+        inferables,
+        inference_mode,
+    )
 
 
 def _get_cached_relation_result(
@@ -312,7 +323,11 @@ def _has_relation(
     left = gradualize(left)
     right = gradualize(right)
     key = _make_relation_cache_key(
-        left, right, relation_ctx.relation, relation_ctx.inferables
+        left,
+        right,
+        relation_ctx.relation,
+        relation_ctx.inferables,
+        relation_ctx.inference_mode,
     )
     if key in relation_ctx.relation_goals:
         return {}
@@ -1028,8 +1043,7 @@ def _has_relation_impl(
             for is_many, member in left.members:
                 if not is_many:
                     return CanAssignError(
-                        f"{right} may be empty and cannot satisfy"
-                        f" known-non-empty {left}"
+                        f"{right} may be empty and cannot satisfy known-non-empty {left}"
                     )
                 can_assign = relation_ctx.has_relation(member, right_member)
                 if isinstance(can_assign, CanAssignError):
@@ -1105,7 +1119,20 @@ def _has_relation_impl(
                 comparison_left = left
                 left_tobj = left.get_type_object(ctx)
                 declared_type_params = left_tobj.get_declared_type_params()
-                if len(left.args) != len(generic_args):
+                packed_generic_args = _pack_typevartuple_generic_args(
+                    declared_type_params, generic_args
+                )
+                packed_left_args = _pack_typevartuple_generic_args(
+                    declared_type_params, left.args
+                )
+                if (
+                    packed_left_args is not None
+                    and packed_generic_args is not None
+                    and len(packed_left_args) == len(packed_generic_args)
+                ):
+                    comparison_left = GenericValue(left.typ, packed_left_args)
+                    generic_args = packed_generic_args
+                if len(comparison_left.args) != len(generic_args):
                     # TODO: GenericValue.args still arrive here in a mix of flattened
                     # and packed variadic forms, so this branch has to repair both sides
                     # before comparison. That works, but it's brittle and hard to reason
@@ -1132,11 +1159,11 @@ def _has_relation_impl(
                         declared_type_params, generic_args
                     )
                     packed_left_args = _pack_typevartuple_generic_args(
-                        declared_type_params, left.args
+                        declared_type_params, comparison_left.args
                     )
-                    if packed_generic_args is not None and len(left.args) == len(
-                        packed_generic_args
-                    ):
+                    if packed_generic_args is not None and len(
+                        comparison_left.args
+                    ) == len(packed_generic_args):
                         generic_args = packed_generic_args
                     elif (
                         packed_left_args is not None
@@ -1264,7 +1291,11 @@ def _coerce_paramspec_generic_arg_for_relation(arg: Value, *, other: Value) -> V
 
 
 def _has_relation_for_generic_arg_pair(
-    left: Value, right: Value, relation_ctx: RelationContext
+    left: Value,
+    right: Value,
+    relation_ctx: RelationContext,
+    *,
+    reverse_paramspec: bool = False,
 ) -> CanAssign:
     assert not isinstance(left, (TypeVarParam, ParamSpecParam, TypeVarTupleParam))
     assert not isinstance(right, (TypeVarParam, ParamSpecParam, TypeVarTupleParam))
@@ -1277,12 +1308,18 @@ def _has_relation_for_generic_arg_pair(
     if isinstance(left, pycroscope.input_sig.InputSigValue) and isinstance(
         right, pycroscope.input_sig.InputSigValue
     ):
+        if reverse_paramspec:
+            left, right = right, left
         return pycroscope.input_sig.input_sigs_have_relation(
             left.input_sig,
             right.input_sig,
             relation_ctx.relation,
             relation_ctx.ctx,
-            relation_ctx.inferables,
+            (
+                relation_ctx.inferables
+                if relation_ctx.should_infer_type_params()
+                else ()
+            ),
         )
     if isinstance(left, pycroscope.input_sig.InputSigValue) or isinstance(
         right, pycroscope.input_sig.InputSigValue
@@ -1426,9 +1463,13 @@ def _has_relation_for_generic_arg(
 ) -> CanAssign:
     relation = relation_ctx.relation
     if variance is Variance.COVARIANT:
-        return _has_relation_for_generic_arg_pair(left, right, relation_ctx)
+        return _has_relation_for_generic_arg_pair(
+            left, right, relation_ctx, reverse_paramspec=True
+        )
     if variance is Variance.CONTRAVARIANT:
-        return _has_relation_for_generic_arg_pair(right, left, relation_ctx)
+        return _has_relation_for_generic_arg_pair(
+            right, left, relation_ctx, reverse_paramspec=True
+        )
 
     forward = _has_relation_for_generic_arg_pair(left, right, relation_ctx)
     if isinstance(forward, CanAssignError):
@@ -2156,6 +2197,8 @@ def _unpack_fixed_tuple_generic_arg(value: Value) -> list[Value] | None:
         if all(not is_many for is_many, _ in value.binding):
             return [member for _, member in value.binding]
         return None
+    if isinstance(value, pycroscope.input_sig.InputSigValue):
+        return None
     normalized = replace_known_sequence_value(value)
     if isinstance(normalized, SequenceValue) and normalized.typ is tuple:
         members = normalized.get_member_sequence()
@@ -2280,8 +2323,7 @@ def _has_relation_typeddict(
         )
         if isinstance(can_assign, CanAssignError):
             return CanAssignError(
-                f"Type for key {key!r} is incompatible with extra keys type"
-                f" {left.extra_keys}",
+                f"Type for key {key!r} is incompatible with extra keys type {left.extra_keys}",
                 children=[can_assign],
             )
         bounds_maps.append(can_assign)
@@ -2331,8 +2373,7 @@ def _has_relation_typeddict_dict(
                 if key_type.val not in left.items:
                     if left.extra_keys is NO_RETURN_VALUE:
                         return CanAssignError(
-                            f"Key {key_type.val!r} is not allowed in closed"
-                            f" TypedDict {left}"
+                            f"Key {key_type.val!r} is not allowed in closed TypedDict {left}"
                         )
                     elif left.extra_keys is not None:
                         can_assign = relation_ctx.has_relation(
@@ -2340,7 +2381,7 @@ def _has_relation_typeddict_dict(
                         )
                         if isinstance(can_assign, CanAssignError):
                             return CanAssignError(
-                                f"Type for extra key {pair.key} is" " incompatible",
+                                f"Type for extra key {pair.key} is incompatible",
                                 children=[can_assign],
                             )
                         bounds_maps.append(can_assign)
@@ -2357,7 +2398,7 @@ def _has_relation_typeddict_dict(
                     )
                 if left.extra_keys is NO_RETURN_VALUE:
                     return CanAssignError(
-                        f"Key {pair.key} is not allowed in closed TypedDict" f" {left}"
+                        f"Key {pair.key} is not allowed in closed TypedDict {left}"
                     )
                 elif left.extra_keys is not None:
                     can_assign = relation_ctx.has_relation(left.extra_keys, pair.value)
@@ -2381,7 +2422,7 @@ def get_tv_map(
     ctx: CanAssignContext,
     inferables: tuple[TypeParam, ...] | None = None,
 ) -> TypeVarMap | CanAssignError:
-    relation_ctx = RelationContext(relation, ctx, inferables)
+    relation_ctx = RelationContext(relation, ctx, inferables, inference_mode=True)
     return get_tv_map_from_ctx(left, right, relation_ctx)
 
 

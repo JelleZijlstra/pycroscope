@@ -347,7 +347,8 @@ def pack_typevartuple_binding(values: Iterable["Value"]) -> SequenceMembers:
     return tuple(members)
 
 
-def typevartuple_value_to_members(value: "Value") -> SequenceMembers:
+def get_typevartuple_members(value: "Value") -> SequenceMembers | None:
+    """Return canonical pack members if value can represent a TypeVarTuple."""
     if isinstance(value, TypeVarTupleValue):
         return ((True, value),)
     if isinstance(value, TypeVarTupleBindingValue):
@@ -363,6 +364,14 @@ def typevartuple_value_to_members(value: "Value") -> SequenceMembers:
         and len(normalized.args) == 1
     ):
         return ((True, normalized.args[0]),)
+    return None
+
+
+def typevartuple_value_to_members(value: "Value") -> SequenceMembers:
+    """Return canonical pack members, raising for an invalid substitution."""
+    members = get_typevartuple_members(value)
+    if members is not None:
+        return members
     raise TypeError(
         f"TypeVarTuple substitutions must be tuple-like values, not {value}"
     )
@@ -495,21 +504,26 @@ class Variance(enum.Enum):
     CONTRAVARIANT = 2
     INVARIANT = 3
     INFERRED = 4
+    UNSPECIFIED = 5
 
     def display_name(self) -> str:
         return self.name.lower()
 
 
-def get_typevar_variance(typevar: TypeVarLike) -> Variance:
-    if not is_instance_of_typing_name(typevar, "TypeVar"):
-        return Variance.INVARIANT
-    is_covariant = bool(getattr(typevar, "__covariant__", False))
-    is_contravariant = bool(getattr(typevar, "__contravariant__", False))
+def get_type_param_variance(type_param: TypeVarLike) -> Variance:
+    is_covariant = bool(safe_getattr(type_param, "__covariant__", False))
+    is_contravariant = bool(safe_getattr(type_param, "__contravariant__", False))
     if is_covariant and not is_contravariant:
         return Variance.COVARIANT
     if is_contravariant and not is_covariant:
         return Variance.CONTRAVARIANT
     return Variance.INVARIANT
+
+
+# Keep "derive this from the runtime object" distinct from an explicitly supplied
+# invariant variance. This matters when dataclasses.replace() stores an inferred
+# invariant result on a parameter whose runtime object has __infer_variance__ set.
+_DEFAULT_TYPE_PARAM_VARIANCE = Variance.UNSPECIFIED
 
 
 class Value:
@@ -1161,7 +1175,7 @@ class TypeVarParam:
     bound: Value | None = None
     default: Value | None = None
     constraints: Sequence[Value] = ()
-    variance: Variance = Variance.INVARIANT
+    variance: Variance = _DEFAULT_TYPE_PARAM_VARIANCE
     is_self: bool = False
     """Whether this TypeVar represents typing.Self."""
 
@@ -1196,8 +1210,8 @@ class TypeVarParam:
                     "default",
                     _value_from_runtime_type_param_component(runtime_default),
                 )
-        if self.variance is Variance.INVARIANT:
-            object.__setattr__(self, "variance", get_typevar_variance(self.typevar))
+        if self.variance is _DEFAULT_TYPE_PARAM_VARIANCE:
+            object.__setattr__(self, "variance", get_type_param_variance(self.typevar))
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         substituted = typevars.get_typevar(self)
@@ -1238,7 +1252,13 @@ class ParamSpecParam:
     param_spec: ParamSpecLike
     owner: TypeParamOwner | None
     default: Value | None = None
-    variance: Variance = Variance.INVARIANT
+    variance: Variance = _DEFAULT_TYPE_PARAM_VARIANCE
+
+    def __post_init__(self) -> None:
+        if self.variance is _DEFAULT_TYPE_PARAM_VARIANCE:
+            object.__setattr__(
+                self, "variance", get_type_param_variance(self.param_spec)
+            )
 
     @property
     def typevar(self) -> ParamSpecLike:
@@ -1265,7 +1285,13 @@ class TypeVarTupleParam:
     typevar_tuple: TypeVarTupleLike
     owner: TypeParamOwner | None
     default: Value | None = None
-    variance: Variance = Variance.INVARIANT
+    variance: Variance = _DEFAULT_TYPE_PARAM_VARIANCE
+
+    def __post_init__(self) -> None:
+        if self.variance is _DEFAULT_TYPE_PARAM_VARIANCE:
+            object.__setattr__(
+                self, "variance", get_type_param_variance(self.typevar_tuple)
+            )
 
     @property
     def typevar(self) -> TypeVarTupleLike:
@@ -1425,6 +1451,16 @@ class TypeAlias:
 
 def default_value_for_type_param(type_param: "TypeParam") -> Value:
     if type_param.default is not None:
+        if isinstance(type_param, ParamSpecParam):
+            from pycroscope.input_sig import (
+                coerce_paramspec_specialization_to_input_sig,
+            )
+
+            return coerce_paramspec_specialization_to_input_sig(type_param.default)
+        if isinstance(type_param, TypeVarTupleParam):
+            return TypeVarTupleBindingValue(
+                typevartuple_value_to_members(type_param.default)
+            )
         return type_param.default
     return AnyValue(AnySource.generic_argument)
 
@@ -4780,8 +4816,7 @@ def _unpack_sequence_value(
         while len(tail) < post_starred_length:
             if len(tail) >= len(value.members) - len(head):
                 return CanAssignError(
-                    f"{value} must have at least"
-                    f" {target_length + post_starred_length} elements"
+                    f"{value} must have at least {target_length + post_starred_length} elements"
                 )
             is_many, val = value.members[-len(tail) - 1]
             if is_many:
@@ -4796,8 +4831,7 @@ def _unpack_sequence_value(
         if remaining_target_length != 0 or remaining_post_starred_length != 0:
             if not remaining_members:
                 return CanAssignError(
-                    f"{value} must have at least"
-                    f" {target_length + post_starred_length} elements"
+                    f"{value} must have at least {target_length + post_starred_length} elements"
                 )
             else:
                 fallback_value = unite_values(*[val for _, val in remaining_members])

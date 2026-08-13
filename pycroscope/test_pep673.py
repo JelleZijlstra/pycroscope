@@ -282,6 +282,9 @@ class TestPEP673(TestNameCheckVisitorBase):
         T = TypeVar("T", bound="Model")
 
         class Getter(Generic[T]):
+            def __call__(self, key: str) -> T | None:
+                raise NotImplementedError
+
             def get_one(self) -> T | None:
                 raise NotImplementedError
 
@@ -296,6 +299,7 @@ class TestPEP673(TestNameCheckVisitorBase):
                 assert_type(getter, Getter[Self])
                 result = getter.get_one()
                 assert_type(result, Self | None)
+                assert_type(getter("key"), Self | None)
                 return result
 
         class SubModel(Model):

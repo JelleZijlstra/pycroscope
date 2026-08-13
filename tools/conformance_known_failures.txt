@@ -55,7 +55,4 @@ directives_disjoint_base
 # cases changed because they now use PEP 695 ParamSpec syntax.
 classes_classvar
 classes_override
-generics_mixed_variance_inference
-generics_paramspec_variance
 generics_typevartuple_basic
-generics_typevartuple_variance

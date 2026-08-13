@@ -471,14 +471,42 @@ class TestTypeVar(TestNameCheckVisitorBase):
             def __init__(self, value: T_co) -> None: ...
 
     @assert_passes(run_in_both_module_modes=True)
-    def test_protocol_paramspec_is_ignored_for_variance_check(self):
+    def test_protocol_paramspec_variance_is_checked(self):
         from typing import ParamSpec, Protocol, TypeVar
 
         P = ParamSpec("P")
+        P_contra = ParamSpec("P_contra", contravariant=True)
         R = TypeVar("R", covariant=True)
 
-        class Callback(Protocol[P, R]):
+        class BadCallback(Protocol[P, R]):  # E: invalid_protocol
             def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R: ...
+
+        class Callback(Protocol[P_contra, R]):
+            def __call__(
+                self, *args: P_contra.args, **kwargs: P_contra.kwargs
+            ) -> R: ...
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_protocol_variance_with_variadic_parameters(self):
+        from typing import Protocol, TypeVar
+
+        T_contra = TypeVar("T_contra", contravariant=True)
+
+        class Callback(Protocol[T_contra]):
+            def __call__(self, *args: T_contra, **kwargs: T_contra) -> None: ...
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_recursive_protocol_classmethod_receiver_does_not_affect_variance(self):
+        from typing import Protocol, TypeVar
+
+        T_co = TypeVar("T_co", covariant=True)
+        T_contra = TypeVar("T_contra", contravariant=True)
+
+        class Proto(Protocol[T_co, T_contra]):
+            def recurse(self) -> "Proto[T_co, T_contra]": ...
+
+            @classmethod
+            def consume(cls, value: T_contra) -> None: ...
 
     @assert_passes(run_in_both_module_modes=True)
     def test_protocol_output_only_covariant_typevar_is_valid(self):
@@ -1810,6 +1838,75 @@ class TestGenericClasses(TestNameCheckVisitorBase):
                 def f(self, x: [T]) -> None:  # E: invalid_annotation
                     raise NotImplementedError
         """)
+
+    @skip_before((3, 12))
+    def test_infer_paramspec_variance(self):
+        self.assert_passes(
+            """
+            from typing import Callable
+
+            class Invariant[**P]:
+                callback: Callable[P, None]
+
+            class Contravariant[**P]:
+                def call(self, *args: P.args, **kwargs: P.kwargs) -> None:
+                    raise NotImplementedError
+
+            class Covariant[**P]:
+                def accept(self, callback: Callable[P, None]) -> None:
+                    raise NotImplementedError
+
+            invariant_bad1: Invariant[object] = Invariant[int]()  # E: incompatible_assignment
+            invariant_bad2: Invariant[int] = Invariant[object]()  # E: incompatible_assignment
+            contra_ok: Contravariant[int] = Contravariant[object]()
+            contra_bad: Contravariant[object] = Contravariant[int]()  # E: incompatible_assignment
+            co_ok: Covariant[object] = Covariant[int]()
+            co_bad: Covariant[int] = Covariant[object]()  # E: incompatible_assignment
+            """,
+            run_in_both_module_modes=True,
+        )
+
+    @skip_before((3, 12))
+    def test_infer_typevartuple_variance(self):
+        self.assert_passes(
+            """
+            class Contravariant[*Ts]:
+                def accept(self, value: tuple[*Ts]) -> None:
+                    raise NotImplementedError
+
+            class Covariant[*Ts]:
+                def produce(self) -> tuple[*Ts]:
+                    raise NotImplementedError
+
+            contra_ok: Contravariant[int] = Contravariant[object]()
+            contra_bad: Contravariant[object] = Contravariant[int]()  # E: incompatible_assignment
+            co_ok: Covariant[int, int] = Covariant[bool, bool]()
+            co_bad: Covariant[int, int] = Covariant[bool, object]()  # E: incompatible_assignment
+            unbounded_ok: Covariant[*tuple[object, ...]] = Covariant[*tuple[int, ...]]()
+            fixed_ok: Covariant[*tuple[int, ...]] = Covariant[int]()
+            """,
+            run_in_both_module_modes=True,
+        )
+
+    @skip_before((3, 12))
+    def test_infer_mixed_type_parameter_variance(self):
+        self.assert_passes(
+            """
+            class Mixed[T, *Ts, **P]:
+                def call(
+                    self, value: T, /, *args: P.args, **kwargs: P.kwargs
+                ) -> tuple[*Ts]:
+                    raise NotImplementedError
+
+            t_ok: Mixed[int, []] = Mixed[object, []]()
+            t_bad: Mixed[int, []] = Mixed[bool, []]()  # E: incompatible_assignment
+            ts_ok: Mixed[int, int, []] = Mixed[int, bool, []]()
+            ts_bad: Mixed[int, int, []] = Mixed[int, object, []]()  # E: incompatible_assignment
+            p_ok: Mixed[int, [int]] = Mixed[int, [object]]()
+            p_bad: Mixed[int, [int]] = Mixed[int, [bool]]()  # E: incompatible_assignment
+            """,
+            run_in_both_module_modes=True,
+        )
 
     @skip_before((3, 12))
     def test_reject_legacy_typevar_in_generic_class_bases(self):

@@ -237,6 +237,14 @@ _RUNTIME_TO_TYPESHED_ALIASES = {
 }
 
 
+def _resolved_name(info: typeshed_client.resolver.ResolvedName) -> str | None:
+    while isinstance(info, typeshed_client.ImportedInfo):
+        info = info.info
+    if isinstance(info, typeshed_client.NameInfo):
+        return info.name
+    return None
+
+
 @dataclass
 class TypeshedFinder:
     ctx: CanAssignContext = field(repr=False)
@@ -1664,6 +1672,19 @@ class TypeshedFinder:
     def _value_from_info_inner(
         self, info: typeshed_client.resolver.ResolvedName, module: str
     ) -> Value:
+        if isinstance(info, typeshed_client.ImportedInfo) and module in {
+            "typing",
+            "typing_extensions",
+        }:
+            runtime_name = _resolved_name(info)
+            if runtime_name is not None:
+                try:
+                    runtime_module = __import__(module)
+                    runtime_value = getattr(runtime_module, runtime_name)
+                except (AttributeError, ImportError):
+                    pass
+                else:
+                    return KnownValue(runtime_value)
         if isinstance(info, typeshed_client.ImportedInfo):
             return self._value_from_info(info.info, ".".join(info.source_module))
         elif isinstance(info, typeshed_client.NameInfo):
