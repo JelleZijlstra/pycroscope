@@ -138,6 +138,7 @@ EXCLUDED_PROTOCOL_MEMBERS: set[str] = {
     "__new__",
     "__module__",
     "__parameters__",
+    "__type_params__",
     "__slots__",
     "__subclasshook__",
     "__weakref__",
@@ -708,10 +709,11 @@ class TypeObject:
     def _compute_protocol_members(self) -> set[str]:
         if not self.is_protocol():
             return set()
-        return (
+        members = (
             self._get_protocol_members_contributed_by_self()
             | self._get_protocol_members_contributed_by_protocol_bases()
         )
+        return members - EXCLUDED_PROTOCOL_MEMBERS
 
     def _compute_dataclass_fields(self) -> tuple[DataclassFieldRecord, ...]:
         import pycroscope.type_object_builder as type_object_builder

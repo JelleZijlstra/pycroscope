@@ -1215,6 +1215,28 @@ class TestDunder(TestNameCheckVisitorBase):
 
 class TestGenericClasses(TestNameCheckVisitorBase):
     @skip_before((3, 12))
+    def test_paramspec_flat_specialization_constructor_does_not_crash(self):
+        self.assert_passes(
+            """
+            from typing import Generic, ParamSpec
+
+            class New[**P]:
+                pass
+
+            P = ParamSpec("P")
+
+            class Old(Generic[P]):
+                pass
+
+            new_one: New[[int]] = New[int]()
+            new_two: New[[int, str]] = New[int, str]()
+            old_one: Old[[int]] = Old[int]()
+            old_two: Old[[int, str]] = Old[int, str]()
+            """,
+            run_in_both_module_modes=True,
+        )
+
+    @skip_before((3, 12))
     def test_generic(self):
         self.assert_passes("""
             from typing_extensions import assert_type

@@ -1509,6 +1509,25 @@ class ArgSpecCache:
             for arg in generic_args
         )
 
+        if (
+            len(type_params) == 1
+            and isinstance(type_params[0], ParamSpecParam)
+            and generic_args
+        ):
+            if len(generic_args) == 1:
+                value = coerce_paramspec_specialization_to_input_sig(generic_args[0])
+                if not isinstance(value, InputSigValue):
+                    value = coerce_paramspec_specialization_to_input_sig(
+                        SequenceValue(tuple, [(False, value)])
+                    )
+            else:
+                value = coerce_paramspec_specialization_to_input_sig(
+                    SequenceValue(
+                        tuple, [(False, argument) for argument in generic_args]
+                    )
+                )
+            return [value]
+
         def _coerce_specialized_arg(type_param: TypeParam, value: Value) -> Value:
             if isinstance(type_param, ParamSpecParam):
                 return coerce_paramspec_specialization_to_input_sig(value)

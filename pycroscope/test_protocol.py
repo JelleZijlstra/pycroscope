@@ -1,9 +1,30 @@
 # static analysis: ignore
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes
+from .test_node_visitor import assert_passes, skip_before
 
 
 class TestProtocol(TestNameCheckVisitorBase):
+    @skip_before((3, 12))
+    def test_pep695_type_params_are_not_protocol_members(self):
+        self.assert_passes(
+            """
+            from collections.abc import Callable
+            from typing import Protocol
+
+            class ProtocolWithP[**P](Protocol):
+                def __call__(
+                    self, *args: P.args, **kwargs: P.kwargs
+                ) -> None: ...
+
+            type TypeAliasWithP[**P] = Callable[P, None]
+
+            def capybara[**P](value: TypeAliasWithP[P]) -> None:
+                protocol: ProtocolWithP[P] = value
+                print(protocol)
+            """,
+            run_in_both_module_modes=True,
+        )
+
     @assert_passes()
     def test_generic_constructor_accepts_known_protocol_value(self):
         import logging

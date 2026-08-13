@@ -13147,7 +13147,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> Value:
         value = root_composite.value
         index = index_composite.value
-        if not TypedValue(slice).is_assignable(index, self):
+        if isinstance(
+            index, (InputSigValue, TypeVarTupleBindingValue)
+        ) or not TypedValue(slice).is_assignable(index, self):
             value = self._maybe_replace_tuple_subtype_with_tuple_sequence(value)
         root_composite = Composite(value, root_composite.varname, root_composite.node)
 
@@ -13879,11 +13881,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return Composite(self.being_assigned, composite, node)
         elif isinstance(node.ctx, ast.Load):
             root_composite = self._get_locally_narrowed_composite(root_composite, node)
-            partial_paramspec_component = self._partial_paramspec_component(
+            paramspec_component = self._paramspec_component(
                 root_composite.value, node.attr
             )
-            if partial_paramspec_component is not None:
-                return Composite(partial_paramspec_component, composite, node)
+            if paramspec_component is not None:
+                return Composite(paramspec_component, composite, node)
             if self.in_annotation and isinstance(root_composite.value, KnownValue):
                 try:
                     attr_value = getattr(root_composite.value.val, node.attr)
@@ -13940,16 +13942,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self.show_error(node, "Unknown context", ErrorCode.unexpected_node)
             return Composite(AnyValue(AnySource.error), composite, node)
 
-    def _partial_paramspec_component(self, value: Value, attr: str) -> Value | None:
-        if attr not in ("args", "kwargs") or not isinstance(value, PartialCallValue):
+    def _paramspec_component(self, value: Value, attr: str) -> Value | None:
+        if attr not in ("args", "kwargs"):
             return None
-        runtime_value = replace_fallback(value.runtime_value)
-        if not (
-            isinstance(runtime_value, TypedValue)
-            and is_typing_name(runtime_value.typ, "ParamSpec")
+        if isinstance(value, InputSigValue) and isinstance(
+            value.input_sig, ParamSpecParam
         ):
+            type_param = value.input_sig
+        elif isinstance(value, PartialCallValue):
+            runtime_value = replace_fallback(value.runtime_value)
+            if not (
+                isinstance(runtime_value, TypedValue)
+                and is_typing_name(runtime_value.typ, "ParamSpec")
+            ):
+                return None
+            type_param = make_type_param_from_value(value, visitor=self)
+        else:
             return None
-        type_param = make_type_param_from_value(value, visitor=self)
         if not isinstance(type_param, ParamSpecParam):
             return None
         if attr == "args":
@@ -14486,6 +14495,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         is_special_lookup = (
             self_value is not None and attr.startswith("__") and attr.endswith("__")
         )
+        paramspec_component = self._paramspec_component(root_composite.value, attr)
+        if paramspec_component is not None:
+            return paramspec_component
         if (
             isinstance(root_composite.value, PartialValue)
             and root_composite.value.operation is PartialValueOperation.SUBSCRIPT
