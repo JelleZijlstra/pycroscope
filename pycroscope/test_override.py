@@ -26,6 +26,39 @@ class TestOverride(TestNameCheckVisitorBase):
             def method(self):
                 pass
 
+    @assert_passes()
+    def test_constructor_compatibility_is_checked_for_explicit_override(self):
+        from typing_extensions import override
+
+        class Parent:
+            def __init__(self, x: int) -> None: ...
+
+            def __new__(cls, x: int) -> "Parent":
+                raise NotImplementedError
+
+        class GoodChild(Parent):
+            @override
+            def __init__(self, x: int) -> None: ...
+
+            @override
+            def __new__(cls, x: int) -> "GoodChild":
+                raise NotImplementedError
+
+        class BadChild(Parent):
+            @override
+            def __init__(self, x: str) -> None:  # E: incompatible_override
+                pass
+
+            @override
+            def __new__(cls, x: str) -> "BadChild":  # E: incompatible_override
+                raise NotImplementedError
+
+        class UndecoratedChild(Parent):
+            def __init__(self, x: str) -> None: ...
+
+            def __new__(cls, x: str) -> "UndecoratedChild":
+                raise NotImplementedError
+
     @assert_fails(ErrorCode.override_does_not_override)
     def test_invalid_method(self):
         from typing_extensions import override

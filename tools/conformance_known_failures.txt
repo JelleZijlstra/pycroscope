@@ -41,15 +41,8 @@ qualifiers_annotated
 # pycroscope doesn't handle relations between TypedDict and dict etc. correctly
 typeddicts_type_consistency
 
-# pycroscope uses Literal[] over float
-namedtuples_define_class
-
 # https://github.com/python/typing/issues/2259
 dataclasses_descriptors
 
 # Newly added on typing; pycroscope doesn't fully implement disjoint_base yet
 directives_disjoint_base
-
-# Recently added conformance cases.
-classes_classvar
-classes_override
