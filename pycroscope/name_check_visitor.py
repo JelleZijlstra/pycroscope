@@ -88,6 +88,7 @@ from .annotations import (
     normalize_paramspec_generic_args,
     specialize_type_alias_value,
     type_from_value,
+    type_generic_args_from_members,
     value_from_ast,
 )
 from .arg_spec import ArgSpecCache, IgnoredCallees, UnwrapClass, is_dot_asynq_function
@@ -243,6 +244,7 @@ from .type_object import (
 from .type_params import (
     ActiveTypeParams,
     TypeParamIdentity,
+    find_incompatible_callable_type_param_variances,
     infer_type_param_variances_from_class_api,
 )
 from .typeshed import TypeshedFinder
@@ -333,7 +335,8 @@ from .value import (
     flatten_values,
     get_self_param,
     get_type_alias_root,
-    get_typevar_variance,
+    get_type_param_variance,
+    get_typevartuple_members,
     is_async_iterable,
     is_iterable,
     is_property_initializer,
@@ -2376,8 +2379,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if isinstance(can_assign, CanAssignError):
                     self._show_error_if_checking(
                         node,
-                        f"Incompatible assignment: expected {declared_type}, got"
-                        f" {value}",
+                        f"Incompatible assignment: expected {declared_type}, got {value}",
                         error_code=ErrorCode.incompatible_assignment,
                         detail=can_assign.display(),
                     )
@@ -4189,10 +4191,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if keyword.arg is None:
                     message = "TypedDict definitions do not support **kwargs"
                 else:
-                    message = (
-                        f"Unexpected keyword argument {keyword.arg!r}"
-                        " in TypedDict definition"
-                    )
+                    message = f"Unexpected keyword argument {keyword.arg!r} in TypedDict definition"
                 self._show_error_if_checking(
                     keyword, message, error_code=ErrorCode.invalid_typeddict
                 )
@@ -5465,11 +5464,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         type_params = tobj.get_declared_type_params()
         if not type_params:
             return
-        checked_type_params = [
-            type_param
-            for type_param in type_params
-            if isinstance(type_param, TypeVarParam)
-        ]
+        checked_type_params = list(type_params)
         if not checked_type_params:
             return
         inferred_type_params = infer_type_param_variances_from_class_api(
@@ -5478,9 +5473,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if inferred_type_params is None:
             return
         inferred_type_params_by_identity = {
-            type_param.typevar: type_param
-            for type_param in inferred_type_params
-            if isinstance(type_param, TypeVarParam)
+            type_param.typevar: type_param for type_param in inferred_type_params
         }
         for declared_type_param in checked_type_params:
             inferred_type_param = inferred_type_params_by_identity.get(
@@ -5497,8 +5490,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             self._show_error_if_checking(
                 node,
-                f"{type_param_name} should be "
-                f"{inferred_type_param.variance.display_name()}",
+                f"{type_param_name} should be {inferred_type_param.variance.display_name()}",
                 error_code=ErrorCode.invalid_protocol,
             )
 
@@ -5512,14 +5504,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> None:
         if self._is_protocol_class(base_values, class_scope_object):
             return
-        typevars_to_check = {
-            type_param.typevar
-            for type_param in type_params
-            if isinstance(type_param, TypeVarParam)
-        }
+        typevars_to_check = {type_param.typevar for type_param in type_params}
         for base_variance_info in base_type_param_variance_infos:
             for typevar in base_variance_info.type_param_polarities:
-                if is_instance_of_typing_name(typevar, "TypeVar"):
+                if (
+                    is_instance_of_typing_name(typevar, "TypeVar")
+                    or is_instance_of_typing_name(typevar, "ParamSpec")
+                    or is_instance_of_typing_name(typevar, "TypeVarTuple")
+                ):
                     typevars_to_check.add(typevar)
         if not typevars_to_check:
             return
@@ -5534,7 +5526,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 used_polarities = base_variance_info.type_param_polarities.get(
                     typevar, set()
                 )
-                variance = get_typevar_variance(typevar)
+                variance = get_type_param_variance(typevar)
                 if _variance_is_compatible_with_usage(variance, used_polarities):
                     continue
                 type_param_name = safe_getattr(typevar, "__name__", str(typevar))
@@ -7053,6 +7045,38 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ),
                     *params[1:],
                 ]
+            if (
+                not isinstance(node, ast.Lambda)
+                and node.name not in {"__init__", "__new__"}
+                and self.scopes.scope_type() is ScopeType.class_scope
+                and self.current_class_type_params
+            ):
+                first_checked_index = (
+                    0 if FunctionDecorator.staticmethod in decorator_kinds else 1
+                )
+                incompatible_type_params = (
+                    find_incompatible_callable_type_param_variances(
+                        self.current_class_type_params,
+                        [
+                            param_info.param.annotation
+                            for param_info in params[first_checked_index:]
+                        ],
+                        return_annotation,
+                        self,
+                    )
+                )
+                if incompatible_type_params:
+                    type_param_names = ", ".join(
+                        safe_getattr(
+                            type_param.typevar, "__name__", str(type_param.typevar)
+                        )
+                        for type_param in incompatible_type_params
+                    )
+                    self._show_error_if_checking(
+                        node,
+                        f"{type_param_names} has incompatible variance in method",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
             yield FunctionInfo(
                 async_kind=async_kind,
                 decorator_kinds=frozenset(decorator_kinds),
@@ -8072,7 +8096,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         normalized_members: list[Value] = []
         for member in value.members:
-            normalized = type_from_value(member, self, value.node, suppress_errors=True)
+            if isinstance(member, (InputSigValue, TypeVarTupleBindingValue)):
+                normalized = member
+            else:
+                normalized = type_from_value(
+                    member, self, value.node, suppress_errors=True
+                )
             if (
                 isinstance(normalized, AnyValue)
                 and normalized.source is AnySource.error
@@ -8278,8 +8307,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if param is None:
                 self._show_error_if_checking(
                     info.node,
-                    "TypeIs must be used on a function taking at least one positional"
-                    " parameter",
+                    "TypeIs must be used on a function taking at least one positional parameter",
                     error_code=ErrorCode.invalid_typeguard,
                 )
                 continue
@@ -8300,8 +8328,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if param is None:
                 self._show_error_if_checking(
                     info.node,
-                    "TypeGuard must be used on a function taking at least one"
-                    " positional parameter",
+                    "TypeGuard must be used on a function taking at least one positional parameter",
                     error_code=ErrorCode.invalid_typeguard,
                 )
 
@@ -10693,8 +10720,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if isinstance(can_assign, CanAssignError):
                 self._show_error_if_checking(
                     node,
-                    f"Cannot send {send_type} to a generator (expected"
-                    f" {expected_send})",
+                    f"Cannot send {send_type} to a generator (expected {expected_send})",
                     error_code=ErrorCode.incompatible_yield,
                     detail=can_assign.display(),
                 )
@@ -10734,8 +10760,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(can_assign, CanAssignError):
             self._show_error_if_checking(
                 node,
-                f"Cannot assign value of type {value} to yield expression of type"
-                f" {yield_type}",
+                f"Cannot assign value of type {value} to yield expression of type {yield_type}",
                 error_code=ErrorCode.incompatible_yield,
                 detail=can_assign.display(),
             )
@@ -12052,8 +12077,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         if isinstance(can_assign, CanAssignError):
                             self._show_error_if_checking(
                                 node,
-                                f"Incompatible assignment: expected {expected_type}, got"
-                                f" {value}",
+                                f"Incompatible assignment: expected {expected_type}, got {value}",
                                 error_code=ErrorCode.incompatible_assignment,
                                 detail=can_assign.display(),
                             )
@@ -12721,7 +12745,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             else:
                 legacy_message = (
-                    "Type alias must declare type parameters in the" " type statement"
+                    "Type alias must declare type parameters in the type statement"
                 )
             legacy_type_param_ctx = self.active_type_params.reject_legacy_type_params(
                 legacy_message,
@@ -12824,8 +12848,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                 else:
                     legacy_param_message = (
-                        "Type alias must declare type parameters in the"
-                        " type statement"
+                        "Type alias must declare type parameters in the type statement"
                     )
                 with (
                     self.scopes.add_scope(
@@ -12971,7 +12994,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ps = typing.ParamSpec(node.name)
             else:
                 ps = typing.cast(Any, maybe_runtime_param_spec)
-            typevar = InputSigValue(ParamSpecParam(ps, owner=owner))
+            typevar = InputSigValue(
+                ParamSpecParam(ps, owner=owner, variance=Variance.INFERRED)
+            )
             self._set_name_in_scope(node.name, node, typevar)
             return typevar
 
@@ -12986,7 +13011,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 tv = typing.cast(Any, getattr(typing, "TypeVarTuple"))(node.name)
             else:
                 tv = typing.cast(Any, maybe_runtime_typevar_tuple)
-            typevar = TypeVarTupleValue(TypeVarTupleParam(tv, owner=owner))
+            typevar = TypeVarTupleValue(
+                TypeVarTupleParam(tv, owner=owner, variance=Variance.INFERRED)
+            )
             self._set_name_in_scope(node.name, node, typevar)
             return typevar
 
@@ -13534,6 +13561,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
 
         def _normalize_member(member: Value) -> Value:
+            if (
+                isinstance(member, PartialValue)
+                and member.operation is PartialValueOperation.UNPACK
+            ):
+                unpacked = _normalize_member(member.root)
+                unpacked_members = get_typevartuple_members(unpacked)
+                if unpacked_members is not None:
+                    return TypeVarTupleBindingValue(unpacked_members)
             normalized = type_from_value(member, self, node, suppress_errors=True)
             if (
                 isinstance(normalized, AnyValue)
@@ -13565,7 +13600,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
 
         members = self._maybe_unpack_tuple(index)
-        normalized_members = tuple(_normalize_member(member) for member in members)
+        normalized_members_list = [_normalize_member(member) for member in members]
+        slice_nodes = (
+            list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+        )
+        if len(slice_nodes) == len(normalized_members_list):
+            for i, slice_member in enumerate(slice_nodes):
+                if not isinstance(slice_member, ast.Starred):
+                    continue
+                unpacked = normalized_members_list[i]
+                if (
+                    isinstance(unpacked, TypeVarTupleBindingValue)
+                    and len(unpacked.binding) == 1
+                    and not unpacked.binding[0][0]
+                ):
+                    unpacked = unpacked.binding[0][1]
+                unpacked_members = get_typevartuple_members(unpacked)
+                if unpacked_members is not None:
+                    normalized_members_list[i] = TypeVarTupleBindingValue(
+                        unpacked_members
+                    )
+        normalized_members = tuple(normalized_members_list)
         tobj = self.checker.make_type_object(synthetic_typ)
         type_parameters = tobj.get_declared_type_params()
         has_explicit_class_getitem = "__class_getitem__" in tobj.get_declared_symbols()
@@ -15532,10 +15587,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     for member in callee.members
                 ]
             else:
-                type_args = [
-                    type_from_value(member, self, node, suppress_errors=True)
-                    for member in callee.members
-                ]
+                type_params = self.checker.get_type_parameters(origin)
+                if type_params:
+                    annotation_ctx = DefaultContext(visitor=self, node=node)
+                    type_args = normalize_paramspec_generic_args(
+                        type_params,
+                        type_generic_args_from_members(
+                            type_params, callee.members, annotation_ctx
+                        ),
+                        annotation_ctx,
+                        node=node,
+                    )
+                else:
+                    type_args = [
+                        type_from_value(member, self, node, suppress_errors=True)
+                        for member in callee.members
+                    ]
         else:
             return return_value
         type_args = [promote_constructor_type_arg(arg) for arg in type_args]

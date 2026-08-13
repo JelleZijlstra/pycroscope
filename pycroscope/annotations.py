@@ -49,18 +49,15 @@ from typing import (
 from weakref import WeakKeyDictionary
 
 import typing_extensions
-from typing_extensions import (
-    NoDefault,
-    ParamSpec,
-    Protocol,
-    TypedDict,
-    TypeIs,
-    runtime_checkable,
-)
+from typing_extensions import NoDefault, Protocol, TypedDict, TypeIs, runtime_checkable
 
 import pycroscope
 from pycroscope.annotated_types import get_annotated_types_extension
-from pycroscope.input_sig import FullSignature, InputSigValue
+from pycroscope.input_sig import (
+    FullSignature,
+    InputSigValue,
+    coerce_paramspec_specialization_to_input_sig,
+)
 from pycroscope.relations import (
     HashableProtoValue,
     Relation,
@@ -168,7 +165,7 @@ from .value import (
     bound_self_type_from_class_key,
     class_owner_from_key,
     get_single_typevartuple_param,
-    get_typevar_variance,
+    get_type_param_variance,
     iter_type_params_in_value,
     match_typevar_arguments,
     replace_fallback,
@@ -176,6 +173,7 @@ from .value import (
     stringify_object,
     type_param_to_value,
     typevartuple_binding_to_generic_args,
+    typevartuple_value_to_members,
     unite_values,
 )
 
@@ -988,10 +986,13 @@ def make_type_param_from_value(
                 name = _extract_type_param_name_arg(value)
                 if name is None:
                     return None
+                variance = _extract_partial_type_param_variance(value, ctx)
+                if variance is None:
+                    return None
                 ps = typing.cast(
                     ParamSpecLike,
                     _synthetic_type_param_for_partial_call(
-                        value, name, lambda name: ParamSpec(name)
+                        value, name, typing_extensions.ParamSpec
                     ),
                 )
                 active_type_param = ctx.active_type_params.get_type_param(ps)
@@ -1003,23 +1004,32 @@ def make_type_param_from_value(
                 else:
                     default = _paramspec_default_from_value(default_val, ctx)
                 return ParamSpecParam(
-                    ps, owner=ctx.new_type_param_owner, default=default
+                    ps,
+                    owner=ctx.new_type_param_owner,
+                    default=default,
+                    variance=variance,
                 )
             elif is_typing_name(runtime_val.typ, "TypeVarTuple"):
                 name, default = _extract_common_type_param_args(value, ctx)
                 if name is None:
                     return None
+                variance = _extract_partial_type_param_variance(value, ctx)
+                if variance is None:
+                    return None
                 tvt = typing.cast(
                     TypeVarTupleLike,
                     _synthetic_type_param_for_partial_call(
-                        value, name, lambda name: typing_extensions.TypeVarTuple(name)
+                        value, name, typing_extensions.TypeVarTuple
                     ),
                 )
                 active_type_param = ctx.active_type_params.get_type_param(tvt)
                 if active_type_param is not None:
                     return active_type_param
                 return TypeVarTupleParam(
-                    tvt, owner=ctx.new_type_param_owner, default=default
+                    tvt,
+                    owner=ctx.new_type_param_owner,
+                    default=default,
+                    variance=variance,
                 )
     typevartuple_param = get_single_typevartuple_param(value)
     if typevartuple_param is not None:
@@ -1217,22 +1227,15 @@ def _make_typevar_param_from_partial_call(
     name, default = _extract_common_type_param_args(value, ctx)
     if name is None:
         return None
-    infer_variance = _extract_boolean_arg(value, "infer_variance")
-    covariant = _extract_boolean_arg(value, "covariant")
-    contravariant = _extract_boolean_arg(value, "contravariant")
-    if covariant is None or contravariant is None:
+    variance = _extract_partial_type_param_variance(value, ctx)
+    if variance is None:
         return None
     tv = typing.cast(
         TypeVarType,
         _synthetic_type_param_for_partial_call(
             value,
             name,
-            lambda name: _make_synthetic_partial_typevar(
-                name,
-                covariant=covariant,
-                contravariant=contravariant,
-                infer_variance=bool(infer_variance),
-            ),
+            lambda name: _make_synthetic_partial_typevar(name, variance=variance),
         ),
     )
     active_type_param = ctx.active_type_params.get_type_param(tv)
@@ -1261,29 +1264,6 @@ def _make_typevar_param_from_partial_call(
         _show_type_param_call_error(
             ctx, "TypeVar cannot have both bound and constraints", value=value
         )
-    if infer_variance and (covariant or contravariant):
-        _show_type_param_call_error(
-            ctx,
-            "TypeVar cannot combine infer_variance with explicit variance",
-            value=value,
-            node=ctx.get_error_node(),
-        )
-    if covariant and contravariant:
-        _show_type_param_call_error(
-            ctx,
-            "Bivariant types are not supported",
-            value=value,
-            node=ctx.get_error_node(),
-        )
-    match (infer_variance, covariant, contravariant):
-        case (True, _, _):
-            variance = Variance.INFERRED
-        case (_, True, _):
-            variance = Variance.COVARIANT
-        case (_, _, True):
-            variance = Variance.CONTRAVARIANT
-        case _:
-            variance = Variance.INVARIANT
     type_param = TypeVarParam(
         tv,
         owner=ctx.new_type_param_owner,
@@ -1296,6 +1276,39 @@ def _make_typevar_param_from_partial_call(
     return type_param
 
 
+def _extract_partial_type_param_variance(
+    value: PartialCallValue, ctx: Context
+) -> Variance | None:
+    infer_variance = _extract_boolean_arg(value, "infer_variance")
+    covariant = _extract_boolean_arg(value, "covariant")
+    contravariant = _extract_boolean_arg(value, "contravariant")
+    if infer_variance is None or covariant is None or contravariant is None:
+        return None
+    if infer_variance and (covariant or contravariant):
+        _show_type_param_call_error(
+            ctx,
+            "Type parameter cannot combine infer_variance with explicit variance",
+            value=value,
+            node=ctx.get_error_node(),
+        )
+    if covariant and contravariant:
+        _show_type_param_call_error(
+            ctx,
+            "Bivariant types are not supported",
+            value=value,
+            node=ctx.get_error_node(),
+        )
+    if infer_variance:
+        variance = Variance.INFERRED
+    elif covariant:
+        variance = Variance.COVARIANT
+    elif contravariant:
+        variance = Variance.CONTRAVARIANT
+    else:
+        variance = Variance.INVARIANT
+    return variance
+
+
 def _make_partial_type_param_call(
     *, callee: Value, runtime_value: Value, arguments: dict[str, Value], node: ast.AST
 ) -> PartialCallValue:
@@ -1304,22 +1317,19 @@ def _make_partial_type_param_call(
     )
 
 
-def _make_synthetic_partial_typevar(
-    name: str, *, covariant: bool, contravariant: bool, infer_variance: bool
-) -> TypeVarType:
+def _make_synthetic_partial_typevar(name: str, *, variance: Variance) -> TypeVarType:
     try:
-        if infer_variance:
+        if variance is Variance.INFERRED:
             return typing.cast(
-                TypeVarType,
-                typing_extensions.TypeVar(
-                    name,
-                    covariant=covariant,
-                    contravariant=contravariant,
-                    infer_variance=True,
-                ),
+                TypeVarType, typing_extensions.TypeVar(name, infer_variance=True)
             )
         return typing.cast(
-            TypeVarType, TypeVar(name, covariant=covariant, contravariant=contravariant)
+            TypeVarType,
+            TypeVar(
+                name,
+                covariant=variance is Variance.COVARIANT,
+                contravariant=variance is Variance.CONTRAVARIANT,
+            ),
         )
     except Exception:
         return typing.cast(TypeVarType, TypeVar(name))
@@ -1395,12 +1405,16 @@ def make_type_param(
             bound=bound,
             constraints=constraints,
             default=default,
-            variance=get_typevar_variance(tv),
+            variance=get_type_param_variance(tv),
         )
     if is_instance_of_typing_name(tv, "ParamSpec"):
-        return ParamSpecParam(tv, owner=owner, default=default)
+        return ParamSpecParam(
+            tv, owner=owner, default=default, variance=get_type_param_variance(tv)
+        )
     if is_instance_of_typing_name(tv, "TypeVarTuple"):
-        return TypeVarTupleParam(tv, owner=owner, default=default)
+        return TypeVarTupleParam(
+            tv, owner=owner, default=default, variance=get_type_param_variance(tv)
+        )
     raise TypeError(f"Unsupported type parameter: {tv!r}")
 
 
@@ -1713,6 +1727,43 @@ def _type_from_value_type_alias_arg(
     return _type_from_alias_argument_value(arg, ctx)
 
 
+def type_generic_args_from_members(
+    type_params: Sequence[TypeParam], members: Sequence[Value], ctx: Context
+) -> list[Value]:
+    if len(type_params) == len(members) and all(
+        not isinstance(type_param, TypeVarTupleParam)
+        or _is_unpack_annotation_member(member)
+        for type_param, member in zip(type_params, members)
+    ):
+        return [
+            _type_from_value_type_alias_arg(member, type_param, ctx)
+            for type_param, member in zip(type_params, members)
+        ]
+    matched = match_typevar_arguments(type_params, members)
+    if matched is None:
+        return [_type_from_value(member, ctx) for member in members]
+    typed_members: list[Value] = []
+    for type_param, argument in matched:
+        if isinstance(type_param, TypeVarTupleParam):
+            if not isinstance(argument, TypeVarTupleBindingValue):
+                argument = TypeVarTupleBindingValue(
+                    typevartuple_value_to_members(argument)
+                )
+            typed_members.append(
+                TypeVarTupleBindingValue(
+                    tuple(
+                        (is_many, _type_from_alias_argument_value(member, ctx))
+                        for is_many, member in argument.binding
+                    )
+                )
+            )
+        else:
+            typed_members.append(
+                _type_from_value_type_alias_arg(argument, type_param, ctx)
+            )
+    return typed_members
+
+
 def _type_from_alias_argument_value(arg: Value, ctx: Context) -> Value:
     if type(arg) is TypedValue:
         return arg
@@ -1757,9 +1808,11 @@ def _normalize_paramspec_generic_arg_in_context(
     if isinstance(arg, InputSigValue):
         return arg
     if isinstance(arg, SequenceValue) and arg.typ in (list, tuple):
-        return arg
+        return coerce_paramspec_specialization_to_input_sig(arg)
     if arg == KnownValue(Ellipsis):
-        return AnyValue(AnySource.ellipsis_callable)
+        return coerce_paramspec_specialization_to_input_sig(
+            AnyValue(AnySource.ellipsis_callable)
+        )
     if isinstance(arg, AnyValue):
         return arg
     type_param = make_type_param_from_value(arg, ctx=ctx)
@@ -1770,7 +1823,9 @@ def _normalize_paramspec_generic_arg_in_context(
         assert isinstance(type_param, ParamSpecParam)
         return InputSigValue(type_param)
     if allow_flat_form:
-        return SequenceValue(tuple, [(False, arg)])
+        return coerce_paramspec_specialization_to_input_sig(
+            SequenceValue(tuple, [(False, arg)])
+        )
     ctx.show_error(
         "ParamSpec specialization must use list form, Concatenate[..., P], P, or ...",
         error_code=ErrorCode.invalid_annotation,
@@ -1788,7 +1843,11 @@ def normalize_paramspec_generic_args_in_context(
                     args[0], allow_flat_form=True, ctx=ctx
                 )
             ]
-        return [SequenceValue(tuple, [(False, arg) for arg in args])]
+        return [
+            coerce_paramspec_specialization_to_input_sig(
+                SequenceValue(tuple, [(False, arg) for arg in args])
+            )
+        ]
     if len(type_params) == len(args):
         return [
             (
@@ -1844,6 +1903,16 @@ def _canonicalize_generic_args_for_value(args: Sequence[Value]) -> list[Value]:
         else:
             canonical_args.append(arg)
     return canonical_args
+
+
+def _canonicalize_generic_args_for_type_params(
+    type_params: Sequence[TypeParam], args: Sequence[Value], ctx: Context
+) -> list[Value]:
+    normalized = normalize_paramspec_generic_args(type_params, args, ctx)
+    matched = match_typevar_arguments(type_params, normalized)
+    if matched is not None:
+        normalized = [argument for _, argument in matched]
+    return list(normalized)
 
 
 def _normalize_generic_unpack_members(
@@ -2044,8 +2113,7 @@ def _validate_type_alias_arg_values(
     )
     if matched_args is None:
         ctx.show_error(
-            f"Expected {len(type_params)} type arguments for type alias,"
-            f" got {len(args_vals)}",
+            f"Expected {len(type_params)} type arguments for type alias, got {len(args_vals)}",
             error_code=ErrorCode.invalid_specialization,
             node=node,
         )
@@ -2588,7 +2656,7 @@ def _type_from_subscripted_value(
                         evaluator=lambda root=root: root,
                         evaluate_type_params=lambda generic_type_params=tuple(
                             root_type_params
-                        ): generic_type_params,
+                        ): (generic_type_params),
                     )
                     return TypeAliasValue(
                         "<generic_alias>", "typing", alias, tuple(typed_members)
@@ -2643,7 +2711,10 @@ def _type_from_subscripted_value(
             and isinstance(typed_dict_type_params[0], TypeVarTupleParam)
         ):
             typed_members = [TypeVarTupleBindingValue(())]
-        elif len(typed_dict_type_params) == len(members):
+        elif len(typed_dict_type_params) == len(members) and not any(
+            isinstance(type_param, TypeVarTupleParam)
+            for type_param in typed_dict_type_params
+        ):
             typed_members = [
                 _type_from_value_type_alias_arg(elt, type_param, ctx)
                 for elt, type_param in zip(members, typed_dict_type_params)
@@ -2653,7 +2724,9 @@ def _type_from_subscripted_value(
                 root.class_key, typed_dict_type_params, members, ctx
             ):
                 return AnyValue(AnySource.error)
-            typed_members = [_type_from_value(elt, ctx) for elt in members]
+            typed_members = type_generic_args_from_members(
+                typed_dict_type_params, members, ctx
+            )
         typed_members = normalize_paramspec_generic_args(
             typed_dict_type_params, typed_members, ctx
         )
@@ -2683,7 +2756,10 @@ def _type_from_subscripted_value(
             and isinstance(synthetic_type_params[0], TypeVarTupleParam)
         ):
             typed_members = [TypeVarTupleBindingValue(())]
-        elif len(synthetic_type_params) == len(members):
+        elif len(synthetic_type_params) == len(members) and not any(
+            isinstance(type_param, TypeVarTupleParam)
+            for type_param in synthetic_type_params
+        ):
             typed_members = [
                 _type_from_value_type_alias_arg(elt, type_param, ctx)
                 for elt, type_param in zip(members, synthetic_type_params)
@@ -2693,12 +2769,14 @@ def _type_from_subscripted_value(
                 synthetic_typ, synthetic_type_params, members, ctx
             ):
                 return AnyValue(AnySource.error)
-            typed_members = [_type_from_value(elt, ctx) for elt in members]
-        typed_members = normalize_paramspec_generic_args(
-            synthetic_type_params, typed_members, ctx
-        )
+            typed_members = type_generic_args_from_members(
+                synthetic_type_params, members, ctx
+            )
         return GenericValue(
-            synthetic_typ, _canonicalize_generic_args_for_value(typed_members)
+            synthetic_typ,
+            _canonicalize_generic_args_for_type_params(
+                synthetic_type_params, typed_members, ctx
+            ),
         )
 
     if isinstance(root, TypedValue) and isinstance(root.typ, ClassOwner):
@@ -2719,7 +2797,10 @@ def _type_from_subscripted_value(
             and isinstance(synthetic_type_params_for_str[0], TypeVarTupleParam)
         ):
             typed_members = [TypeVarTupleBindingValue(())]
-        elif len(synthetic_type_params_for_str) == len(members):
+        elif len(synthetic_type_params_for_str) == len(members) and not any(
+            isinstance(type_param, TypeVarTupleParam)
+            for type_param in synthetic_type_params_for_str
+        ):
             typed_members = [
                 _type_from_value_type_alias_arg(elt, type_param, ctx)
                 for elt, type_param in zip(members, synthetic_type_params_for_str)
@@ -2729,12 +2810,14 @@ def _type_from_subscripted_value(
                 synthetic_typ, synthetic_type_params_for_str, members, ctx
             ):
                 return AnyValue(AnySource.error)
-            typed_members = [_type_from_value(elt, ctx) for elt in members]
-        typed_members = normalize_paramspec_generic_args(
-            synthetic_type_params_for_str, typed_members, ctx
-        )
+            typed_members = type_generic_args_from_members(
+                synthetic_type_params_for_str, members, ctx
+            )
         return GenericValue(
-            synthetic_typ, _canonicalize_generic_args_for_value(typed_members)
+            synthetic_typ,
+            _canonicalize_generic_args_for_type_params(
+                synthetic_type_params_for_str, typed_members, ctx
+            ),
         )
     if isinstance(root, TypeAliasValue):
         return specialize_type_alias_value(root, members, ctx)
@@ -2906,7 +2989,9 @@ def _type_from_subscripted_value(
             and isinstance(type_params[0], TypeVarTupleParam)
         ):
             typed_members = [TypeVarTupleBindingValue(())]
-        elif len(type_params) == len(members):
+        elif len(type_params) == len(members) and not any(
+            isinstance(type_param, TypeVarTupleParam) for type_param in type_params
+        ):
             typed_members = [
                 _type_from_value_type_alias_arg(elt, type_param, ctx)
                 for elt, type_param in zip(members, type_params)
@@ -2916,11 +3001,11 @@ def _type_from_subscripted_value(
                 root, type_params, members, ctx
             ):
                 return AnyValue(AnySource.error)
-            typed_members = [_type_from_value(elt, ctx) for elt in members]
-        typed_members = normalize_paramspec_generic_args(
-            type_params, typed_members, ctx
+            typed_members = type_generic_args_from_members(type_params, members, ctx)
+        return GenericValue(
+            root,
+            _canonicalize_generic_args_for_type_params(type_params, typed_members, ctx),
         )
-        return GenericValue(root, _canonicalize_generic_args_for_value(typed_members))
     elif is_typing_name(root, "ClassVar"):
         ctx.show_error("ClassVar[] used in unsupported context")
         return AnyValue(AnySource.error)
@@ -3465,17 +3550,16 @@ class _Visitor(ast.NodeVisitor):
                     "ParamSpec name must be a literal", node=node.args[0]
                 )
                 return AnyValue(AnySource.error)
-            default = NO_ARG_SENTINEL
-            for name, kwarg_value in kwarg_values:
-                if name == "default":
-                    default = kwarg_value
-                    continue
-                self.ctx.show_error(f"Unrecognized ParamSpec kwarg {name}", node=node)
+            arguments = _parse_variadic_type_param_call_kwargs(
+                kwarg_values, "ParamSpec", self.ctx, node
+            )
+            if arguments is None:
                 return AnyValue(AnySource.error)
+            arguments["name"] = name_val
             partial = _make_partial_type_param_call(
                 callee=func,
                 runtime_value=TypedValue(func.val),
-                arguments={"name": name_val, "default": default},
+                arguments=arguments,
                 node=node,
             )
             make_type_param_from_value(partial, ctx=self.ctx)
@@ -3494,19 +3578,16 @@ class _Visitor(ast.NodeVisitor):
                     "TypeVarTuple name must be a literal", node=node.args[0]
                 )
                 return AnyValue(AnySource.error)
-            default = NO_ARG_SENTINEL
-            for name, kwarg_value in kwarg_values:
-                if name == "default":
-                    default = kwarg_value
-                    continue
-                self.ctx.show_error(
-                    f"Unrecognized TypeVarTuple kwarg {name}", node=node
-                )
+            arguments = _parse_variadic_type_param_call_kwargs(
+                kwarg_values, "TypeVarTuple", self.ctx, node
+            )
+            if arguments is None:
                 return AnyValue(AnySource.error)
+            arguments["name"] = name_val
             partial = _make_partial_type_param_call(
                 callee=func,
                 runtime_value=TypedValue(func.val),
-                arguments={"name": name_val, "default": default},
+                arguments=arguments,
                 node=node,
             )
             make_type_param_from_value(partial, ctx=self.ctx)
@@ -3524,6 +3605,32 @@ class _Visitor(ast.NodeVisitor):
                 return AnyValue(AnySource.inference)
             return TypedValue(func.val)
         raise _UnsupportedAnnotationExpression
+
+
+def _parse_variadic_type_param_call_kwargs(
+    kwarg_values: Sequence[tuple[str | None, Value]],
+    kind: str,
+    ctx: Context,
+    node: ast.Call,
+) -> dict[str, Value] | None:
+    arguments: dict[str, Value] = {
+        "default": NO_ARG_SENTINEL,
+        "covariant": KnownValue(False),
+        "contravariant": KnownValue(False),
+        "infer_variance": KnownValue(False),
+    }
+    for name, value in kwarg_values:
+        if name == "default":
+            arguments[name] = value
+        elif name in {"covariant", "contravariant", "infer_variance"}:
+            if not isinstance(value, KnownValue) or not isinstance(value.val, bool):
+                ctx.show_error(f"{kind} kwarg {name} must be a bool literal", node=node)
+                return None
+            arguments[name] = value
+        else:
+            ctx.show_error(f"Unrecognized {kind} kwarg {name}", node=node)
+            return None
+    return arguments
 
 
 def _is_tuple(typ: object) -> bool:

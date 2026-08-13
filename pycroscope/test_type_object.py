@@ -1348,7 +1348,7 @@ class TestSyntheticType(TestNameCheckVisitorBase):
     def test_paramspec_callable_protocol_equivalence(self):
         from typing import Callable, ParamSpec, Protocol, TypeAlias
 
-        P = ParamSpec("P")
+        P = ParamSpec("P", contravariant=True)
 
         class ProtocolWithP(Protocol[P]):
             def __call__(self, *args: P.args, **kwargs: P.kwargs) -> None: ...
@@ -1364,10 +1364,11 @@ class TestSyntheticType(TestNameCheckVisitorBase):
     def test_protocol_receiver_constraints_with_typevartuple(self):
         self.assert_passes(
             """
-            from typing import Generic, Protocol, TypeVar, TypeVarTuple
+            from typing import Generic, Protocol, TypeVar
+            from typing_extensions import TypeVarTuple
 
             T_co = TypeVar("T_co", covariant=True)
-            Ts = TypeVarTuple("Ts")
+            Ts = TypeVarTuple("Ts", covariant=True)
 
             class Box(Generic[T_co, *Ts]):
                 def head(self) -> T_co:
@@ -1397,7 +1398,7 @@ class TestSyntheticType(TestNameCheckVisitorBase):
         from typing import Any, Callable, ParamSpec, Protocol, TypeVar
 
         T_contra = TypeVar("T_contra", contravariant=True)
-        P = ParamSpec("P")
+        P = ParamSpec("P", contravariant=True)
 
         class ProtoAnyTail(Protocol):
             def __call__(self, *args: Any, **kwargs: Any) -> None: ...

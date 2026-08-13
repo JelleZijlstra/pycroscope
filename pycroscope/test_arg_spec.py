@@ -29,7 +29,6 @@ from .value import (
     KnownValue,
     NewTypeValue,
     ParamSpecParam,
-    SequenceValue,
     TypedValue,
     TypeVarParam,
     TypeVarTupleBindingValue,
@@ -154,7 +153,7 @@ def test_specialize_generic_type_params_preserves_suffix_with_default_prefix() -
             TypeVarParam(u, owner=None),
         ],
         [TypedValue(str)],
-    ) == [TypedValue(int), SequenceValue(tuple, []), TypedValue(str)]
+    ) == [TypedValue(int), TypeVarTupleBindingValue(()), TypedValue(str)]
 
 
 def test_collapse_constructor_overloads_to_single_generic() -> None:

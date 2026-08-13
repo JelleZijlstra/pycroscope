@@ -18,7 +18,12 @@ from typing import TypeVar, cast
 from typing_extensions import assert_never
 
 from . import dataclass as dataclass_helpers
-from .annotations import Context, type_from_runtime, type_from_value
+from .annotations import (
+    Context,
+    normalize_paramspec_generic_args,
+    type_from_runtime,
+    type_generic_args_from_members,
+)
 from .arg_spec import ArgSpecCache, GenericBases
 from .attributes import AttrContext, get_attribute
 from .extensions import get_overloads as get_runtime_overloads
@@ -101,6 +106,7 @@ from .value import (
     UnboundMethodValue,
     Value,
     VariableNameValue,
+    default_value_for_type_param,
     flatten_values,
     get_self_param,
     is_union,
@@ -161,7 +167,9 @@ def _apply_type_parameter_defaults(type_params: Sequence[TypeParam]) -> list[Val
     substitutions = TypeVarMap()
     for type_param in type_params:
         if type_param.default is not None:
-            value = type_param.default.substitute_typevars(substitutions)
+            value = default_value_for_type_param(type_param).substitute_typevars(
+                substitutions
+            )
         else:
             value = type_param_to_value(type_param)
         if isinstance(type_param, TypeVarParam):
@@ -2601,12 +2609,12 @@ class Checker:
             return origin_argspec
         type_params = self.get_type_parameters(class_type)
         annotation_ctx = Context(can_assign_ctx=self, self_key=class_type)
-        explicit_member_values = [
-            type_from_value(
-                member, node=value.node, ctx=annotation_ctx, suppress_errors=True
-            )
-            for member in value.members
-        ]
+        explicit_member_values = normalize_paramspec_generic_args(
+            type_params,
+            type_generic_args_from_members(type_params, value.members, annotation_ctx),
+            annotation_ctx,
+            node=value.node,
+        )
         member_values = self.arg_spec_cache._specialize_generic_type_params(
             type_params, explicit_member_values
         )
@@ -2650,26 +2658,10 @@ class Checker:
                 *compatibility_member_values,
                 *member_values[len(compatibility_member_values) :],
             ]
-        typevar_map = TypeVarMap()
-        for param, member in zip(type_params, member_values):
-            if isinstance(param, ParamSpecParam):
-                continue
-            if isinstance(param, TypeVarParam):
-                typevar_map = typevar_map.with_typevar(param, member)
-            else:
-                typevar_map = typevar_map.with_typevartuple(
-                    param, typevartuple_value_to_members(member)
-                )
-        exact_typevar_map = TypeVarMap()
-        for param, member in zip(type_params, exact_member_values):
-            if isinstance(param, ParamSpecParam):
-                continue
-            if isinstance(param, TypeVarParam):
-                exact_typevar_map = exact_typevar_map.with_typevar(param, member)
-            else:
-                exact_typevar_map = exact_typevar_map.with_typevartuple(
-                    param, typevartuple_value_to_members(member)
-                )
+        typevar_map = typevar_map_from_varlike_pairs(zip(type_params, member_values))
+        exact_typevar_map = typevar_map_from_varlike_pairs(
+            zip(type_params, exact_member_values)
+        )
         specialized_instance_type: Value
         if compatibility_member_values:
             specialized_instance_type = GenericValue(
