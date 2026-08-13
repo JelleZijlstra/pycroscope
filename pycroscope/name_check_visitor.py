@@ -951,7 +951,7 @@ class IgnoredForIncompatibleOverride(StringSequenceOption):
     """These attributes are not checked for incompatible overrides."""
 
     name = "ignored_for_incompatible_overrides"
-    default_value = ["__init__", "__eq__", "__ne__"]
+    default_value = ["__eq__", "__ne__"]
 
 
 _IGNORED_OVERRIDE_METADATA_ATTRIBUTES = {
@@ -3232,8 +3232,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
         if varname in self.options.get_value_for(IgnoredForIncompatibleOverride):
             return
-        if varname in _IGNORED_OVERRIDE_METADATA_ATTRIBUTES:
-            return
         if varname.startswith("__") and not varname.endswith("__"):
             return
         policy = AttributePolicy(
@@ -3245,6 +3243,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         with self.catch_errors():
             child_attr = self.current_tobj.get_attribute(varname, policy)
         if child_attr is None:
+            return
+        if (
+            varname in _IGNORED_OVERRIDE_METADATA_ATTRIBUTES
+            and FunctionDecorator.override not in child_attr.symbol.function_decorators
+        ):
             return
 
         for base_value in self.current_tobj.get_direct_bases():
