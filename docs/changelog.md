@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Fix bug with calling methods on values typed as intersections.
+- Reject protocol matches that provide a required `ClassVar` only through an instance attribute.
 - Support `P.args`, `P.kwargs`, and generic specialization with PEP 695 parameter specifications without crashing, and exclude `__type_params__` metadata from protocol requirements.
 - Narrow negative `TypeIs` checks against covariant generic `Any` arms more precisely when the checked type uses `object`.
 - Normalize `Not[...]` inside expected-type expressions such as `assert_type(x, Intersection[A, Not[B]])`.

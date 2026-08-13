@@ -1234,10 +1234,28 @@ class ClassAttributeChecker:
             self.inferred_attributes_set[serialized].add(attr_name)
         self.merge_attribute_value(serialized, attr_name, value)
 
-    def record_class_body_attribute(self, typ: type, attr_name: str) -> None:
+    def record_class_body_attribute(self, typ: ClassKey, attr_name: str) -> None:
         serialized = self.serialize_type(typ)
         if serialized is not None:
             self.class_body_attributes[serialized].add(attr_name)
+
+    def is_instance_only_attribute(
+        self, class_keys: Iterable[ClassKey], attr_name: str
+    ) -> bool:
+        serialized_keys = [
+            serialized
+            for class_key in class_keys
+            if (serialized := self.serialize_type(class_key)) is not None
+        ]
+        if any(
+            attr_name in self.class_body_attributes[serialized]
+            for serialized in serialized_keys
+        ):
+            return False
+        return any(
+            attr_name in self.attributes_set[serialized]
+            for serialized in serialized_keys
+        )
 
     def merge_attribute_value(
         self, serialized: object, attr_name: str, value: Value
@@ -2037,6 +2055,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self.attribute_checker.record_protocol_implementation(
                 protocol, implementing_class
             )
+
+    def is_instance_only_attribute(self, typ: ClassKey, attribute: str) -> bool:
+        if self.attribute_checker is None:
+            return False
+        if isinstance(typ, type) and safe_hasattr(typ, attribute):
+            return False
+        class_keys = [
+            entry.tobj.typ
+            for entry in self.checker.make_type_object(typ).get_mro()
+            if not entry.is_any and entry.tobj is not None
+        ]
+        return self.attribute_checker.is_instance_only_attribute(class_keys, attribute)
 
     def get_generic_bases(
         self, typ: ClassKey, generic_args: Sequence[Value] = ()
@@ -3846,7 +3876,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     base_values_for_registration,
                     declared_type_params=registered_type_param_values,
                 )
-            if isinstance(class_scope_object, type):
+            if isinstance(class_scope_object, (type, ClassOwner)):
                 self._record_class_body_attributes(node, class_scope_object)
             class_annotation_identities: set[object] = {
                 type_param.typevar for type_param in class_scope_type_params
@@ -15618,7 +15648,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self.attribute_checker is not None:
             self.attribute_checker.record_class_examined(cls)
 
-    def _record_class_body_attributes(self, node: ast.ClassDef, cls: type) -> None:
+    def _record_class_body_attributes(self, node: ast.ClassDef, cls: ClassKey) -> None:
         if self.attribute_checker is None:
             return
         for attr_name in _class_body_attribute_names(node):
@@ -15642,11 +15672,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 typ, attr_name, node, value, is_synthetic=is_synthetic
             )
 
-    def _attribute_write_types_for_value(self, value: Value) -> set[type]:
+    def _attribute_write_types_for_value(self, value: Value) -> set[ClassKey]:
         if isinstance(value, AnnotatedValue):
             return self._attribute_write_types_for_value(value.value)
         if isinstance(value, TypeVarValue):
-            if value.typevar_param.is_self and isinstance(self.current_class, type):
+            if value.typevar_param.is_self and self.current_class is not None:
                 return {self.current_class}
             bound = value.typevar_param.bound
             if bound is None:
@@ -15660,9 +15690,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 for typ in self._attribute_write_types_for_value(subval)
             }
         if isinstance(value, TypedValue):
-            return {value.typ} if isinstance(value.typ, type) else set()
+            return {value.typ}
         if isinstance(value, GenericValue):
-            return {value.typ} if isinstance(value.typ, type) else set()
+            return {value.typ}
         if isinstance(value, KnownValue) and not isinstance(value.val, type):
             return {type(value.val)}
         return set()

@@ -720,6 +720,10 @@ class CanAssignContext(Protocol):
     def get_attribute_from_value(self, root_value: "Value", attribute: str) -> "Value":
         return UNINITIALIZED_VALUE
 
+    def is_instance_only_attribute(self, typ: ClassKey, attribute: str) -> bool:
+        """Return whether an attribute is known to exist only on instances."""
+        return False
+
     def resolve_name(
         self,
         node: ast.Name,

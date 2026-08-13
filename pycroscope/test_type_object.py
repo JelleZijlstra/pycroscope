@@ -1779,6 +1779,29 @@ class TestSyntheticType(TestNameCheckVisitorBase):
             bad_settable3,
         )
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_classvar_protocol_rejects_instance_only_member(self):
+        from typing import ClassVar, Protocol
+
+        class WantsClassVar(Protocol):
+            val: ClassVar[int]
+
+        class HasInstanceVal:
+            def __init__(self) -> None:
+                self.val: int = 42
+
+        instance = HasInstanceVal()
+        bad: WantsClassVar = instance  # E: incompatible_assignment
+
+        class HasClassVal:
+            val = 0
+
+            def __init__(self) -> None:
+                self.val = 42
+
+        good: WantsClassVar = HasClassVal()
+        print(bad, good)
+
     @assert_passes()
     def test_protocol_readonly_data_member(self):
         from functools import cached_property
