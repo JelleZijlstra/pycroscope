@@ -32,7 +32,6 @@ specialtypes_never
 # Fails to reject various weird annotations
 aliases_type_statement
 aliases_implicit
-aliases_typealiastype
 annotations_typeexpr
 typeforms_typeform
 literals_parameterizations
