@@ -1493,6 +1493,9 @@ class TestGenericClasses(TestNameCheckVisitorBase):
                 def pack(self, *args: *Ts) -> tuple[*Ts]:
                     return args
 
+            class Bad[*Ts1, *Ts2]:  # E: invalid_type_parameter
+                pass
+
             def capybara() -> None:
                 assert_type(Array[int, str]().pack(1, "x"), tuple[int, str])
         """,

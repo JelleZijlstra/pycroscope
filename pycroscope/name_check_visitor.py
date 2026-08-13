@@ -12335,12 +12335,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         legacy_allowed_identities: set[object] | None = None,
     ) -> Sequence[TypeParam]:
         type_param_values = []
+        first_typevartuple: TypeVarTupleParam | None = None
         for param in type_params:
             value = self.visit(param)
             extracted = _type_param_value_from_value(value, self)
             if extracted is None:
                 assert False, f"unexpected type parameter value: {value!r}"
             type_param_values.append(extracted)
+            if isinstance(extracted, TypeVarTupleParam):
+                if first_typevartuple is None:
+                    first_typevartuple = extracted
+                else:
+                    self._show_error_if_checking(
+                        param,
+                        "Only one TypeVarTuple may appear in a type parameter list",
+                        error_code=ErrorCode.invalid_type_parameter,
+                    )
             if legacy_allowed_identities is not None:
                 legacy_allowed_identities.add(extracted.typevar)
         return type_param_values
