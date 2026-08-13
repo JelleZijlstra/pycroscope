@@ -2995,11 +2995,7 @@ def _solid_base(
         return tobj
     typ = tobj.typ
     if not isinstance(typ, type):
-        # TODO: this is not entirely correct in the presence of multiple inheritance.
-        # I think the right approach is to get the solid base for all direct bases, and pick
-        # the one that is a subclass of all others.
-        direct_bases = tuple(tobj.get_direct_base_type_objects())
-        return _solid_base(direct_bases[0], ctx)
+        return tobj.get_disjoint_base() or tobj
     base = typ.__base__
     assert base is not None, f"Type {typ} has no base"
     if _shape_differs(typ, base):

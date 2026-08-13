@@ -3586,10 +3586,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._is_final_decorator_value(value) for _, value, _ in decorator_values
         ):
             self.final_class_keys.add(class_key)
-        if any(
-            self._is_disjoint_base_decorator_value(value)
-            for _, value, _ in decorator_values
-        ):
+        disjoint_base_decorators = [
+            decorator
+            for _, value, decorator in decorator_values
+            if self._is_disjoint_base_decorator_value(value)
+        ]
+        if disjoint_base_decorators:
             tobj.set_is_disjoint_base(True)
         is_pep695_generic = sys.version_info >= (3, 12) and node.type_params
 
@@ -3775,6 +3777,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 class_scope_object if isinstance(class_scope_object, type) else None
             )
             is_protocol_class = self._is_protocol_class(base_values, class_scope_object)
+            if disjoint_base_decorators and (
+                synthetic_typeddict is not None or is_protocol_class
+            ):
+                target_kind = (
+                    "TypedDict" if synthetic_typeddict is not None else "Protocol"
+                )
+                self._show_error_if_checking(
+                    disjoint_base_decorators[0],
+                    f"disjoint_base cannot be applied to a {target_kind}",
+                    error_code=ErrorCode.invalid_base,
+                )
             effective_type_param_values = (
                 type_param_values
                 if type_param_values
@@ -4093,6 +4106,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._finalize_synthetic_abstract_members(
             node, class_key, is_protocol_class=is_protocol_class
         )
+        if (
+            self._is_checking()
+            and synthetic_typeddict is None
+            and tobj.get_inherited_disjoint_base() is None
+        ):
+            self._show_error_if_checking(
+                node,
+                "Class has incompatible disjoint bases",
+                error_code=ErrorCode.invalid_base,
+            )
         self._check_for_uninitialized_final_members(class_key)
         return value
 
