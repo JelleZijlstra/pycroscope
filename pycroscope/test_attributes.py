@@ -1,9 +1,10 @@
 # static analysis: ignore
 
 import sys
+from typing import Generic, TypeVar, overload
 
 import pytest
-from typing_extensions import assert_type
+from typing_extensions import assert_type, deprecated
 
 from .extensions import LiteralOnly
 from .test_name_check_visitor import TestNameCheckVisitorBase
@@ -34,6 +35,47 @@ EXPECTED_ASCII_TYPEVARS = TypeVarMap(
         )
     }
 )
+
+_T = TypeVar("_T")
+
+
+class _RuntimeOverloadedProperty(Generic[_T]):
+    """Imported fixture that exercises runtime property metadata construction."""
+
+    @property
+    @overload
+    def value(self: "_RuntimeOverloadedProperty[int]") -> int: ...
+
+    @property
+    @overload
+    def value(self: "_RuntimeOverloadedProperty[str]") -> str: ...
+
+    @property
+    def value(self) -> int | str:
+        return 1
+
+    @value.setter
+    @overload
+    def value(self: "_RuntimeOverloadedProperty[int]", value: int) -> None: ...
+
+    @value.setter
+    @overload
+    def value(self: "_RuntimeOverloadedProperty[str]", value: str) -> None: ...
+
+    @value.setter
+    def value(self, value: int | str) -> None: ...
+
+    @value.deleter
+    @overload
+    @deprecated("deleting the int fixture is deprecated")
+    def value(self: "_RuntimeOverloadedProperty[int]") -> None: ...
+
+    @value.deleter
+    @overload
+    def value(self: "_RuntimeOverloadedProperty[str]") -> None: ...
+
+    @value.deleter
+    def value(self) -> None: ...
 
 
 class TestAttributes(TestNameCheckVisitorBase):
@@ -374,6 +416,189 @@ class TestAttributes(TestNameCheckVisitorBase):
 
         def use_it():
             assert_type(Unhashable().prop, Any)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_overloaded_property_setter(self):
+        from typing import overload
+
+        from typing_extensions import assert_type, deprecated
+
+        class Capybara:
+            @property
+            def age(self) -> int:
+                return 1
+
+            @age.setter
+            @overload
+            @deprecated("None is deprecated")
+            def age(self, value: None) -> None: ...
+
+            @age.setter
+            @overload
+            def age(self, value: int) -> None: ...
+
+            @age.setter
+            def age(self, value: int | None) -> None: ...
+
+        def use_it(capybara: Capybara) -> None:
+            capybara.age = None  # E: deprecated
+            capybara.age = 1
+            capybara.age = "old"  # E: incompatible_argument
+            assert_type(capybara.age, int)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_all_property_accessors_overloaded(self):
+        from typing import Generic, TypeVar, overload
+
+        from typing_extensions import assert_type, deprecated
+
+        T = TypeVar("T")
+
+        class Box(Generic[T]):
+            @property
+            @overload
+            def value(self: "Box[int]") -> int: ...
+
+            @property
+            @overload
+            def value(self: "Box[str]") -> str: ...
+
+            @property
+            def value(self) -> int | str:
+                return 1
+
+            @value.setter
+            @overload
+            def value(self: "Box[int]", value: int) -> None: ...
+
+            @value.setter
+            @overload
+            def value(self: "Box[str]", value: str) -> None: ...
+
+            @value.setter
+            def value(self, value: int | str) -> None: ...
+
+            @value.deleter
+            @overload
+            @deprecated("deleting an int box is deprecated")
+            def value(self: "Box[int]") -> None: ...
+
+            @value.deleter
+            @overload
+            def value(self: "Box[str]") -> None: ...
+
+            @value.deleter
+            def value(self) -> None: ...
+
+        def use_it(int_box: Box[int], str_box: Box[str]) -> None:
+            assert_type(int_box.value, int)
+            assert_type(str_box.value, str)
+            int_box.value = 1
+            int_box.value = "wrong"  # E: incompatible_argument
+            str_box.value = "right"
+            str_box.value = 1  # E: incompatible_argument
+            del int_box.value  # E: deprecated
+            del str_box.value
+
+    @assert_passes()
+    def test_runtime_overloaded_property_accessors(self):
+        from typing_extensions import assert_type
+
+        from pycroscope.test_attributes import _RuntimeOverloadedProperty
+
+        def use_it(
+            int_box: _RuntimeOverloadedProperty[int],
+            str_box: _RuntimeOverloadedProperty[str],
+        ) -> None:
+            assert_type(int_box.value, int)
+            assert_type(str_box.value, str)
+            int_box.value = 1
+            int_box.value = "wrong"  # E: incompatible_argument
+            str_box.value = "right"
+            str_box.value = 1  # E: incompatible_argument
+            del int_box.value  # E: deprecated
+            del str_box.value
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_property_deleter(self):
+        from typing_extensions import deprecated
+
+        class Capybara:
+            @property
+            def name(self) -> str:
+                return "Mindy"
+
+            @name.deleter
+            @deprecated("keep the name")
+            def name(self) -> None: ...
+
+        class BadDeleter:
+            @property
+            def name(self) -> str:
+                return "Mindy"
+
+            @name.deleter  # E: incompatible_argument
+            def name(self, extra: int) -> None: ...
+
+        class NoDeleter:
+            @property
+            def name(self) -> str:
+                return "Mindy"
+
+        def use_it(capybara: Capybara, bad: BadDeleter, missing: NoDeleter) -> None:
+            del capybara.name  # E: deprecated
+            del bad.name  # E: incompatible_call
+            del missing.name  # E: incompatible_assignment
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_property_setter_type_can_differ_from_getter_type(self):
+        from typing_extensions import assert_type
+
+        class Capybara:
+            @property
+            def name(self) -> int:
+                return 1
+
+            @name.setter
+            def name(self, value: str) -> None: ...
+
+        def use_it(capybara: Capybara) -> None:
+            capybara.name = "Mindy"
+            capybara.name = 1  # E: incompatible_argument
+            assert_type(capybara.name, int)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_property_decorator_recognized_by_value(self):
+        from typing_extensions import assert_type
+
+        property_alias = property
+
+        class Capybara:
+            @property_alias
+            def name(self) -> str:
+                return "Mindy"
+
+        def use_it(capybara: Capybara) -> None:
+            assert_type(capybara.name, str)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_unrelated_decorator_named_property(self):
+        from typing import TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        def property(function: T) -> T:
+            return function
+
+        class Capybara:
+            @property
+            def name(self) -> str:
+                return "Mindy"
+
+        def use_it(capybara: Capybara) -> None:
+            assert_type(capybara.name(), str)
 
     @assert_passes()
     def test_protocol_property_assignment_does_not_internal_error_in_function_scope(

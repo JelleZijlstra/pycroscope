@@ -294,6 +294,7 @@ from .value import (
     PartialValue,
     PartialValueOperation,
     PredicateValue,
+    PropertyAccessKind,
     PropertyInfo,
     ReferencingValue,
     SelfOwnerExtension,
@@ -2972,16 +2973,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         deprecation_message = self._deprecation_message_from_value(
             function_value
         ) or self._deprecation_message_from_decorators(info.decorators)
-        if any(
-            isinstance(unapplied, KnownValue) and unapplied.val is property
-            for unapplied, _, _ in info.decorators
-        ) or any(
-            # TODO: do we need this branch? we shouldn't look at exact names
-            isinstance(decorator, ast.Name) and decorator.id == "property"
-            for decorator in node.decorator_list
-        ):
-
-            getter = self._undecorated_function_value(info)
+        if self._is_property_getter(info):
+            getter = self._property_accessor_function_value(info, function_value)
             fget = info.get_symbol(getter, deprecation_message)
             self._set_complete_synthetic_class_symbol(
                 node.name,
@@ -2992,17 +2985,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             return
 
-        setter_target_name: str | None = None
-        for decorator in node.decorator_list:
-            # TODO: this is not a precise way to recognize property setters
-            if (
-                isinstance(decorator, ast.Attribute)
-                and decorator.attr == "setter"
-                and isinstance(decorator.value, ast.Name)
-            ):
-                setter_target_name = decorator.value.id
-                break
-        if setter_target_name is None:
+        mutator = _property_mutator(node)
+        if mutator is None:
             self._set_complete_synthetic_class_symbol(
                 node.name,
                 initializer=function_value,
@@ -3014,16 +2998,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             return
 
-        mangled_target = _mangle_class_attribute_name(class_name, setter_target_name)
-        fset = info.get_symbol(
-            self._undecorated_function_value(info), deprecation_message
-        )
+        accessor_kind, target_name = mutator
+        mangled_target = _mangle_class_attribute_name(class_name, target_name)
+        accessor_value = self._property_accessor_function_value(info, function_value)
+        accessor_symbol = info.get_symbol(accessor_value, deprecation_message)
         existing = synthetic_type.get_declared_symbol(mangled_target)
         existing_property_info = (
             existing.property_info if existing is not None else None
         )
+        property_info = existing_property_info or PropertyInfo(fget=None)
+        property_info = property_info.with_accessor(accessor_kind, accessor_symbol)
         self._set_complete_synthetic_class_symbol(
-            setter_target_name,
+            target_name,
             node=node,
             initializer=(
                 existing.initializer if existing is not None else TypedValue(property)
@@ -3032,15 +3018,32 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             is_instance_only=(
                 existing.is_instance_only if existing is not None else False
             ),
-            property_info=PropertyInfo(
-                fget=(
-                    existing_property_info.fget
-                    if existing_property_info is not None
-                    else None
-                ),
-                fset=fset,
-            ),
+            property_info=property_info,
         )
+
+    def _is_property_getter(self, info: FunctionInfo) -> bool:
+        return any(
+            isinstance(unapplied, KnownValue) and unapplied.val is property
+            for unapplied, _, _ in info.decorators
+        )
+
+    def _property_accessor_function_value(
+        self, info: FunctionInfo, function_value: Value
+    ) -> Value:
+        function_fallback = replace_fallback(function_value)
+        if isinstance(function_fallback, CallableValue) and isinstance(
+            function_fallback.signature, OverloadedSignature
+        ):
+            return function_value
+        return self._undecorated_function_value(info)
+
+    def _property_access_kind(self, info: FunctionInfo) -> PropertyAccessKind | None:
+        if self._is_property_getter(info):
+            return PropertyAccessKind.read
+        mutator = _property_mutator(info.node)
+        if mutator is None:
+            return None
+        return mutator[0]
 
     def _undecorated_function_value(self, info: FunctionInfo) -> Value:
         return compute_value_of_function(replace(info, decorators=[]), self)
@@ -7155,6 +7158,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 computed_function,
                 direct_dataclass_transform_info=direct_dataclass_transform_info,
             )
+            is_property_accessor = self._property_access_kind(info) is not None
             use_runtime_function_value = potential_function is not None
             if (
                 use_runtime_function_value
@@ -7167,12 +7171,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 # loses the original callable signature; preserve the static signature.
                 use_runtime_function_value = False
             if not use_runtime_function_value:
-                if static_overload_signature is not None:
+                if static_overload_signature is not None and not is_property_accessor:
                     val = CallableValue(static_overload_signature, types.FunctionType)
                 else:
                     val = computed_function
             else:
                 val = KnownValue(potential_function)
+            synthetic_function_value = val
+            if static_overload_signature is not None and is_property_accessor:
+                # A runtime property exposes only its concrete accessor function.
+                # Preserve the statically collected overload set in property
+                # metadata, while leaving the property itself bound in scope.
+                synthetic_function_value = CallableValue(
+                    static_overload_signature, types.FunctionType
+                )
             if (
                 FunctionDecorator.overload not in info.decorator_kinds
                 and FunctionDecorator.evaluated not in info.decorator_kinds
@@ -7200,7 +7212,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._set_name_in_scope(
                     node.name, node, val, record_synthetic_symbol=False
                 )
-                self._record_complete_synthetic_function_symbol(node, info, val)
+                self._record_complete_synthetic_function_symbol(
+                    node, info, synthetic_function_value
+                )
 
             if (
                 node.name in METHODS_ALLOWING_NOTIMPLEMENTED
@@ -7715,7 +7729,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _signature_for_overload_consistency(
         self, info: FunctionInfo, computed_function: Value
     ) -> ConcreteSignature | None:
-        if FunctionDecorator.overload in info.decorator_kinds:
+        is_property_accessor = self._property_access_kind(info) is not None
+        if is_property_accessor:
+            computed_function = self._undecorated_function_value(info)
+        elif FunctionDecorator.overload in info.decorator_kinds:
             decorators = [
                 decorator
                 for decorator in info.decorators
@@ -7728,6 +7745,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         signature = self.signature_from_value(computed_function)
         if isinstance(signature, BoundMethodSignature):
             signature = signature.get_signature(ctx=self)
+        if isinstance(signature, Signature) and is_property_accessor:
+            deprecated = self._deprecation_message_from_decorators(info.decorators)
+            if deprecated is not None:
+                signature = replace(signature, deprecated=deprecated)
         if isinstance(signature, (Signature, OverloadedSignature)):
             return signature
         return None
@@ -13962,7 +13983,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 use_fallback=True,
                 ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
             )
-            self._check_deprecated_property_getter(node, root_composite.value)
+            self._check_deprecated_property_accessor(
+                node, root_composite.value, PropertyAccessKind.read
+            )
             self.check_deprecation(node, value)
             if self._should_use_varname_value(value):
                 varname_value = self.checker.maybe_get_variable_name_value(node.attr)
@@ -14099,6 +14122,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         if not has_precise_attribute_type:
             return None
+        if attr.symbol.property_info is not None:
+            # Assignment calls the setter, but a subsequent read still has the
+            # getter's type; do not narrow the property to the assigned value.
+            return attr.value
         if self.being_assigned is None:
             return attr.value
         if transformed_attribute_types is not None:
@@ -14194,6 +14221,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self, node: ast.Attribute, root: SimpleType, *, is_deletion: bool = False
     ) -> None:
         wording = "delete" if is_deletion else "assign to"
+        property_access_kind = (
+            PropertyAccessKind.delete if is_deletion else PropertyAccessKind.write
+        )
         if isinstance(root, AnyValue):
             return  # always ok
         elif isinstance(root, UnboundMethodValue):
@@ -14237,7 +14267,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     return
         attr = tobj.get_attribute(
             node.attr,
-            AttributePolicy(on_class=on_class, receiver=root, visitor=self, node=node),
+            AttributePolicy(
+                on_class=on_class,
+                receiver=root,
+                visitor=self,
+                node=node,
+                property_access=property_access_kind,
+            ),
         )
         if attr is None:
             if (
@@ -14283,14 +14319,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_code=ErrorCode.incompatible_assignment,
             )
             return
-        if attr.symbol.property_info is not None and not attr.symbol.property_info.fset:
-            self._show_error_if_checking(
-                node,
-                f"Cannot {wording} read-only property {node.attr!r}",
-                error_code=ErrorCode.incompatible_assignment,
-            )
-            return
-        self._check_deprecated_property_setter(node, root)
+        if attr.symbol.property_info is not None:
+            accessor = attr.symbol.property_info.get_accessor(property_access_kind)
+            if accessor is None:
+                message = (
+                    f"Cannot delete property {node.attr!r} without a deleter"
+                    if is_deletion
+                    else f"Cannot assign to read-only property {node.attr!r}"
+                )
+                self._show_error_if_checking(
+                    node, message, error_code=ErrorCode.incompatible_assignment
+                )
+                return
+        self._check_deprecated_property_accessor(node, root, property_access_kind)
         if (
             attr.symbol.is_readonly
             and not self._is_allowed_readonly_attribute_initialization(node, root)
@@ -14321,11 +14362,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self._check_final_attribute_assignment(node, attr, wording):
             return
         if is_deletion:
+            if attr.is_property:
+                self.get_call_result(attr.value, (root,), node=node)
+                return
             self._show_error_if_checking(
                 node,
                 f"Cannot delete attribute {node.attr!r}",
                 error_code=ErrorCode.incompatible_assignment,
             )
+            return
+        if attr.is_property:
+            if self.being_assigned is not None:
+                self.get_call_result(attr.value, (root, self.being_assigned), node=node)
+                self._record_type_attr_set_for_value(
+                    root, node.attr, node, self.being_assigned
+                )
+                self._record_synthetic_attr_set(node, root)
             return
         transformed_attribute_types = self._get_transformed_attribute_types(
             attr.raw_value
@@ -14413,36 +14465,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         return True
 
-    def _check_deprecated_property_getter(
-        self, node: ast.Attribute, root_value: Value
-    ) -> None:
-        if self._is_class_object_attribute_root(root_value) is True:
-            return
-        message = self._property_deprecation_message(
-            root_value, node.attr, is_setter=False
-        )
-        if message is None:
-            return
-        self._show_error_if_checking(
-            node,
-            f"Property getter {node.attr!r} is deprecated: {message}",
-            error_code=ErrorCode.deprecated,
-        )
-
     # TODO: move relevant information into the type object
-    def _check_deprecated_property_setter(
-        self, node: ast.Attribute, root_value: Value
+    def _check_deprecated_property_accessor(
+        self, node: ast.Attribute, root_value: Value, access_kind: PropertyAccessKind
     ) -> None:
         if self._is_class_object_attribute_root(root_value) is True:
             return
         message = self._property_deprecation_message(
-            root_value, node.attr, is_setter=True
+            root_value, node.attr, access_kind=access_kind
         )
         if message is None:
             return
         self._show_error_if_checking(
             node,
-            f"Property setter {node.attr!r} is deprecated: {message}",
+            f"Property {access_kind.value} {node.attr!r} is deprecated: {message}",
             error_code=ErrorCode.deprecated,
         )
 
@@ -14460,7 +14496,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             yield class_key
 
     def _deprecation_message_for_attribute(
-        self, root_value: Value, attr_name: str, *, is_property: bool, is_setter: bool
+        self,
+        root_value: Value,
+        attr_name: str,
+        *,
+        property_access_kind: PropertyAccessKind | None,
     ) -> str | None:
         for class_key in self._iter_distinct_attribute_root_class_keys(root_value):
             match = self._get_type_object_attribute_match_for_class_key(
@@ -14470,17 +14510,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 continue
             _, attribute = match
             symbol = attribute.symbol
-            if is_property:
+            if property_access_kind is not None:
                 if symbol.property_info is None:
                     continue
-                if is_setter:
-                    if symbol.property_info.fset is None:
-                        return None
-                    return symbol.property_info.fset.deprecation_message
-                else:
-                    if symbol.property_info.fget is None:
-                        return None
-                    return symbol.property_info.fget.deprecation_message
+                accessor = symbol.property_info.get_accessor(property_access_kind)
+                if accessor is None:
+                    return None
+                return accessor.deprecation_message
             if symbol.property_info is not None:
                 continue
             if symbol.deprecation_message is not None:
@@ -14493,14 +14529,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self, root_value: Value, attr_name: str
     ) -> str | None:
         return self._deprecation_message_for_attribute(
-            root_value, attr_name, is_property=False, is_setter=False
+            root_value, attr_name, property_access_kind=None
         )
 
     def _property_deprecation_message(
-        self, root_value: Value, attr_name: str, *, is_setter: bool
+        self, root_value: Value, attr_name: str, *, access_kind: PropertyAccessKind
     ) -> str | None:
         return self._deprecation_message_for_attribute(
-            root_value, attr_name, is_property=True, is_setter=is_setter
+            root_value, attr_name, property_access_kind=access_kind
         )
 
     def _property_attr_candidates(
@@ -16826,6 +16862,25 @@ def _mangle_class_attribute_name(class_name: str, attribute_name: str) -> str:
     if attribute_name.startswith("__") and not attribute_name.endswith("__"):
         return f"_{class_name}{attribute_name}"
     return attribute_name
+
+
+def _property_mutator(node: FunctionNode) -> tuple[PropertyAccessKind, str] | None:
+    if isinstance(node, ast.Lambda):
+        return None
+    for decorator in node.decorator_list:
+        # TODO: this is not a precise way to recognize property mutators
+        if (
+            isinstance(decorator, ast.Attribute)
+            and decorator.attr in {"setter", "deleter"}
+            and isinstance(decorator.value, ast.Name)
+        ):
+            access_kind = (
+                PropertyAccessKind.write
+                if decorator.attr == "setter"
+                else PropertyAccessKind.delete
+            )
+            return access_kind, decorator.value.id
+    return None
 
 
 def _class_body_attribute_names(node: ast.ClassDef) -> Iterable[str]:

@@ -14,7 +14,7 @@ import typing
 from collections.abc import Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from re import Pattern
-from types import FunctionType, MethodType, ModuleType
+from types import CodeType, FunctionType, MethodType, ModuleType
 from typing import Any, Generic, TypeVar
 from unittest import mock
 
@@ -169,6 +169,64 @@ def _unwrap_overload_callable(func: Callable[..., Any]) -> Callable[..., Any]:
             return unwrapped
         seen.add(id(wrapped))
         unwrapped = wrapped
+
+
+def _get_overload_callable_code(obj: object) -> CodeType | None:
+    obj = safe_getattr(obj, "__func__", obj)
+    if not isinstance(obj, FunctionType):
+        return None
+    unwrapped = _unwrap_overload_callable(obj)
+    if not isinstance(unwrapped, FunctionType):
+        return None
+    return unwrapped.__code__
+
+
+def _filter_overloads_for_callable(
+    obj: object,
+    overloads: Sequence[Callable[..., Any]],
+    *,
+    earlier_implementations: Sequence[Callable[..., Any]] = (),
+) -> list[Callable[..., Any]]:
+    """Return overload declarations between the surrounding implementations.
+
+    Runtime overload registries are keyed by module and qualified name, so distinct
+    implementations with the same qualified name may share an entry. The concrete
+    implementation is the upper boundary. Callers that know about earlier related
+    implementations, such as accessors on the same property, may also provide the
+    lower boundaries needed to split the registry into separate overload blocks.
+
+    If source locations are unavailable or incomparable, retain the registry's
+    answer because filtering it reliably is impossible.
+    """
+    implementation_code = _get_overload_callable_code(obj)
+    if implementation_code is None:
+        return list(overloads)
+    earlier_implementation_lines = []
+    for earlier_implementation in earlier_implementations:
+        earlier_code = _get_overload_callable_code(earlier_implementation)
+        if earlier_code is None:
+            continue
+        if (
+            earlier_code.co_filename == implementation_code.co_filename
+            and earlier_code.co_firstlineno < implementation_code.co_firstlineno
+        ):
+            earlier_implementation_lines.append(earlier_code.co_firstlineno)
+    lower_bound = max(earlier_implementation_lines, default=-1)
+
+    result = []
+    for overload in overloads:
+        overload_code = _get_overload_callable_code(overload)
+        if overload_code is None:
+            return list(overloads)
+        if overload_code.co_filename != implementation_code.co_filename:
+            return list(overloads)
+        if (
+            lower_bound
+            < overload_code.co_firstlineno
+            < implementation_code.co_firstlineno
+        ):
+            result.append(overload)
+    return result
 
 
 @used  # exposed as an API
@@ -824,6 +882,54 @@ class ArgSpecCache:
             raise TypeError(f"failed to find a concrete signature or {obj}")
         return replace(sig, allow_call=allow_call)
 
+    def get_property_accessor_overload_signature(
+        self, prop: property, accessor: Callable[..., Any]
+    ) -> OverloadedSignature | None:
+        """Return only the overloads associated with one property accessor."""
+        return self._get_overloaded_signature(
+            accessor,
+            None,
+            False,
+            earlier_implementations=tuple(
+                candidate
+                for candidate in (prop.fget, prop.fset, prop.fdel)
+                if candidate is not None and candidate is not accessor
+            ),
+        )
+
+    def _get_overloaded_signature(
+        self,
+        obj: object,
+        impl: Impl | None,
+        is_asynq: bool,
+        *,
+        earlier_implementations: Sequence[Callable[..., Any]] = (),
+    ) -> OverloadedSignature | None:
+        inner_obj = safe_getattr(obj, "__func__", obj)
+        if safe_hasattr(inner_obj, "__module__") and safe_hasattr(
+            inner_obj, "__qualname__"
+        ):
+            for get_overloads_func in _GET_OVERLOADS:
+                overloads = _filter_overloads_for_callable(
+                    inner_obj,
+                    get_overloads_func(inner_obj),
+                    earlier_implementations=earlier_implementations,
+                )
+                signature = self._maybe_make_overloaded_signature(
+                    overloads, impl, is_asynq
+                )
+                if signature is not None:
+                    return signature
+        fq_name = get_fully_qualified_name(obj)
+        if fq_name is None:
+            return None
+        overloads = _filter_overloads_for_callable(
+            obj,
+            pycroscope_get_overloads(fq_name),
+            earlier_implementations=earlier_implementations,
+        )
+        return self._maybe_make_overloaded_signature(overloads, impl, is_asynq)
+
     def _cached_get_argspec(
         self,
         obj: object,
@@ -948,23 +1054,11 @@ class ArgSpecCache:
         # Must be after the check for bound methods, because otherwise we
         # won't bind self correctly.
         if not in_overload_resolution:
-            for get_overloads_func in _GET_OVERLOADS:
-                inner_obj = safe_getattr(obj, "__func__", obj)
-                if safe_hasattr(inner_obj, "__module__") and safe_hasattr(
-                    inner_obj, "__qualname__"
-                ):
-                    sig = self._maybe_make_overloaded_signature(
-                        get_overloads_func(inner_obj), impl, is_asynq
-                    )
-                    if sig is not None:
-                        return sig
+            sig = self._get_overloaded_signature(obj, impl, is_asynq)
+            if sig is not None:
+                return sig
             fq_name = get_fully_qualified_name(obj)
             if fq_name is not None:
-                sig = self._maybe_make_overloaded_signature(
-                    pycroscope_get_overloads(fq_name), impl, is_asynq
-                )
-                if sig is not None:
-                    return sig
                 evaluator_sig = self._maybe_make_evaluator_sig(obj, impl, is_asynq)
                 if evaluator_sig is not None:
                     return evaluator_sig
