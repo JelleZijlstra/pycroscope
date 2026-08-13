@@ -1344,7 +1344,7 @@ class TestGenericClasses(TestNameCheckVisitorBase):
 
             T_co = TypeVar("T_co", covariant=True)
 
-            class GoodGenericBase(Protocol[T_co], Generic[T_co]):
+            class BadGenericBase(Protocol[T_co], Generic[T_co]):  # E: invalid_base
                 ...
 
             def capybara() -> None:
