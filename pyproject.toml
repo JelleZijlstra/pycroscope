@@ -54,6 +54,21 @@ test-runner = [
 coverage = [
   "pytest-cov",
 ]
+release = [
+  "scriv==1.8.0",
+]
+
+[tool.scriv]
+changelog = "docs/changelog.md"
+fragment_directory = "changelog.d"
+categories = []
+compact_fragments = true
+entry_title_template = "Version {{ version }} ({{ date.strftime('%B') }} {{ date.day }}, {{ date.year }})"
+format = "md"
+md_header_level = 2
+md_html_anchors = false
+new_fragment_template = "file: new_fragment.md.j2"
+version = "literal: pyproject.toml: project.version"
 
 [project.urls]
 Homepage = "https://github.com/JelleZijlstra/pycroscope"

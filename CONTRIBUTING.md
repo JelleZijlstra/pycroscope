@@ -6,7 +6,7 @@ commands like these:
 
 ```
 $ cd pycroscope
-$ uv sync --frozen --extra tests --extra full --group docs
+$ uv sync --locked --extra tests --extra full --group docs
 ```
 
 ## Black
@@ -15,7 +15,7 @@ The code is formatted using [_Black_](https://black.readthedocs.io).
 You can run the formatter with:
 
 ```
-$ uv run --with black black pycroscope
+$ uv run --locked --with black black pycroscope
 ```
 
 ## ruff
@@ -23,7 +23,7 @@ $ uv run --with black black pycroscope
 We use [ruff](https://docs.astral.sh/ruff/) as a linter and import sorter:
 
 ```
-$ uv run --with ruff ruff check pycroscope
+$ uv run --locked --with ruff ruff check pycroscope
 ```
 
 ## Unit tests
@@ -31,7 +31,7 @@ $ uv run --with ruff ruff check pycroscope
 The unit tests are run with [pytest](https://docs.pytest.org/):
 
 ```
-$ uv run --extra tests pytest -v pycroscope
+$ uv run --locked --extra tests pytest -v pycroscope
 ```
 
 Running all of the tests takes a few minutes, so I often use the
@@ -39,7 +39,7 @@ Running all of the tests takes a few minutes, so I often use the
 For example:
 
 ```
-$ uv run --extra tests pytest -v pycroscope -k PEP673
+$ uv run --locked --extra tests pytest -v pycroscope -k PEP673
 ```
 
 We run tests on all supported Python versions on GitHub Actions,
@@ -61,3 +61,18 @@ taxonomy = "/path/to/taxonomy"
 
 Command-line `--local NAME:PATH` values override the config file. Dependency
 installation output is hidden by default; pass `-v` or `--verbose` to show it.
+
+## Changelog
+
+For each user-visible change, create a changelog fragment:
+
+```
+$ uv run --locked --group release scriv create
+```
+
+Replace the generated placeholder with one plain-language bullet and commit the
+fragment with the change. Do not edit `docs/changelog.md` directly; Scriv updates
+that shared file when a release is prepared. Internal refactors and fixes for bugs
+that have never appeared in a release do not need fragments.
+
+See [the release guide](docs/releasing.md) for the maintainer workflow.
