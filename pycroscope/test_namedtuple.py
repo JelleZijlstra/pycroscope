@@ -261,6 +261,8 @@ class TestNamedTuple(TestNameCheckVisitorBase):
             assert_type(p[-1], str)
             assert_type(p[-2], int)
             assert_type(p[-3], int)
+            assert_type(p[0:2], tuple[int, int])
+            assert_type(p[0:], tuple[int, int, str])
 
             p[3]  # E: incompatible_call
             p[-4]  # E: incompatible_call

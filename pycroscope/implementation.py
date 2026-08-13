@@ -1147,7 +1147,9 @@ def _sequence_common_getitem_impl(ctx: CallContext, typ: type) -> ImplReturn:
                     isinstance(original_self_value, TypedValue)
                     and original_self_value.typ is tuple
                 ):
-                    from_tuple_subtype = True
+                    from_tuple_subtype = not ctx.visitor.checker.make_type_object(
+                        original_self_value.typ
+                    ).is_namedtuple_like()
                 self_value = SequenceValue(tuple, tuple_members)
         type_arg = self_value.get_generic_arg_for_type(typ, ctx.visitor, 0)
         key = replace_known_sequence_value(key)
