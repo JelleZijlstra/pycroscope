@@ -3774,12 +3774,34 @@ class DataclassFieldInfo:
             yield from self.converter_input_type.walk_values()
 
 
+class PropertyAccessKind(enum.Enum):
+    read = "getter"
+    write = "setter"
+    delete = "deleter"
+
+
 @dataclass(frozen=True, kw_only=True)
 class PropertyInfo:
     # Can be None if a property is manually constructed (property(fset=...))
     fget: "ClassSymbol | None"
     fset: "ClassSymbol | None" = None
     fdel: "ClassSymbol | None" = None
+
+    def get_accessor(self, kind: PropertyAccessKind) -> "ClassSymbol | None":
+        if kind is PropertyAccessKind.read:
+            return self.fget
+        if kind is PropertyAccessKind.write:
+            return self.fset
+        return self.fdel
+
+    def with_accessor(
+        self, kind: PropertyAccessKind, accessor: "ClassSymbol"
+    ) -> "PropertyInfo":
+        if kind is PropertyAccessKind.read:
+            return replace(self, fget=accessor)
+        if kind is PropertyAccessKind.write:
+            return replace(self, fset=accessor)
+        return replace(self, fdel=accessor)
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "PropertyInfo":
         return PropertyInfo(

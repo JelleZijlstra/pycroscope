@@ -91,6 +91,7 @@ from .value import (
     PartialValue,
     PartialValueOperation,
     PredicateValue,
+    PropertyAccessKind,
     PropertyInfo,
     Qualifier,
     SequenceValue,
@@ -240,6 +241,8 @@ class AttributePolicy:
     visitor: "pycroscope.name_check_visitor.NameCheckVisitor | None" = None
     node: ast.AST | None = None
     receiver_composite: Composite | None = None
+    property_access: PropertyAccessKind = PropertyAccessKind.read
+    """Which accessor to resolve when the attribute is a property."""
 
     def get_receiver_instance(self, ctx: CanAssignContext) -> Value:
         if self.on_class:
@@ -600,7 +603,9 @@ class TypeObject:
 
         direct_symbols: dict[str, ClassSymbol] = {}
         if isinstance(self.typ, type):
-            type_object_builder.add_runtime_declared_symbols(self.typ, direct_symbols)
+            type_object_builder.add_runtime_declared_symbols(
+                self.typ, direct_symbols, self._checker.arg_spec_cache
+            )
         if self._virtual_symbols is not None:
             _add_synthetic_declared_symbols(self._virtual_symbols, direct_symbols)
         synthetic_symbols: Mapping[str, ClassSymbol] = (
@@ -1024,7 +1029,7 @@ class TypeObject:
         self.set_direct_bases((TypedValue(tuple),))
         declared_symbols: dict[str, ClassSymbol] = {}
         type_object_builder.add_runtime_declared_symbols(
-            runtime_class, declared_symbols
+            runtime_class, declared_symbols, self._checker.arg_spec_cache
         )
         self.replace_virtual_symbols(declared_symbols)
         if namedtuple_fields:
@@ -2590,9 +2595,17 @@ def _apply_descriptor_protocol_to_property(
         return _make_resolved_attribute(
             merged_attribute,
             value=merged_attribute.initializer or TypedValue(property),
-            is_property=False,
+            is_property=policy.property_access is not PropertyAccessKind.read,
         )
-    if property_info.fget is None or property_info.fget.initializer is None:
+    if policy.property_access is not PropertyAccessKind.read:
+        accessor = property_info.get_accessor(policy.property_access)
+        if accessor is None or accessor.initializer is None:
+            value = AnyValue(AnySource.inference)
+        else:
+            value = accessor.initializer
+        return _make_resolved_attribute(merged_attribute, value=value, is_property=True)
+    getter = property_info.get_accessor(PropertyAccessKind.read)
+    if getter is None or getter.initializer is None:
         return _make_error_attribute(
             merged_attribute,
             CanAssignError(
@@ -2602,7 +2615,7 @@ def _apply_descriptor_protocol_to_property(
     receiver_arg = policy.get_self_value(
         ctx, is_metaclass=merged_attribute.is_metaclass_owner
     )
-    fget = property_info.fget.initializer
+    fget = getter.initializer
     value = _make_call(fget, (receiver_arg,), policy=policy, ctx=ctx)
     return _make_resolved_attribute(merged_attribute, value=value, is_property=True)
 

@@ -303,7 +303,9 @@ def iter_base_type_values_from_simple(
         assert_never(value)
 
 
-def add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) -> None:
+def add_runtime_declared_symbols(
+    typ: type, symbols: dict[str, ClassSymbol], arg_spec_cache: ArgSpecCache
+) -> None:
     class_dict = safe_getattr(typ, "__dict__", None)
     namedtuple_fields = frozenset(_runtime_namedtuple_field_names(typ))
     runtime_dataclass_fields = {
@@ -325,7 +327,7 @@ def add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) -> 
             qualifiers=frozenset({Qualifier.ReadOnly}),
             is_instance_only=True,
             property_info=(
-                _runtime_property_info(property_value.val, typ)
+                _runtime_property_info(property_value.val, typ, arg_spec_cache)
                 if property_value is not None
                 and isinstance(property_value.val, property)
                 else None
@@ -365,7 +367,7 @@ def add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) -> 
                 continue
             existing = symbols.get(name)
             symbols[name] = _symbol_from_runtime_member(
-                raw_value, typ, existing=existing
+                raw_value, typ, arg_spec_cache, existing=existing
             )
 
     try:
@@ -393,7 +395,10 @@ def add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) -> 
 
 
 def _symbol_from_runtime_member(
-    raw_value: object, owner: type, existing: ClassSymbol | None = None
+    raw_value: object,
+    owner: type,
+    arg_spec_cache: ArgSpecCache,
+    existing: ClassSymbol | None = None,
 ) -> ClassSymbol:
     function_decorators = set()
     wrapped_method_kind = _get_runtime_wrapped_method_kind(raw_value, owner)
@@ -431,7 +436,7 @@ def _symbol_from_runtime_member(
         and (existing is None or existing.annotation is None),
         deprecation_message=_runtime_deprecation_message(raw_value),
         function_decorators=frozenset(function_decorators),
-        property_info=_runtime_property_info(raw_value, owner),
+        property_info=_runtime_property_info(raw_value, owner, arg_spec_cache),
         initializer=_runtime_member_value(raw_value, owner),
         dataclass_field=existing.dataclass_field if existing is not None else None,
     )
@@ -520,27 +525,43 @@ def _is_runtime_member_final(raw_value: object) -> bool:
 UNKNOWN_SYMBOL = ClassSymbol(initializer=AnyValue(AnySource.unannotated))
 
 
-def _runtime_property_info(raw_value: object, owner: type) -> PropertyInfo | None:
+def _runtime_property_info(
+    raw_value: object, owner: type, arg_spec_cache: ArgSpecCache
+) -> PropertyInfo | None:
     if isinstance(raw_value, types.GetSetDescriptorType):
         return PropertyInfo(
             fget=UNKNOWN_SYMBOL, fset=UNKNOWN_SYMBOL, fdel=UNKNOWN_SYMBOL
         )
     if not isinstance(raw_value, property):
         return None
-    if raw_value.fget is None:
-        fget = None
-    else:
-        fget = _symbol_from_runtime_member(raw_value.fget, owner)
-    if raw_value.fset is None:
-        fset = None
-    else:
-        fset = _symbol_from_runtime_member(raw_value.fset, owner)
-    if raw_value.fdel is None:
-        fdel = None
-    else:
-        fdel = _symbol_from_runtime_member(raw_value.fdel, owner)
+    return PropertyInfo(
+        fget=_runtime_property_accessor_symbol(
+            raw_value, raw_value.fget, owner, arg_spec_cache
+        ),
+        fset=_runtime_property_accessor_symbol(
+            raw_value, raw_value.fset, owner, arg_spec_cache
+        ),
+        fdel=_runtime_property_accessor_symbol(
+            raw_value, raw_value.fdel, owner, arg_spec_cache
+        ),
+    )
 
-    return PropertyInfo(fget=fget, fset=fset, fdel=fdel)
+
+def _runtime_property_accessor_symbol(
+    prop: property,
+    accessor: Callable[..., object] | None,
+    owner: type,
+    arg_spec_cache: ArgSpecCache,
+) -> ClassSymbol | None:
+    if accessor is None:
+        return None
+    symbol = _symbol_from_runtime_member(accessor, owner, arg_spec_cache)
+    overload_signature = arg_spec_cache.get_property_accessor_overload_signature(
+        prop, accessor
+    )
+    if overload_signature is None:
+        return symbol
+    return replace(symbol, initializer=CallableValue(overload_signature))
 
 
 def _runtime_deprecation_message(raw_value: object) -> str | None:
