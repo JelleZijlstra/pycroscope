@@ -3204,6 +3204,20 @@ class TestTaxonomyDistilledRegressions(TestNameCheckVisitorBase):
             takes_proto4(p3)
             takes_proto3(p4)
 
+    @skip_before((3, 12))
+    def test_pep695_paramspec_components_do_not_internal_error(self):
+        self.assert_passes(
+            """
+            from typing import Protocol
+
+            class Proto[**P](Protocol):
+                def __call__(
+                    self, *args: P.args, **kwargs: P.kwargs
+                ) -> None: ...
+            """,
+            run_in_both_module_modes=True,
+        )
+
     @assert_passes(run_in_both_module_modes=True)
     def test_bound_typeguard_methods_preserve_narrowing(self):
         from typing import TypeGuard
