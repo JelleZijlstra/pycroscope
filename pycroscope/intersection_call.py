@@ -19,9 +19,11 @@ from pycroscope.signature import (
     BoundArgs,
     CheckCallContext,
     ConcreteSignature,
+    MaybeSignature,
     OverloadedSignature,
     ParameterKind,
     Signature,
+    as_concrete_signature,
     preprocess_args,
 )
 from pycroscope.stacked_scopes import Composite
@@ -65,7 +67,7 @@ from pycroscope.value import (
     replace_fallback,
 )
 
-GetSignature = Callable[[Value], object]
+GetSignature = Callable[[Value], MaybeSignature]
 
 
 @dataclass(frozen=True)
@@ -123,8 +125,8 @@ def _determine_signatures(
     signatures = []
     noncallable = []
     for member in callee.vals:
-        signature = get_signature(member)
-        if isinstance(signature, (Signature, OverloadedSignature)):
+        signature = as_concrete_signature(get_signature(member), ctx=ctx.can_assign_ctx)
+        if signature is not None:
             signatures.append(signature)
         elif _is_definitely_non_callable(member, ctx.can_assign_ctx):
             noncallable.append(member)

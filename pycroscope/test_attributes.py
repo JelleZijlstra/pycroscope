@@ -279,6 +279,25 @@ class TestAttributes(TestNameCheckVisitorBase):
         def not_candidate_is_indeterminate(value: Intersection[Not[int], Any]) -> None:
             assert_type(value.attr, Any)
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_inherited_generic_method_on_narrowed_intersection(self):
+        from collections.abc import Sequence
+        from typing import Any, Generic, TypeVar
+
+        T = TypeVar("T")
+
+        class Field(Generic[T]):
+            def deserialize(self, raw: str) -> T:
+                raise NotImplementedError
+
+        class SequenceField(Field[Sequence[T]]):
+            pass
+
+        def deserialize_sequence(field: Field[Any], raw: str) -> Sequence[Any]:
+            if not isinstance(field, SequenceField):
+                raise TypeError
+            return field.deserialize(raw)
+
     @assert_passes()
     def test_generic(self):
         from typing import Generic, TypeVar
