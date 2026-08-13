@@ -2014,9 +2014,7 @@ class TestUnpack(TestNameCheckVisitorBase):
 
     @assert_passes(run_in_both_module_modes=True)
     def test_kwargs_forwarding_respects_closed_and_extra_items(self):
-        from typing import Never
-
-        from typing_extensions import ReadOnly, TypedDict, Unpack
+        from typing_extensions import Never, ReadOnly, TypedDict, Unpack
 
         class Open(TypedDict):
             name: str
@@ -2120,9 +2118,9 @@ class TestUnpack(TestNameCheckVisitorBase):
 
     @assert_passes(run_in_both_module_modes=True)
     def test_callable_assignment_respects_closed_and_extra_items(self):
-        from typing import Never, Protocol
+        from typing import Protocol
 
-        from typing_extensions import ReadOnly, TypedDict, Unpack
+        from typing_extensions import Never, ReadOnly, TypedDict, Unpack
 
         class Open(TypedDict):
             name: str
