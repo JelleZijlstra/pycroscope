@@ -46,8 +46,3 @@ dataclasses_descriptors
 
 # Newly added on typing; pycroscope doesn't fully implement disjoint_base yet
 directives_disjoint_base
-
-# Added or changed by https://github.com/python/typing/pull/2215.
-# ParamSpec and TypeVarTuple variance is not fully implemented yet; the other
-# cases changed because they now use PEP 695 ParamSpec syntax.
-generics_typevartuple_basic
