@@ -2767,6 +2767,9 @@ class Checker:
         )
         return get_attribute(ctx)
 
+    def is_instance_only_attribute(self, typ: ClassKey, attribute: str) -> bool:
+        return False
+
 
 @dataclass(kw_only=True)
 class CheckerAttrContext(AttrContext):

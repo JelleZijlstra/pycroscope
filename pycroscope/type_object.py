@@ -1882,6 +1882,13 @@ class TypeObject:
                         is_property=False,
                         is_metaclass_owner=False,
                     )
+                if not is_class and ctx.is_instance_only_attribute(
+                    other_type_obj.typ, member
+                ):
+                    actual_attr = replace(
+                        actual_attr,
+                        symbol=replace(actual_attr.symbol, is_instance_only=True),
+                    )
             if expected_attr is None:
                 # In static fallback mode, synthetic protocol members may not have
                 # a retrievable attribute type. Keep enforcing member presence.
