@@ -1,23 +1,6 @@
 # Changelog
 
-## Unreleased
-
-- Fix bug with calling methods on values typed as intersections.
-- Reject protocol matches that provide a required `ClassVar` only through an instance attribute.
-- Fix implicit generic subclasses so type variables nested inside base-class arguments remain class type parameters in method annotations.
-- Support `P.args`, `P.kwargs`, and generic specialization with PEP 695 parameter specifications without crashing, and exclude `__type_params__` metadata from protocol requirements.
-- Narrow negative `TypeIs` checks against covariant generic `Any` arms more precisely when the checked type uses `object`.
-- Normalize `Not[...]` inside expected-type expressions such as `assert_type(x, Intersection[A, Not[B]])`.
-- Implement call checking for callable intersection types.
-- Treat definitely missing attributes on intersection members as an error instead of ignoring them, while still allowing indeterminate members to be ignored when another member provides the attribute.
-- Normalize pycroscope extension annotations with PEP 604 union operands, such as `Intersection[A, B | C]`, `A | Intersection[B, C]`, and `int | Not[str]`, instead of producing an internal error.
-- Improve recursive gradual type compatibility for aliases, protocols, and TypedDicts, so recursive `Any` tails no longer hide incompatible nested types and mutually recursive TypedDicts no longer produce internal recursion errors.
-- Infer and validate class type-parameter variance from the collected class API in both importable and static fallback analysis, including generic bases and callable member annotations.
-- Treat plain subclasses of frozen dataclasses as mutable for their own annotated attributes, while keeping inherited frozen dataclass fields read-only.
-- Add basic support for `pycroscope.extensions.Not[T]` negation types, including assignability and intersection simplification.
-- Simplify unions containing an exact fully static `Not[T]` complement pair, such as `Literal[1] | Not[Literal[1]]`, to `object`.
-- Deduplicate unions containing equivalent intersections written in different orders, such as `Any & int` and `int & Any`.
-- Preserve `Not[T]` intersections in negative `TypeIs[T]` narrowing, while keeping other narrowing paths pragmatic.
+<!-- scriv-insert-here -->
 
 ## Version 0.4.0 (May 2, 2026)
 

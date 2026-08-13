@@ -7,10 +7,20 @@
 
 ## Changelog
 
-- Any change with a user-visible effect must include an entry in `docs/changelog.md`.
-- Add changelog entries under `## Unreleased` in `docs/changelog.md`.
-- Changelog entries should be single bullets in plain language that explain the user-visible effect (not internal refactors).
+- Any change with a user-visible effect must include a Scriv fragment in `changelog.d/`.
+- Create fragments with `uv run --locked --group release scriv create`. Do not edit
+  `docs/changelog.md` directly except while preparing a release.
+- Fragments should contain a single bullet in plain language that explains the
+  user-visible effect (not internal refactors).
 - Bugfixes for bugs that were not in any release do not need changelog entries.
+
+## uv lockfile
+
+- Use `uv run --locked` and `uv sync --locked` for ordinary development and test
+  commands so they fail instead of modifying `uv.lock`.
+- Modify `uv.lock` only when `pyproject.toml` dependency declarations or the project
+  version change. Run `uv lock` explicitly and include the resulting lockfile change
+  in the same commit.
 
 ## Architecture
 
@@ -43,7 +53,7 @@
 - `test_self.py` is often useful for finding regressions. Run it with the `full` extra enabled or it will be skipped.
 - Run conformance CI with the same interpreter you want pycroscope itself to use, because `tools/conformance_ci.py`
   invokes `sys.executable -m pycroscope` under the hood.
-- Use this form from the repo root: `uv run --python 3.12 python tools/conformance_ci.py --typing-repo ~/py/typing`
+- Use this form from the repo root: `uv run --locked --python 3.12 python tools/conformance_ci.py --typing-repo ~/py/typing`
   (optionally prefix `UV_CACHE_DIR=/tmp/uv-cache`).
 - When fixing regressions found by `test_self.py`, add separate test cases instead of just relying on `test_self.py`.
 - When writing test cases, always use code samples (`@assert_passes()`) instead of tests that directly
@@ -56,7 +66,7 @@
 ## Coverage
 
 - To reproduce the CI coverage run locally, use Python 3.14 and `pytest-cov`, for example:
-  `UV_CACHE_DIR=/tmp/uv-cache uv run --python 3.14 --extra tests --extra asynq --extra codemod --with pytest-cov pytest --cov=pycroscope --cov-report=term-missing --cov-report=json:coverage.json pycroscope`
+  `UV_CACHE_DIR=/tmp/uv-cache uv run --locked --python 3.14 --extra tests --extra asynq --extra codemod --with pytest-cov pytest --cov=pycroscope --cov-report=term-missing --cov-report=json:coverage.json pycroscope`
 - To generate an HTML line-by-line coverage report locally, add `--cov-report=html` to the coverage command above.
   The report is written to `htmlcov/index.html`.
 - The pinned-full-coverage check is checked in as `tools/check_full_coverage.py`; run it with

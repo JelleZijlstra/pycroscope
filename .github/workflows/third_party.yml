@@ -18,4 +18,4 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Run third-party checks
-        run: uv run --frozen python tools/third_party_ci.py
+        run: uv run --locked python tools/third_party_ci.py
