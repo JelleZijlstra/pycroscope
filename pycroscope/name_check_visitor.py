@@ -2354,6 +2354,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         lookup_node: object = None,
         synthetic_initializer: Value | None | Literal[_UNSET] = _UNSET,
         record_synthetic_symbol: bool = True,
+        check_incompatible_override: bool = True,
     ) -> tuple[Value, VarnameOrigin]:
         if lookup_node is None:
             lookup_node = node
@@ -2529,7 +2530,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                 return existing, EMPTY_ORIGIN
         if scope_type == ScopeType.class_scope:
-            if value is not None:
+            if value is not None and check_incompatible_override:
                 self._check_for_incompatible_overrides(varname, node, value)
             self._check_for_class_variable_redefinition(varname, node)
         if value is None:
@@ -7332,11 +7333,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 with name_scope_ctx:
                     self._set_name_in_scope(
-                        node.name, node, val, record_synthetic_symbol=False
+                        node.name,
+                        node,
+                        val,
+                        record_synthetic_symbol=False,
+                        check_incompatible_override=not is_property_accessor,
                     )
                     self._record_complete_synthetic_function_symbol(
                         node, info, synthetic_function_value
                     )
+                    if is_property_accessor:
+                        self._check_for_incompatible_overrides(node.name, node, val)
 
             if (
                 node.name in METHODS_ALLOWING_NOTIMPLEMENTED
@@ -8123,7 +8130,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> bool:
         if (
             self.current_class_key is None
-            or not self._is_current_method_receiver_node(node.value)
             or not self._is_readonly_member_for_initialization(
                 self.current_class_key, node.attr
             )
@@ -8131,15 +8137,34 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return False
         class_object_status = self._is_class_object_attribute_root(root_value)
         if self.current_function_name == "__init__":
-            return class_object_status is not True
+            return (
+                self._is_current_method_receiver_node(node.value)
+                and class_object_status is not True
+            )
         if self.current_function_name == "__init_subclass__":
             return (
-                class_object_status is not False
+                self._is_current_method_receiver_node(node.value)
+                and class_object_status is not False
                 and self._is_classvar_member_for_initialization(
                     self.current_class_key, node.attr
                 )
             )
-        return False
+        function_info = self.current_function_info
+        is_factory_method = self.current_function_name == "__new__" or (
+            function_info is not None
+            and FunctionDecorator.classmethod in function_info.decorator_kinds
+        )
+        if not is_factory_method or class_object_status is not False:
+            return False
+        root_class_key = self._class_key_from_attribute_root_value(root_value)
+        if root_class_key is None:
+            return False
+        # PEP 767 explicitly permits the simpler implementation choice of allowing
+        # writes to any appropriately typed instance in __new__ and classmethods,
+        # without tracking whether the instance came from an approved __new__ call.
+        return self.checker.make_type_object(root_class_key).is_in_mro(
+            self.current_class_key
+        )
 
     def _is_allowed_init_subclass_class_attribute_initialization(
         self, node: ast.Attribute, root_value: Value, attr: TypeObjectAttribute

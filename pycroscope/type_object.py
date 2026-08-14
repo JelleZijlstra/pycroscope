@@ -2961,19 +2961,29 @@ def _apply_descriptor_protocol(
     ):
         return _apply_descriptor_protocol_to_classmethod(merged_attribute, ctx, policy)
 
-    if merged_attribute.is_method or (
-        merged_attribute.initializer is not None
-        and _is_method_like(merged_attribute.initializer)
-        and merged_attribute.annotation is None
-    ):
+    initializer = merged_attribute.initializer
+    initializer_is_method_like = initializer is not None and _is_method_like(
+        initializer
+    )
+    if (
+        merged_attribute.is_method
+        and (
+            initializer is None
+            or initializer_is_method_like
+            or isinstance(initializer, (AnyValue, CallableValue))
+        )
+    ) or (initializer_is_method_like and merged_attribute.annotation is None):
         return _apply_descriptor_protocol_to_method(
             merged_attribute, ctx, policy, is_instance_access=is_instance_access
         )
 
-    if merged_attribute.initializer is not None and _is_descriptor(
-        merged_attribute.initializer, ctx
-    ):
+    if initializer is not None and _is_descriptor(initializer, ctx):
         return _apply_descriptor_protocol_to_descriptor(
+            merged_attribute, ctx, policy, is_instance_access=is_instance_access
+        )
+
+    if merged_attribute.is_method:
+        return _apply_descriptor_protocol_to_method(
             merged_attribute, ctx, policy, is_instance_access=is_instance_access
         )
 
@@ -3527,7 +3537,11 @@ def is_compatible_attribute(
     strict_variance: bool = False,
     relation_ctx: RelationContext | None = None,
 ) -> CanAssign:
-    if child_attr.symbol.is_classvar and base_attr.symbol.is_instance_only:
+    if (
+        child_attr.symbol.is_classvar
+        and base_attr.symbol.is_instance_only
+        and not base_attr.symbol.is_readonly
+    ):
         return CanAssignError(
             f"{attr_name} is an instance variable on base class {base_attr.owner}, "
             f"but a class variable on child class {child_attr.owner}"

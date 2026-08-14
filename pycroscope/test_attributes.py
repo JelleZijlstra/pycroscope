@@ -178,6 +178,29 @@ class TestAttributes(TestNameCheckVisitorBase):
             def __init__(self) -> None:
                 self.id = 1
 
+        class Factory:
+            value: ReadOnly[int]
+
+            def __new__(cls, value: int) -> "Factory":
+                instance: Factory = object.__new__(cls)
+                instance.value = value
+                return instance
+
+            @classmethod
+            def make(cls, value: int) -> "Factory":
+                instance: Factory = object.__new__(cls)
+                instance.value = value
+                return instance
+
+            @classmethod
+            def reinitialize(cls, instance: "Factory", value: int) -> None:
+                # PEP 767 permits type checkers to allow this simpler, less sound
+                # classmethod form without proving that instance is fresh.
+                instance.value = value
+
+            def mutate_other(self, other: "Factory") -> None:
+                other.value = 1  # E: incompatible_assignment
+
         class Inline:
             def __init__(self, name: str) -> None:
                 self.name: ReadOnly[str] = name
@@ -218,6 +241,7 @@ class TestAttributes(TestNameCheckVisitorBase):
             HasId,
             ProtocolChild,
             ProtocolImplementation,
+            Factory,
             Config,
             FinalAttr,
             inline,

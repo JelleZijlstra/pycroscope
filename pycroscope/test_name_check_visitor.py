@@ -5649,6 +5649,35 @@ class TestFallbackValueDispatch(TestNameCheckVisitorBase):
 
 
 class TestIncompatibleOverride(TestNameCheckVisitorBase):
+    @assert_passes(run_in_both_module_modes=True)
+    def test_readonly_attribute_override_is_covariant(self):
+        from typing import ClassVar
+
+        from typing_extensions import ReadOnly
+
+        class Base:
+            value: ReadOnly[int]
+
+        class NarrowReadOnly(Base):
+            value: ReadOnly[bool]
+
+        class NarrowWritable(Base):
+            value: bool
+
+        class NarrowClassVar(Base):
+            value: ClassVar[bool] = True
+
+        class NarrowProperty(Base):
+            @property
+            def value(self) -> bool:
+                return True
+
+        class WideReadOnly(Base):
+            value: ReadOnly[object]  # E: incompatible_override
+
+        class WideWritable(Base):
+            value: object  # E: incompatible_override
+
     @assert_passes()
     def test_simple(self):
         from typing_extensions import Literal
