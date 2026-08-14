@@ -1010,9 +1010,14 @@ def make_type_param_from_value(
                     variance=variance,
                 )
             elif is_typing_name(runtime_val.typ, "TypeVarTuple"):
-                name, default = _extract_common_type_param_args(value, ctx)
+                name = _extract_type_param_name_arg(value)
                 if name is None:
                     return None
+                default_val = value.arguments.get("default", NO_ARG_SENTINEL)
+                if default_val is NO_ARG_SENTINEL:
+                    default = None
+                else:
+                    default = _typevartuple_default_from_value(default_val, ctx)
                 variance = _extract_partial_type_param_variance(value, ctx)
                 if variance is None:
                     return None
@@ -1145,6 +1150,20 @@ def _paramspec_default_from_value(value: Value, ctx: Context) -> Value:
             value.typ, [(False, type_from_value(member, ctx=ctx)) for member in members]
         )
     return type_from_value(value, ctx=ctx)
+
+
+def _typevartuple_default_from_value(value: Value, ctx: Context) -> Value:
+    expr = _annotation_expr_from_value(value, ctx)
+    unpacked, qualifiers = expr.unqualify({Qualifier.Unpack})
+    members = _unpack_value(unpacked) if Qualifier.Unpack in qualifiers else None
+    if members is None:
+        ctx.show_error(
+            "TypeVarTuple default must be an unpacked tuple or TypeVarTuple",
+            error_code=ErrorCode.incompatible_argument,
+            node=ctx.get_error_node(),
+        )
+        return AnyValue(AnySource.error)
+    return TypeVarTupleBindingValue(tuple(members))
 
 
 def _show_type_param_call_error(
@@ -1388,6 +1407,10 @@ def make_type_param(
         default = _type_param_component_from_runtime(runtime_default, ctx)
     else:
         default = None
+    if is_instance_of_typing_name(tv, "TypeVarTuple"):
+        return TypeVarTupleParam(
+            tv, owner=owner, default=default, variance=get_type_param_variance(tv)
+        )
     if isinstance(tv, (TypeVar, typing_extensions.TypeVar)):
         if getattr(tv, "__bound__", None) is not None:
             bound = _type_from_runtime(tv.__bound__, ctx)
@@ -1409,10 +1432,6 @@ def make_type_param(
         )
     if is_instance_of_typing_name(tv, "ParamSpec"):
         return ParamSpecParam(
-            tv, owner=owner, default=default, variance=get_type_param_variance(tv)
-        )
-    if is_instance_of_typing_name(tv, "TypeVarTuple"):
-        return TypeVarTupleParam(
             tv, owner=owner, default=default, variance=get_type_param_variance(tv)
         )
     raise TypeError(f"Unsupported type parameter: {tv!r}")
