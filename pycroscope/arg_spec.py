@@ -113,6 +113,7 @@ from .value import (
     iter_type_params_in_value,
     make_coro_type,
     pack_typevartuple_binding,
+    split_variadic_type_arguments,
     type_param_to_value,
     with_type_param_owner,
 )
@@ -144,6 +145,17 @@ def _substitute_generic_base_args(
             continue
         specialized = specialized.with_value(type_param, transform(value))
     return specialized
+
+
+def _specialization_argument_matches_type_param(
+    type_param: TypeParam, argument: Value
+) -> bool:
+    if not isinstance(type_param, ParamSpecParam):
+        return True
+    if argument == KnownValue(Ellipsis):
+        return True
+    normalized = coerce_paramspec_specialization_to_input_sig(argument)
+    return isinstance(normalized, (InputSigValue, AnyValue))
 
 
 # types.MethodWrapperType in 3.7+
@@ -1664,8 +1676,12 @@ class ArgSpecCache:
             variadic_arg = generic_args[variadic_index]
             if isinstance(variadic_arg, (TypeVarTupleValue, TypeVarTupleBindingValue)):
                 return list(generic_args)
-        split = self._split_variadic_generic_args(
-            type_params, generic_args, variadic_index
+        split = split_variadic_type_arguments(
+            type_params,
+            generic_args,
+            variadic_index,
+            param_has_default=self._specialization_param_has_default,
+            argument_matches_type_param=_specialization_argument_matches_type_param,
         )
         if split is None:
             return list(generic_args)
@@ -1721,34 +1737,6 @@ class ArgSpecCache:
                 type_params[i], value
             )
         return specialized
-
-    def _split_variadic_generic_args(
-        self,
-        type_params: Sequence[TypeParam],
-        generic_args: Sequence[Value],
-        variadic_index: int,
-    ) -> tuple[int, int] | None:
-        suffix_params = type_params[variadic_index + 1 :]
-        prefix_explicit_count = min(variadic_index, len(generic_args))
-        while prefix_explicit_count >= 0:
-            if any(
-                not self._specialization_param_has_default(type_param)
-                for type_param in type_params[prefix_explicit_count:variadic_index]
-            ):
-                prefix_explicit_count -= 1
-                continue
-            suffix_explicit_count = min(
-                len(suffix_params), len(generic_args) - prefix_explicit_count
-            )
-            omitted_suffix_count = len(suffix_params) - suffix_explicit_count
-            if any(
-                not self._specialization_param_has_default(type_param)
-                for type_param in suffix_params[:omitted_suffix_count]
-            ):
-                prefix_explicit_count -= 1
-                continue
-            return prefix_explicit_count, suffix_explicit_count
-        return None
 
     def _specialization_param_has_default(self, type_param: TypeParam) -> bool:
         if type_param.default is not None:
