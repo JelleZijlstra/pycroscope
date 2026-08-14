@@ -1143,14 +1143,26 @@ def _paramspec_default_from_value(value: Value, ctx: Context) -> Value:
     value = replace_known_sequence_value(value)
     if value == KnownValue(Ellipsis):
         return value
-    if isinstance(value, SequenceValue) and value.typ in (list, tuple):
+    if isinstance(value, SequenceValue) and value.typ is list:
         members = value.get_member_sequence()
         if members is None:
-            return value
+            return _invalid_paramspec_default(ctx)
         return SequenceValue(
             value.typ, [(False, type_from_value(member, ctx=ctx)) for member in members]
         )
-    return type_from_value(value, ctx=ctx)
+    typed = type_from_value(value, ctx=ctx, suppress_errors=True)
+    if isinstance(typed, InputSigValue) and isinstance(typed.input_sig, ParamSpecParam):
+        return typed
+    return _invalid_paramspec_default(ctx)
+
+
+def _invalid_paramspec_default(ctx: Context) -> AnyValue:
+    ctx.show_error(
+        "ParamSpec default must be a list of types, ellipsis, or ParamSpec",
+        error_code=ErrorCode.incompatible_argument,
+        node=ctx.get_error_node(),
+    )
+    return AnyValue(AnySource.error)
 
 
 def _typevartuple_default_from_value(value: Value, ctx: Context) -> Value:
