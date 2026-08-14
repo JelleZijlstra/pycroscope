@@ -252,6 +252,65 @@ class TestExtraKeys(TestNameCheckVisitorBase):
 
 
 class TestTypedDict(TestNameCheckVisitorBase):
+    @assert_passes(run_in_both_module_modes=True)
+    def test_mapping_consistency(self):
+        from typing import Any, Mapping, MutableMapping
+
+        from typing_extensions import NotRequired, ReadOnly, TypedDict, assert_type
+
+        class DefaultOpen(TypedDict):
+            x: int
+            y: int
+
+        class ExtraInt(TypedDict, extra_items=int):
+            x: NotRequired[int]
+
+        class ReadOnlyExtraInt(TypedDict, extra_items=ReadOnly[int]):
+            x: NotRequired[int]
+
+        class RequiredExtraInt(TypedDict, extra_items=int):
+            x: int
+
+        def check(
+            default_open: DefaultOpen,
+            extra_int: ExtraInt,
+            readonly_extra_int: ReadOnlyExtraInt,
+            required_extra_int: RequiredExtraInt,
+        ) -> None:
+            assert_type(default_open["x"], int)
+            assert_type(default_open.get("x"), int)
+            mapping_object: Mapping[str, object] = default_open
+            mapping_any: Mapping[str, Any] = default_open
+            mapping_int: Mapping[str, int] = default_open  # E: incompatible_assignment
+            dict_int: dict[str, int] = default_open  # E: incompatible_assignment
+            dict_object: dict[str, object] = default_open  # E: incompatible_assignment
+            dict_any: dict[Any, Any] = default_open  # E: incompatible_assignment
+
+            precise_mapping: Mapping[str, int] = extra_int
+            precise_dict: dict[str, int] = extra_int
+            precise_mutable_mapping: MutableMapping[str, int] = extra_int
+
+            readonly_dict: dict[str, int] = (  # E: incompatible_assignment
+                readonly_extra_int
+            )
+
+            required_dict: dict[str, int] = (  # E: incompatible_assignment
+                required_extra_int
+            )
+            print(
+                mapping_object,
+                mapping_any,
+                mapping_int,
+                dict_int,
+                dict_object,
+                dict_any,
+                precise_mapping,
+                precise_dict,
+                precise_mutable_mapping,
+                readonly_dict,
+                required_dict,
+            )
+
     def test_recursive_gradual_typeddict_materializations(self):
         self.assert_passes("""
             from __future__ import annotations

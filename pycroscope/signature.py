@@ -14,7 +14,7 @@ import itertools
 import warnings
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
-from types import FunctionType, MethodType
+from types import FunctionType, MethodDescriptorType, MethodType, WrapperDescriptorType
 from typing import Any, ClassVar, NamedTuple, TypeVar, get_args, get_origin
 
 from typing_extensions import Self, Sentinel, assert_never
@@ -737,6 +737,19 @@ def _has_decomposable_argument(args: Sequence[Argument]) -> bool:
     return False
 
 
+def _typed_dict_as_mapping_receiver(value: TypedDictValue) -> DictIncompleteValue:
+    kv_pairs = [
+        KVPair(KnownValue(key), entry.typ, is_required=entry.required)
+        for key, entry in value.items.items()
+        if not (not entry.required and entry.typ is NO_RETURN_VALUE)
+    ]
+    if value.extra_keys is not None and value.extra_keys is not NO_RETURN_VALUE:
+        kv_pairs.append(
+            KVPair(TypedValue(str), value.extra_keys, is_many=True, is_required=False)
+        )
+    return DictIncompleteValue(dict, kv_pairs)
+
+
 @dataclass(frozen=True)
 class Signature:
     """Represents the signature of a Python callable.
@@ -984,7 +997,8 @@ class Signature:
                 value_to_check = composite.value
                 first_parameter = next(iter(self.parameters.values()), None)
                 is_receiver_parameter = (
-                    first_parameter is param
+                    first_parameter is not None
+                    and first_parameter.name == param.name
                     and param.kind
                     in (
                         ParameterKind.POSITIONAL_ONLY,
@@ -1003,24 +1017,7 @@ class Signature:
                     # bound receiver argument, keep that behavior instead of applying
                     # TypedDict-vs-dict assignment restrictions intended for user-facing
                     # assignment/compatibility checks.
-                    kv_pairs = [
-                        KVPair(KnownValue(key), entry.typ, is_required=entry.required)
-                        for key, entry in composite.value.items.items()
-                        if not (not entry.required and entry.typ is NO_RETURN_VALUE)
-                    ]
-                    if (
-                        composite.value.extra_keys is not None
-                        and composite.value.extra_keys is not NO_RETURN_VALUE
-                    ):
-                        kv_pairs.append(
-                            KVPair(
-                                TypedValue(str),
-                                composite.value.extra_keys,
-                                is_many=True,
-                                is_required=False,
-                            )
-                        )
-                    value_to_check = DictIncompleteValue(dict, kv_pairs)
+                    value_to_check = _typed_dict_as_mapping_receiver(composite.value)
                 tv_tuple_map = _try_match_typevartuple_var_positional(
                     param, param_typ, value_to_check, ctx.can_assign_ctx
                 )
@@ -1178,7 +1175,9 @@ class Signature:
         return None
 
     def _is_method_like_typeguard_callable(self) -> bool:
-        if isinstance(self.callable, MethodType):
+        if isinstance(
+            self.callable, (MethodType, MethodDescriptorType, WrapperDescriptorType)
+        ):
             return True
         if not isinstance(self.callable, FunctionType):
             return False

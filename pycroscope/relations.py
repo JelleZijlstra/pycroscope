@@ -1091,6 +1091,12 @@ def _has_relation_impl(
         return CanAssignError(f"{right} is not {relation.description} {left}")
 
     if isinstance(left, GenericValue):
+        if isinstance(right, TypedDictValue) and left.typ in {
+            dict,
+            collections.abc.Mapping,
+            collections.abc.MutableMapping,
+        }:
+            return _has_relation_typed_dict_mapping(left, right, relation_ctx)
         if (
             isinstance(right, SequenceValue)
             and left.typ is tuple
@@ -1705,21 +1711,6 @@ def _maybe_specify_error_for_generic(
                     return CanAssignError(
                         f"In value of key-value pair {pair}", [can_assign]
                     )
-    elif isinstance(right, TypedDictValue) and left.typ in {
-        dict,
-        collections.abc.Mapping,
-        collections.abc.MutableMapping,
-    }:
-        if i == 0:
-            for key in right.items:
-                can_assign = relation_ctx.has_relation(expected, KnownValue(key))
-                if isinstance(can_assign, CanAssignError):
-                    return CanAssignError(f"In TypedDict key {key!r}", [can_assign])
-        elif i == 1:
-            for key, entry in right.items.items():
-                can_assign = relation_ctx.has_relation(expected, entry.typ)
-                if isinstance(can_assign, CanAssignError):
-                    return CanAssignError(f"In TypedDict key {key!r}", [can_assign])
     elif isinstance(right, SequenceValue) and left.typ in {
         list,
         set,
@@ -1738,6 +1729,37 @@ def _maybe_specify_error_for_generic(
     return CanAssignError(
         f"In {variance.display_name()} generic parameter {i} to {left}", [error]
     )
+
+
+def _has_relation_typed_dict_mapping(
+    left: GenericValue, right: TypedDictValue, relation_ctx: RelationContext
+) -> CanAssign:
+    if relation_ctx.relation is Relation.EQUIVALENT:
+        return CanAssignError(f"{right} is not equivalent to {left}")
+
+    if left.typ in {dict, collections.abc.MutableMapping}:
+        if right.extra_keys is None or right.extra_keys is NO_RETURN_VALUE:
+            return CanAssignError(
+                f"{right} does not allow mutable extra items required by {left}"
+            )
+        if right.extra_keys_readonly:
+            return CanAssignError(f"Extra items in {right} are read-only")
+        for key, entry in right.items.items():
+            if entry.required:
+                return CanAssignError(
+                    f"TypedDict key {key!r} is required and cannot be deleted"
+                )
+            if entry.readonly:
+                return CanAssignError(f"TypedDict key {key!r} is read-only")
+
+    value_types = [entry.typ for entry in right.items.values()]
+    if right.extra_keys is None:
+        value_types.append(TypedValue(object))
+    elif right.extra_keys is not NO_RETURN_VALUE:
+        value_types.append(right.extra_keys)
+    value_type = unite_values(*value_types)
+    mapping_view = GenericValue(left.typ, [TypedValue(str), value_type])
+    return _has_relation(left, mapping_view, relation_ctx)
 
 
 @dataclass(frozen=True)

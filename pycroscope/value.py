@@ -2563,11 +2563,6 @@ class DictIncompleteValue(GenericValue):
             value = AnyValue(AnySource.unreachable)
         return GenericValue(self.typ, [key, value], weak=True)
 
-    @property
-    def items(self) -> Sequence[tuple[Value, Value]]:
-        """Sequence of pairs representing the keys and values of the dict."""
-        return [(pair.key, pair.value) for pair in self.kv_pairs]
-
     def get_value(self, key: Value, ctx: CanAssignContext) -> Value:
         """Return the :class:`Value` for a specific key."""
         possible_values = []
