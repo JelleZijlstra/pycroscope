@@ -172,6 +172,7 @@ from .value import (
     replace_known_sequence_value,
     stringify_object,
     type_param_to_value,
+    typevar_map_from_type_param_defaults,
     typevartuple_binding_to_generic_args,
     typevartuple_value_to_members,
     unite_values,
@@ -869,7 +870,7 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
         # Bare TypeForm is equivalent to TypeForm[Any].
         return TypeFormValue(AnyValue(AnySource.explicit))
     elif isinstance(val, type):
-        return _maybe_typed_value(val)
+        return _type_from_bare_runtime_class(val, ctx)
     elif val is None:
         return KnownValue(None)
     elif is_typing_name(val, "NoReturn") or is_typing_name(val, "Never"):
@@ -2482,6 +2483,15 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
     elif isinstance(value, TypedDictValue):
         return value
     elif isinstance(value, SyntheticClassObjectValue):
+        if type(value.class_type) is TypedValue:
+            return _type_from_bare_class(
+                value.class_type.typ,
+                (
+                    ctx.can_assign_ctx.get_type_parameters(value.class_type.typ)
+                    if ctx.can_assign_ctx is not None
+                    else ()
+                ),
+            )
         return value.class_type
     elif isinstance(value, (TypeVarValue, TypeVarTupleValue, TypeAliasValue)):
         return value
@@ -3895,6 +3905,24 @@ def _maybe_typed_value(val: ClassKey) -> Value:
     elif val is complex:
         return TypedValue(complex) | TypedValue(float) | TypedValue(int)
     return TypedValue(val)
+
+
+def _type_from_bare_runtime_class(val: type, ctx: Context) -> Value:
+    return _type_from_bare_class(
+        val, _get_generic_type_parameters_for_annotation(val, ctx)
+    )
+
+
+def _type_from_bare_class(typ: ClassKey, type_params: Sequence[TypeParam]) -> Value:
+    if not type_params or not any(param.default is not None for param in type_params):
+        return _maybe_typed_value(typ)
+    substitutions = typevar_map_from_type_param_defaults(type_params)
+    args = []
+    for param in type_params:
+        arg = substitutions.get_value(param)
+        assert arg is not None
+        args.append(arg)
+    return GenericValue(typ, _canonicalize_generic_args_for_value(args))
 
 
 def _make_sequence_value(

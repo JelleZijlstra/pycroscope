@@ -1465,6 +1465,16 @@ def default_value_for_type_param(type_param: "TypeParam") -> Value:
     return AnyValue(AnySource.generic_argument)
 
 
+def typevar_map_from_type_param_defaults(
+    type_params: Sequence["TypeParam"],
+) -> TypeVarMap:
+    substitutions = TypeVarMap()
+    for param in type_params:
+        default = default_value_for_type_param(param).substitute_typevars(substitutions)
+        substitutions = substitutions.with_value(param, default)
+    return substitutions
+
+
 def _split_variadic_type_arguments(
     type_params: Sequence["TypeParam"],
     type_arguments: Sequence[Value],
