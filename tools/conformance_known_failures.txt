@@ -39,6 +39,3 @@ typeddicts_type_consistency
 
 # https://github.com/python/typing/issues/2259
 dataclasses_descriptors
-
-# Newly added on typing; pycroscope doesn't fully implement disjoint_base yet
-directives_disjoint_base

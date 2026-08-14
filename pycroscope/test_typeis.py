@@ -591,6 +591,81 @@ class TestTypeIs(TestNameCheckVisitorBase):
             if is_left(x) and is_right(x):
                 assert_type(x, Never)
 
+    @assert_passes(run_in_both_module_modes=True)
+    def testDisjointBaseDefinitions(self):
+        from typing import TYPE_CHECKING, NamedTuple, Protocol, TypedDict
+
+        from typing_extensions import disjoint_base
+
+        if TYPE_CHECKING:
+
+            @disjoint_base
+            class Left:
+                pass
+
+            @disjoint_base
+            class Right:
+                pass
+
+            @disjoint_base
+            class LeftChild(Left):
+                pass
+
+            @disjoint_base
+            class Record(NamedTuple):
+                value: int
+
+            class Plain:
+                pass
+
+            class LeftAndPlain(Left, Plain):
+                pass
+
+            class LeftChildAndLeft(LeftChild, Left):
+                pass
+
+            class PlainRecord(Plain, Record):
+                pass
+
+            class LeftAndRight(Left, Right):  # E: invalid_base
+                pass
+
+            class LeftChildAndRight(LeftChild, Right):  # E: invalid_base
+                pass
+
+            class LeftAndRightViaChild(LeftAndPlain, Right):  # E: invalid_base
+                pass
+
+            class LeftRecord(Left, Record):  # E: invalid_base
+                pass
+
+            class SlotBase1:
+                __slots__ = ("x",)
+
+            class SlotBase2:
+                __slots__ = ("y",)
+
+            class EmptySlots:
+                __slots__ = ()
+
+            class SlotAndEmptySlots(SlotBase1, EmptySlots):
+                pass
+
+            class IncompatibleSlots(SlotBase1, SlotBase2):  # E: invalid_base
+                pass
+
+            @disjoint_base  # E: invalid_disjoint_base
+            class Movie(TypedDict):
+                name: str
+
+            @disjoint_base  # E: invalid_disjoint_base
+            class SupportsClose(Protocol):
+                def close(self) -> None: ...
+
+            @disjoint_base  # E: invalid_disjoint_base
+            def func() -> None:
+                pass
+
     @assert_passes()
     def testTypeIsComprehensionSubtype(self):
         from typing import List

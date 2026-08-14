@@ -692,12 +692,32 @@ class TypeObject:
         ) or safe_getattr(self.typ, "__final__", False)
 
     def _compute_is_disjoint_base(self) -> bool:
+        if self.typ is object:
+            return True
+        runtime_disjoint = False
         if isinstance(self.typ, type):
             class_dict = safe_getattr(self.typ, "__dict__", None)
-            return isinstance(class_dict, Mapping) and bool(
-                class_dict.get("__disjoint_base__", False)
-            )
-        return bool(self._directly_disjoint_base)
+            if isinstance(class_dict, Mapping):
+                runtime_disjoint = bool(class_dict.get("__disjoint_base__", False)) or (
+                    "__slots__" in class_dict and bool(class_dict["__slots__"])
+                )
+        if runtime_disjoint or self._directly_disjoint_base:
+            return True
+        dataclass_info = self.get_direct_dataclass_info()
+        if dataclass_info is not None and dataclass_info.slots:
+            return True
+        slots_symbol = self.get_declared_symbol("__slots__")
+        if slots_symbol is None or slots_symbol.initializer is None:
+            return False
+        slots_value = replace_known_sequence_value(slots_symbol.initializer)
+        if isinstance(slots_value, SequenceValue):
+            members = slots_value.get_member_sequence()
+            return members is not None and bool(members)
+        return (
+            isinstance(slots_value, KnownValue)
+            and isinstance(slots_value.val, str)
+            and bool(slots_value.val)
+        )
 
     def _compute_is_protocol(self) -> bool:
         if isinstance(self.typ, ClassOwner):
@@ -1263,6 +1283,29 @@ class TypeObject:
         if self._is_disjoint_base is None:
             self._is_disjoint_base = self._compute_is_disjoint_base()
         return self._is_disjoint_base
+
+    def get_inherited_disjoint_base(self) -> "TypeObject | None":
+        candidates: dict[ClassKey, TypeObject] = {}
+        for base_tobj in self.get_direct_base_type_objects():
+            candidate = base_tobj.get_disjoint_base()
+            if candidate is None:
+                return None
+            candidates[candidate.typ] = candidate
+        if not candidates:
+            return self._checker.make_type_object(object)
+        return next(
+            (
+                candidate
+                for candidate in candidates.values()
+                if all(candidate.is_in_mro(other.typ) for other in candidates.values())
+            ),
+            None,
+        )
+
+    def get_disjoint_base(self) -> "TypeObject | None":
+        if self.is_disjoint_base():
+            return self
+        return self.get_inherited_disjoint_base()
 
     def is_protocol(self) -> bool:
         if self._is_protocol is None:
