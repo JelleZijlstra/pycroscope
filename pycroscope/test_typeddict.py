@@ -254,9 +254,9 @@ class TestExtraKeys(TestNameCheckVisitorBase):
 class TestTypedDict(TestNameCheckVisitorBase):
     @assert_passes(run_in_both_module_modes=True)
     def test_mapping_consistency(self):
-        from typing import Any, Mapping, MutableMapping, assert_type
+        from typing import Any, Mapping, MutableMapping
 
-        from typing_extensions import NotRequired, ReadOnly, TypedDict
+        from typing_extensions import NotRequired, ReadOnly, TypedDict, assert_type
 
         class DefaultOpen(TypedDict):
             x: int
