@@ -1916,7 +1916,7 @@ def _canonicalize_generic_args_for_type_params(
 
 
 def _normalize_generic_unpack_members(
-    members: Sequence[Value], ctx: Context
+    members: Sequence[Value], ctx: Context, *, convert_plain_members: bool = True
 ) -> list[tuple[bool, Value]] | None:
     normalized_members: list[tuple[bool, Value]] = []
     saw_unpack = False
@@ -1952,7 +1952,9 @@ def _normalize_generic_unpack_members(
                     (is_many, _type_from_alias_argument_value(unpacked_member, ctx))
                 )
             continue
-        normalized_members.append((False, _type_from_value(member, ctx)))
+        normalized_members.append(
+            (False, _type_from_value(member, ctx) if convert_plain_members else member)
+        )
     if not saw_unpack:
         return None
     return normalized_members
@@ -1963,10 +1965,10 @@ def _pack_typevartuple_args_from_unpack_members(
 ) -> list[Value] | None:
     if not any(_is_unpack_annotation_member(member) for member in members):
         return None
-    normalized_members = _normalize_generic_unpack_members(members, ctx)
-    if normalized_members is None or not any(
-        is_many for is_many, _ in normalized_members
-    ):
+    normalized_members = _normalize_generic_unpack_members(
+        members, ctx, convert_plain_members=False
+    )
+    if normalized_members is None:
         return None
     if (
         len(normalized_members) == 1
@@ -2013,16 +2015,29 @@ def _pack_typevartuple_args_from_unpack_members(
     packed: list[Value] = []
     for i in range(len(type_params)):
         if i < variadic_index:
-            packed.append(prefix_members[i][1])
+            packed.append(
+                _type_from_value_type_alias_arg(
+                    prefix_members[i][1], type_params[i], ctx
+                )
+            )
         elif i == variadic_index:
             packed.append(
                 TypeVarTupleBindingValue(
-                    tuple(normalized_members[variadic_index:variadic_end])
+                    tuple(
+                        (is_many, _type_from_alias_argument_value(member, ctx))
+                        for is_many, member in normalized_members[
+                            variadic_index:variadic_end
+                        ]
+                    )
                 )
             )
         else:
             suffix_index = i - variadic_index - 1
-            packed.append(suffix_members[suffix_index][1])
+            packed.append(
+                _type_from_value_type_alias_arg(
+                    suffix_members[suffix_index][1], type_params[i], ctx
+                )
+            )
     return packed
 
 
@@ -3073,18 +3088,18 @@ def specialize_type_alias_value(
 ) -> TypeAliasValue:
     type_params = tuple(root.alias.get_type_params())
     type_arguments_are_packed = False
-    if any(_is_unpack_annotation_member(member) for member in members):
+    saw_unpack = any(_is_unpack_annotation_member(member) for member in members)
+    packed_variadic_members = _pack_typevartuple_args_from_unpack_members(
+        type_params, members, ctx
+    )
+    if saw_unpack and packed_variadic_members is None:
         normalized_unpack_members = _normalize_generic_unpack_members(members, ctx)
     else:
         normalized_unpack_members = None
-    saw_unpack = normalized_unpack_members is not None
     has_unbounded_unpack = (
         saw_unpack
         and normalized_unpack_members is not None
         and any(is_many for is_many, _ in normalized_unpack_members)
-    )
-    packed_variadic_members = _pack_typevartuple_args_from_unpack_members(
-        type_params, members, ctx
     )
     if packed_variadic_members is not None:
         args_vals = packed_variadic_members
