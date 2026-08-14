@@ -2032,13 +2032,7 @@ class TestSyntheticType(TestNameCheckVisitorBase):
     def test_bare_generic_instance_attributes_use_defaults(self):
         from typing import Any, Callable, Generic
 
-        from typing_extensions import (
-            ParamSpec,
-            TypeVar,
-            TypeVarTuple,
-            Unpack,
-            assert_type,
-        )
+        from typing_extensions import ParamSpec, TypeVar, assert_type
 
         T = TypeVar("T")
         NestedDefaultT = TypeVar("NestedDefaultT", default=list[T])
@@ -2055,22 +2049,32 @@ class TestSyntheticType(TestNameCheckVisitorBase):
         class WithParamSpecDefault(Generic[P]):
             callback: Callable[P, None]
 
-        Ts = TypeVarTuple("Ts", default=Unpack[tuple[str, int]])
-
-        class WithTypeVarTupleDefault(Generic[Unpack[Ts]]):
-            elements: tuple[Unpack[Ts]]
-
         def check(
             nested: WithNestedDefault,  # E: missing_generic_parameters
             child: BareSubclass,
             paramspec: WithParamSpecDefault,  # E: missing_generic_parameters
-            typevartuple: WithTypeVarTupleDefault,  # E: missing_generic_parameters
         ) -> None:
             assert_type(nested.required, Any)
             assert_type(nested.nested, list[Any])
             assert_type(child.required, Any)
             assert_type(child.nested, list[Any])
             assert_type(paramspec.callback, Callable[[str, int], None])
+
+    @skip_before((3, 11))
+    @assert_passes(run_in_both_module_modes=True)
+    def test_bare_generic_typevartuple_attribute_uses_default(self):
+        from typing import Generic
+
+        from typing_extensions import TypeVarTuple, Unpack, assert_type
+
+        Ts = TypeVarTuple("Ts", default=Unpack[tuple[str, int]])
+
+        class WithTypeVarTupleDefault(Generic[Unpack[Ts]]):
+            elements: tuple[Unpack[Ts]]
+
+        def check(
+            typevartuple: WithTypeVarTupleDefault,  # E: missing_generic_parameters
+        ) -> None:
             assert_type(typevartuple.elements, tuple[str, int])
 
     @assert_passes()
