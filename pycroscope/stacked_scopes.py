@@ -763,7 +763,10 @@ class Scope:
     )
 
     def __post_init__(self) -> None:
-        if self.parent_scope is not None:
+        if (
+            self.parent_scope is not None
+            and self.scope_type is not ScopeType.annotation_scope
+        ):
             self.parent_scope = self.parent_scope.scope_used_as_parent()
 
     def add_constraint(
