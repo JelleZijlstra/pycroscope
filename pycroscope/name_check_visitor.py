@@ -1865,6 +1865,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     expected_return_value: Value | None
     future_imports: set[str]
     in_annotation: bool
+    _treat_type_param_names_as_types: bool
     in_comprehension_body: bool
     in_union_decomposition: bool
     import_name_to_node: dict[str, ast.Import | ast.ImportFrom]
@@ -1985,6 +1986,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.current_enum_members = None
         self.is_async_def = False
         self.in_annotation = False
+        self._treat_type_param_names_as_types = False
         self.in_union_decomposition = False
         self.collector = collector
         self.import_name_to_node = {}
@@ -3374,6 +3376,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             return AnyValue(AnySource.error), origin
         self.active_type_params.observe_value(error_node, value)
+        if (
+            defining_scope is not None
+            and defining_scope.scope_type is ScopeType.annotation_scope
+            and not self.in_annotation
+            and not self._treat_type_param_names_as_types
+            and not self.active_type_params.has_variance_collection()
+        ):
+            type_param = self.get_type_param_from_value(value)
+            if type_param is not None:
+                value = SyntheticTypeFormValue(
+                    type_param_to_value(type_param),
+                    TypedValue(type(type_param.typevar)),
+                    node,
+                )
         assert not isinstance(value, (TypeVarParam, ParamSpecParam, TypeVarTupleParam))
         if isinstance(value, (InputSigValue, TypeVarTupleBindingValue)):
             # ParamSpecs are stored as InputSigValues and cannot be converted to a
@@ -3629,6 +3645,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
                 disallowed_type_params = (
                     self.active_type_params.current_annotation_identities()
+                    - self.active_type_params.current_native_pep695_identities()
                 )
                 with self.active_type_params.disallow(disallowed_type_params):
                     (
@@ -3919,7 +3936,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 class_annotation_identities.update(alias_identities)
             with (
                 self.active_type_params.push_pep695_scope(
-                    class_scope_type_params, aliases=type_param_alias_identities
+                    class_scope_type_params,
+                    aliases=type_param_alias_identities,
+                    is_native=is_pep695_generic,
                 ),
                 self.active_type_params.allow_in_annotations(
                     class_annotation_identities
@@ -7297,12 +7316,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         val,
                         [DataclassTransformExtension(merged_dataclass_transform_info)],
                     )
-                self._set_name_in_scope(
-                    node.name, node, val, record_synthetic_symbol=False
+                name_scope_ctx = (
+                    self.scopes.ignore_topmost_scope()
+                    if sys.version_info >= (3, 12) and node.type_params
+                    else contextlib.nullcontext()
                 )
-                self._record_complete_synthetic_function_symbol(
-                    node, info, synthetic_function_value
-                )
+                with name_scope_ctx:
+                    self._set_name_in_scope(
+                        node.name, node, val, record_synthetic_symbol=False
+                    )
+                    self._record_complete_synthetic_function_symbol(
+                        node, info, synthetic_function_value
+                    )
 
             if (
                 node.name in METHODS_ALLOWING_NOTIMPLEMENTED
@@ -7327,7 +7352,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     is_classmethod=FunctionDecorator.classmethod
                     in info.decorator_kinds,
                 ),
-                self.active_type_params.push_pep695_scope(info.type_params),
+                self.active_type_params.push_pep695_scope(
+                    info.type_params,
+                    is_native=(
+                        sys.version_info >= (3, 12)
+                        and not isinstance(node, ast.Lambda)
+                        and bool(node.type_params)
+                    ),
+                ),
                 self.active_type_params.allow_in_annotations(
                     function_annotation_identities
                 ),
@@ -12411,8 +12443,40 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> Sequence[TypeParam]:
         type_param_values = []
         first_typevartuple: TypeVarTupleParam | None = None
-        for param in type_params:
-            value = self.visit(param)
+        for index, param in enumerate(type_params):
+            name = getattr(param, "name", None)
+            if (
+                isinstance(name, str)
+                and self.active_type_params.get_type_param_by_name(name) is not None
+            ):
+                self._show_error_if_checking(
+                    param,
+                    f"Type parameter {name!r} is already in use by an outer scope",
+                    error_code=ErrorCode.invalid_type_parameter,
+                )
+
+            later_names = {
+                later_name
+                for later_param in type_params[index + 1 :]
+                if isinstance((later_name := getattr(later_param, "name", None)), str)
+            }
+            bound = getattr(param, "bound", None)
+            references_later_param = bound is not None and any(
+                name_node.id in later_names
+                for name_node, _ in _iter_loaded_name_nodes(
+                    bound, allow_string_parse=True
+                )
+            )
+            if references_later_param:
+                self._show_error_if_checking(
+                    param,
+                    "Type parameter bound cannot reference a later type parameter",
+                    error_code=ErrorCode.invalid_type_parameter,
+                )
+                with self.catch_errors():
+                    value = self.visit(param)
+            else:
+                value = self.visit(param)
             extracted = _type_param_value_from_value(value, self)
             if extracted is None:
                 assert False, f"unexpected type parameter value: {value!r}"
@@ -12892,9 +12956,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return type_from_value(
                     KnownValue(ast.unparse(node)), self, node, suppress_errors=True
                 )
-            return type_from_value(
-                self.visit(node), self, node, suppress_errors=suppress_errors
-            )
+            with override(self, "_treat_type_param_names_as_types", True):
+                value = self.visit(node)
+            return type_from_value(value, self, node, suppress_errors=suppress_errors)
 
         def _paramspec_default_from_pep695_expr(self, node: ast.expr) -> Value:
             if isinstance(node, ast.Constant) and node.value is Ellipsis:
@@ -17072,6 +17136,8 @@ def is_typing_object(value: object, typing_name: str) -> bool:
 def _type_param_value_from_value(
     value: Value, visitor: NameCheckVisitor
 ) -> TypeParam | None:
+    if isinstance(value, SyntheticTypeFormValue):
+        return _type_param_value_from_value(value.inner_type, visitor)
     if isinstance(value, TypeVarValue):
         return value.typevar_param
     if isinstance(value, TypeVarTupleValue):

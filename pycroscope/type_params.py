@@ -754,6 +754,7 @@ class ActiveTypeParams:
         self._variance_outside_annotations = 0
         self._subscript_arg_polarities: list[tuple[tuple[int, bool], ...]] = []
         self._scopes: list[TypeParamScope] = []
+        self._native_pep695_identity_scopes: list[set[TypeParamIdentity]] = []
 
     @contextmanager
     def push_scope(self, owner: TypeParamOwner | None = None) -> Generator[None]:
@@ -787,6 +788,12 @@ class ActiveTypeParams:
         for scope in self._scopes:
             type_params.update(scope.bindings)
         return type_params
+
+    def current_native_pep695_identities(self) -> set[TypeParamIdentity]:
+        identities: set[TypeParamIdentity] = set()
+        for scope in self._native_pep695_identity_scopes:
+            identities.update(scope)
+        return identities
 
     def get_type_param(self, identity: object) -> TypeParam | None:
         if not _is_type_param_identity(identity):
@@ -866,13 +873,27 @@ class ActiveTypeParams:
         *,
         aliases: Sequence[Iterable[object]] | None = None,
         owner: TypeParamOwner | None = None,
+        is_native: bool = True,
     ) -> Generator[None]:
         if not type_params:
             yield
             return
-        with self.push_scope(owner):
-            self.add_pep695_scope(type_params, aliases=aliases)
-            yield
+        if aliases is None:
+            aliases = [()] * len(type_params)
+        native_identities = {
+            identity
+            for type_param, param_aliases in zip(type_params, aliases)
+            for identity in (type_param.typevar, *_typed_identities(param_aliases))
+        }
+        if is_native:
+            self._native_pep695_identity_scopes.append(native_identities)
+        try:
+            with self.push_scope(owner):
+                self.add_pep695_scope(type_params, aliases=aliases)
+                yield
+        finally:
+            if is_native:
+                self._native_pep695_identity_scopes.pop()
 
     @contextlib.contextmanager
     def push_class_type_params(

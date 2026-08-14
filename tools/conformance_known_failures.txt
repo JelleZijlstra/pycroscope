@@ -2,9 +2,6 @@
 # If a listed case starts passing, or an unlisted case starts failing,
 # the conformance CI workflow should fail and this file should be updated.
 
-# Doesn't detect when you use a TypeVar in the wrong place
-generics_syntax_scoping
-
 # Fails to reject "x" | int annotations that fail at runtime
 # Does not correctly pick up forward refs in unimportable module
 annotations_forward_refs

@@ -610,10 +610,7 @@ def _has_relation_impl(
 
     # SyntheticTypeFormValue
     if isinstance(left, SyntheticTypeFormValue):
-        if left == right:
-            return {}
-        else:
-            return CanAssignError(f"{right} is not {relation.description} {left}")
+        return _has_relation(gradualize(left.get_fallback_value()), right, relation_ctx)
     if isinstance(right, SyntheticTypeFormValue):
         return _has_relation(
             left,

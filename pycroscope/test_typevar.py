@@ -1576,6 +1576,68 @@ class TestGenericClasses(TestNameCheckVisitorBase):
         """)
 
     @skip_before((3, 12))
+    def test_pep695_type_parameter_scoping_rules(self):
+        self.assert_passes(
+            """
+            class LaterBound[S: list[T], T]:  # E: invalid_type_parameter
+                ...
+
+            class Outer[T]:
+                class Inner[T]:  # E: invalid_type_parameter
+                    ...
+
+                def method[T](self) -> None:  # E: invalid_type_parameter
+                    ...
+
+                type Alias[T] = T  # E: invalid_type_parameter
+
+            def outer[T]() -> None:
+                def inner[T]() -> None:  # E: invalid_type_parameter
+                    ...
+        """,
+            run_in_both_module_modes=True,
+        )
+
+    @skip_before((3, 12))
+    def test_pep695_annotation_scopes_overlay_containing_scopes(self):
+        self.assert_passes(
+            """
+            from typing import Literal, ParamSpec, TypeVar, TypeVarTuple, assert_type
+
+            class Outer:
+                class Private:
+                    ...
+
+                class Inner[T](Private):
+                    ...
+
+                def method[T](self, value: Inner[T]) -> Inner[T]:
+                    return value
+
+            def identity[T](value: T) -> T:
+                return value
+
+            assert_type(identity("x"), Literal["x"])
+
+            class VariadicOuter[**P, *Ts]:
+                def method(self) -> None:
+                    assert_type(P, ParamSpec)
+                    assert_type(Ts, TypeVarTuple)
+
+            def make_outer(a: int, b: str) -> None:
+                class GenericOuter[T]:
+                    T = a
+
+                    class Inner:
+                        T = b
+
+                        def method(self) -> None:
+                            assert_type(T, TypeVar)
+        """,
+            run_in_both_module_modes=True,
+        )
+
+    @skip_before((3, 12))
     def test_pep695_type_parameter_default_must_reference_earlier_params(self):
         self.assert_passes(
             """

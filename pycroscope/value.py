@@ -3682,8 +3682,7 @@ class TypeFormValue(Value):
 
 @dataclass(frozen=True)
 class SyntheticTypeFormValue(Value):
-    """Represents an object that can be used in annotations,
-    but for which we do not have a runtime object."""
+    """Represents an object whose type-form and runtime meanings differ."""
 
     inner_type: Value
     runtime_type: Value
