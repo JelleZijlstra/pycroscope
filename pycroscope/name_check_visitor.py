@@ -8881,7 +8881,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             return
         generic_params = self.checker.get_type_parameters(val)
-        if not generic_params:
+        if not generic_params or all(
+            type_param.default is not None for type_param in generic_params
+        ):
             return
         self.show_error(
             node,

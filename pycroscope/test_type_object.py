@@ -2036,6 +2036,7 @@ class TestSyntheticType(TestNameCheckVisitorBase):
 
         T = TypeVar("T")
         NestedDefaultT = TypeVar("NestedDefaultT", default=list[T])
+        DefaultT = TypeVar("DefaultT", default=int)
 
         class WithNestedDefault(Generic[T, NestedDefaultT]):
             required: T
@@ -2043,6 +2044,9 @@ class TestSyntheticType(TestNameCheckVisitorBase):
 
         class BareSubclass(WithNestedDefault):
             pass
+
+        class WithTypeVarDefault(Generic[DefaultT]):
+            value: DefaultT
 
         P = ParamSpec("P", default=[str, int])
 
@@ -2052,12 +2056,14 @@ class TestSyntheticType(TestNameCheckVisitorBase):
         def check(
             nested: WithNestedDefault,  # E: missing_generic_parameters
             child: BareSubclass,
-            paramspec: WithParamSpecDefault,  # E: missing_generic_parameters
+            typevar: WithTypeVarDefault,
+            paramspec: WithParamSpecDefault,
         ) -> None:
             assert_type(nested.required, Any)
             assert_type(nested.nested, list[Any])
             assert_type(child.required, Any)
             assert_type(child.nested, list[Any])
+            assert_type(typevar.value, int)
             assert_type(paramspec.callback, Callable[[str, int], None])
 
     @skip_before((3, 11))
@@ -2072,9 +2078,7 @@ class TestSyntheticType(TestNameCheckVisitorBase):
         class WithTypeVarTupleDefault(Generic[Unpack[Ts]]):
             elements: tuple[Unpack[Ts]]
 
-        def check(
-            typevartuple: WithTypeVarTupleDefault,  # E: missing_generic_parameters
-        ) -> None:
+        def check(typevartuple: WithTypeVarTupleDefault) -> None:
             assert_type(typevartuple.elements, tuple[str, int])
 
     @assert_passes()
