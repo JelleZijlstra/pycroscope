@@ -3112,12 +3112,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return candidate, attribute
         return None
 
-    def _is_direct_classvar_member(self, class_key: ClassKey, attr_name: str) -> bool:
-        symbol = self.checker.make_type_object(class_key).get_declared_symbol(attr_name)
+    def _is_classvar_member_for_initialization(
+        self, class_key: ClassKey, attr_name: str
+    ) -> bool:
+        symbol = self.checker.make_type_object(class_key).get_declared_symbol_from_mro(
+            attr_name, self
+        )
         return symbol is not None and symbol.is_classvar
 
-    def _is_direct_readonly_member(self, class_key: ClassKey, attr_name: str) -> bool:
-        symbol = self.checker.make_type_object(class_key).get_declared_symbol(attr_name)
+    def _is_readonly_member_for_initialization(
+        self, class_key: ClassKey, attr_name: str
+    ) -> bool:
+        type_object = self.checker.make_type_object(class_key)
+        if type_object.is_protocol():
+            return False
+        symbol = type_object.get_declared_symbol_from_mro(attr_name, self)
         return symbol is not None and symbol.is_readonly
 
     def _is_instance_only_member(self, class_key: ClassKey, attr_name: str) -> bool:
@@ -8115,15 +8124,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if (
             self.current_class_key is None
             or not self._is_current_method_receiver_node(node.value)
-            or not self._is_direct_readonly_member(self.current_class_key, node.attr)
+            or not self._is_readonly_member_for_initialization(
+                self.current_class_key, node.attr
+            )
         ):
             return False
         class_object_status = self._is_class_object_attribute_root(root_value)
         if self.current_function_name == "__init__":
             return class_object_status is not True
         if self.current_function_name == "__init_subclass__":
-            return class_object_status is not False and self._is_direct_classvar_member(
-                self.current_class_key, node.attr
+            return (
+                class_object_status is not False
+                and self._is_classvar_member_for_initialization(
+                    self.current_class_key, node.attr
+                )
             )
         return False
 
