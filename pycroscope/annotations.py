@@ -1126,13 +1126,13 @@ def _type_param_default_from_value(
     if isinstance(typed, AnyValue) and typed.source is AnySource.error:
         ctx.show_error(
             f"Invalid type parameter default {value}",
-            error_code=ErrorCode.incompatible_argument,
+            error_code=ErrorCode.invalid_type_parameter_default,
             node=partial.node,
         )
     elif has_invalid_typevar_default_kind(typed):
         ctx.show_error(
             "TypeVar default must be a type or TypeVar",
-            error_code=ErrorCode.incompatible_argument,
+            error_code=ErrorCode.invalid_type_parameter_default,
             node=getattr(value, "node", partial.node),
         )
         return AnyValue(AnySource.error)
@@ -1172,7 +1172,7 @@ def _paramspec_default_from_value(value: Value, ctx: Context) -> Value:
 def _invalid_paramspec_default(ctx: Context) -> AnyValue:
     ctx.show_error(
         "ParamSpec default must be a list of types, ellipsis, or ParamSpec",
-        error_code=ErrorCode.incompatible_argument,
+        error_code=ErrorCode.invalid_type_parameter_default,
         node=ctx.get_error_node(),
     )
     return AnyValue(AnySource.error)
@@ -1185,7 +1185,7 @@ def _typevartuple_default_from_value(value: Value, ctx: Context) -> Value:
     if members is None:
         ctx.show_error(
             "TypeVarTuple default must be an unpacked tuple or TypeVarTuple",
-            error_code=ErrorCode.incompatible_argument,
+            error_code=ErrorCode.invalid_type_parameter_default,
             node=ctx.get_error_node(),
         )
         return AnyValue(AnySource.error)
@@ -1193,12 +1193,15 @@ def _typevartuple_default_from_value(value: Value, ctx: Context) -> Value:
 
 
 def _show_type_param_call_error(
-    ctx: Context, message: str, *, value: PartialCallValue, node: ast.AST | None = None
+    ctx: Context,
+    message: str,
+    *,
+    value: PartialCallValue,
+    node: ast.AST | None = None,
+    error_code: Error = ErrorCode.incompatible_call,
 ) -> None:
     ctx.show_error(
-        message,
-        error_code=ErrorCode.incompatible_call,
-        node=node if node is not None else value.node,
+        message, error_code=error_code, node=node if node is not None else value.node
     )
 
 
@@ -1239,6 +1242,7 @@ def _validate_partial_typevar_defaults(
             "TypeVar default must be assignable to its bound",
             value=value,
             node=ctx.get_error_node(),
+            error_code=ErrorCode.invalid_type_parameter_default,
         )
         return
     if not type_param.constraints:
@@ -1263,6 +1267,7 @@ def _validate_partial_typevar_defaults(
         "TypeVar default must be one of its constraints",
         value=value,
         node=ctx.get_error_node(),
+        error_code=ErrorCode.invalid_type_parameter_default,
     )
 
 

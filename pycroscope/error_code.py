@@ -143,6 +143,7 @@ ErrorCode = ErrorRegistry(
         Error("invalid_protocol", "Invalid Protocol definition"),
         Error("invalid_disjoint_base", "Invalid use of @disjoint_base"),
         Error("invalid_type_parameter", "Invalid type parameter declaration"),
+        Error("invalid_type_parameter_default", "Invalid type parameter default"),
         Error("invalid_dataclass", "Invalid dataclass definition"),
         Error(
             "classvar_type_parameters",

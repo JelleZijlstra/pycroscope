@@ -2182,11 +2182,13 @@ class TestTypeParameterConstructs(TestNameCheckVisitorBase):
         DefaultTs = TypeVarTuple("DefaultTs", default=Unpack[tuple[str, int]])
         AnotherDefaultTs = TypeVarTuple("AnotherDefaultTs", default=Unpack[DefaultTs])
         BadTuple = TypeVarTuple(
-            "BadTuple", default=tuple[str, int]  # E: incompatible_argument
+            "BadTuple", default=tuple[str, int]  # E: invalid_type_parameter_default
         )
-        BadType = TypeVarTuple("BadType", default=int)  # E: incompatible_argument
+        BadType = TypeVarTuple(
+            "BadType", default=int  # E: invalid_type_parameter_default
+        )
         BadUnpack = TypeVarTuple(
-            "BadUnpack", default=Unpack[list[int]]  # E: incompatible_argument
+            "BadUnpack", default=Unpack[list[int]]  # E: invalid_type_parameter_default
         )
         print(DefaultTs, AnotherDefaultTs, BadTuple, BadType, BadUnpack)
 
