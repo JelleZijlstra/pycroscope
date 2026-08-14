@@ -2067,19 +2067,23 @@ class TestSyntheticType(TestNameCheckVisitorBase):
             assert_type(paramspec.callback, Callable[[str, int], None])
 
     @skip_before((3, 11))
-    @assert_passes(run_in_both_module_modes=True)
     def test_bare_generic_typevartuple_attribute_uses_default(self):
-        from typing import Generic
+        self.assert_passes(
+            """
+            from typing import Generic
 
-        from typing_extensions import TypeVarTuple, Unpack, assert_type
+            from typing_extensions import TypeVarTuple, Unpack, assert_type
 
-        Ts = TypeVarTuple("Ts", default=Unpack[tuple[str, int]])
+            Ts = TypeVarTuple("Ts", default=Unpack[tuple[str, int]])
 
-        class WithTypeVarTupleDefault(Generic[Unpack[Ts]]):
-            elements: tuple[Unpack[Ts]]
+            class WithTypeVarTupleDefault(Generic[Unpack[Ts]]):
+                elements: tuple[Unpack[Ts]]
 
-        def check(typevartuple: WithTypeVarTupleDefault) -> None:
-            assert_type(typevartuple.elements, tuple[str, int])
+            def check(typevartuple: WithTypeVarTupleDefault) -> None:
+                assert_type(typevartuple.elements, tuple[str, int])
+            """,
+            run_in_both_module_modes=True,
+        )
 
     @assert_passes()
     def test_protocol_hash_method_accepts_class_object_metaclass_hash(self):
