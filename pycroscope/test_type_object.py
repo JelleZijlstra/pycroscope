@@ -2077,6 +2077,36 @@ class TestSyntheticType(TestNameCheckVisitorBase):
         ) -> None:
             assert_type(typevartuple.elements, tuple[str, int])
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_bare_generic_class_object_uses_defaults(self):
+        from typing import Any, Callable, Generic
+
+        from typing_extensions import ParamSpec, TypeVar, assert_type
+
+        StartT = TypeVar("StartT", default=int)
+        StopT = TypeVar("StopT", default=StartT)
+        StepT = TypeVar("StepT", default=int | None)
+
+        class Slice(Generic[StartT, StopT, StepT]):
+            pass
+
+        assert_type(Slice, type[Slice[int, int, int | None]])
+
+        T = TypeVar("T")
+        DefaultListT = TypeVar("DefaultListT", default=list[T])
+
+        class Box(Generic[T, DefaultListT]):
+            pass
+
+        assert_type(Box, type[Box[Any, list[Any]]])
+
+        P = ParamSpec("P", default=[str, int])
+
+        class WithParamSpec(Generic[P]):
+            callback: Callable[P, None]
+
+        assert_type(WithParamSpec, type[WithParamSpec[str, int]])
+
     @assert_passes()
     def test_protocol_hash_method_accepts_class_object_metaclass_hash(self):
         from typing import Protocol

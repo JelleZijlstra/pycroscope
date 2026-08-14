@@ -164,6 +164,7 @@ from .value import (
     annotate_value,
     bound_self_type_from_class_key,
     class_owner_from_key,
+    generic_value_from_type_param_defaults,
     get_single_typevartuple_param,
     get_type_param_variance,
     iter_type_params_in_value,
@@ -172,7 +173,6 @@ from .value import (
     replace_known_sequence_value,
     stringify_object,
     type_param_to_value,
-    typevar_map_from_type_param_defaults,
     typevartuple_binding_to_generic_args,
     typevartuple_value_to_members,
     unite_values,
@@ -3916,13 +3916,7 @@ def _type_from_bare_runtime_class(val: type, ctx: Context) -> Value:
 def _type_from_bare_class(typ: ClassKey, type_params: Sequence[TypeParam]) -> Value:
     if not type_params or not any(param.default is not None for param in type_params):
         return _maybe_typed_value(typ)
-    substitutions = typevar_map_from_type_param_defaults(type_params)
-    args = []
-    for param in type_params:
-        arg = substitutions.get_value(param)
-        assert arg is not None
-        args.append(arg)
-    return GenericValue(typ, _canonicalize_generic_args_for_value(args))
+    return generic_value_from_type_param_defaults(typ, type_params)
 
 
 def _make_sequence_value(

@@ -81,9 +81,9 @@ from pycroscope.value import (
     Value,
     VariableNameValue,
     Variance,
-    default_value_for_type_param,
     flatten_values,
     freshen_typevars_for_inference,
+    generic_value_from_type_param_defaults,
     get_type_params_by_typevar,
     gradualize,
     intersect_bounds_maps,
@@ -912,6 +912,9 @@ def _has_relation_impl(
         elif isinstance(right, KnownValue):
             if not safe_isinstance(right.val, type):
                 return CanAssignError(f"{right} is not a type")
+            right_instance_type = _specialize_class_type_with_defaults(right.val, ctx)
+            if isinstance(right_instance_type, GenericValue):
+                return _has_relation(left.typ, right_instance_type, relation_ctx)
             if isinstance(left.typ, InferenceVarValue):
                 return {
                     left.typ.typevar_param: [
@@ -954,6 +957,10 @@ def _has_relation_impl(
             return CanAssignError(f"{right} is not {relation.description} {left}")
     if isinstance(right, SubclassValue):
         if isinstance(left, KnownValue):
+            if safe_isinstance(left.val, type):
+                left_instance_type = _specialize_class_type_with_defaults(left.val, ctx)
+                if isinstance(left_instance_type, GenericValue):
+                    return _has_relation(left_instance_type, right.typ, relation_ctx)
             return CanAssignError(f"{right} is not {relation.description} {left}")
         elif isinstance(left, TypedValue):
             left_tobj = left.get_type_object(ctx)
@@ -1275,17 +1282,18 @@ def _specialized_synthetic_class_type(
     class_typ = synthetic_class.class_type.typ
     tobj = synthetic_class.get_type_object(ctx)
     declared = tobj.get_declared_type_params()
-    if declared:
-        substitutions = TypeVarMap()
-        specialized_args: list[Value] = []
-        for param in declared:
-            specialized_arg = default_value_for_type_param(param).substitute_typevars(
-                substitutions
-            )
-            substitutions = substitutions.with_value(param, specialized_arg)
-            specialized_args.append(specialized_arg)
-        return GenericValue(class_typ, specialized_args)
+    if declared and any(param.default is not None for param in declared):
+        return generic_value_from_type_param_defaults(class_typ, declared)
     return synthetic_class.class_type
+
+
+def _specialize_class_type_with_defaults(
+    class_typ: type, ctx: CanAssignContext
+) -> TypedValue:
+    declared = ctx.make_type_object(class_typ).get_declared_type_params()
+    if declared and any(param.default is not None for param in declared):
+        return generic_value_from_type_param_defaults(class_typ, declared)
+    return TypedValue(class_typ)
 
 
 def _coerce_paramspec_generic_arg_for_relation(arg: Value, *, other: Value) -> Value:

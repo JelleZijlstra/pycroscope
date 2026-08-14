@@ -1475,6 +1475,23 @@ def typevar_map_from_type_param_defaults(
     return substitutions
 
 
+def generic_value_from_type_param_defaults(
+    typ: ClassKey, type_params: Sequence["TypeParam"]
+) -> "GenericValue":
+    substitutions = typevar_map_from_type_param_defaults(type_params)
+    args: list[Value] = []
+    for param in type_params:
+        arg = substitutions.get_value(param)
+        assert arg is not None
+        if isinstance(arg, TypeVarTupleBindingValue) and not any(
+            is_many for is_many, _ in arg.binding
+        ):
+            args.extend(typevartuple_binding_to_generic_args(arg.binding))
+        else:
+            args.append(arg)
+    return GenericValue(typ, args)
+
+
 def _split_variadic_type_arguments(
     type_params: Sequence["TypeParam"],
     type_arguments: Sequence[Value],
