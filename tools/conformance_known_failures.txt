@@ -5,8 +5,7 @@
 # Doesn't detect when you use a TypeVar in the wrong place
 generics_syntax_scoping
 
-# Various issues, defaults not correctly implemented
-generics_defaults
+# Bare generic class objects do not apply defaults
 generics_defaults_referential
 
 # Fails to reject "x" | int annotations that fail at runtime

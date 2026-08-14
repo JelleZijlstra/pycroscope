@@ -1475,31 +1475,64 @@ def typevar_map_from_type_param_defaults(
     return substitutions
 
 
-def _split_variadic_type_arguments(
+def _type_param_has_default(type_param: "TypeParam") -> bool:
+    return type_param.default is not None
+
+
+def _argument_matches_any_type_param(type_param: "TypeParam", argument: Value) -> bool:
+    return True
+
+
+def split_variadic_type_arguments(
     type_params: Sequence["TypeParam"],
     type_arguments: Sequence[Value],
     variadic_index: int,
+    *,
+    param_has_default: Callable[["TypeParam"], bool] | None = None,
+    argument_matches_type_param: Callable[["TypeParam", Value], bool] | None = None,
 ) -> tuple[int, int] | None:
+    if param_has_default is None:
+        param_has_default = _type_param_has_default
+    if argument_matches_type_param is None:
+        argument_matches_type_param = _argument_matches_any_type_param
     suffix_params = type_params[variadic_index + 1 :]
     prefix_explicit_count = min(variadic_index, len(type_arguments))
     while prefix_explicit_count >= 0:
         if any(
-            type_param.default is None
+            not param_has_default(type_param)
             for type_param in type_params[prefix_explicit_count:variadic_index]
         ):
             prefix_explicit_count -= 1
             continue
-        suffix_explicit_count = min(
-            len(suffix_params), len(type_arguments) - prefix_explicit_count
-        )
-        omitted_suffix_count = len(suffix_params) - suffix_explicit_count
-        if any(
-            type_param.default is None
-            for type_param in suffix_params[:omitted_suffix_count]
+        if not all(
+            argument_matches_type_param(type_param, argument)
+            for type_param, argument in zip(
+                type_params[:prefix_explicit_count],
+                type_arguments[:prefix_explicit_count],
+            )
         ):
             prefix_explicit_count -= 1
             continue
-        return prefix_explicit_count, suffix_explicit_count
+        maximum_suffix_explicit_count = min(
+            len(suffix_params), len(type_arguments) - prefix_explicit_count
+        )
+        for suffix_explicit_count in range(maximum_suffix_explicit_count, -1, -1):
+            omitted_suffix_count = len(suffix_params) - suffix_explicit_count
+            if any(
+                not param_has_default(type_param)
+                for type_param in suffix_params[:omitted_suffix_count]
+            ):
+                continue
+            if suffix_explicit_count and not all(
+                argument_matches_type_param(type_param, argument)
+                for type_param, argument in zip(
+                    suffix_params[omitted_suffix_count:],
+                    type_arguments[-suffix_explicit_count:],
+                )
+            ):
+                continue
+            return prefix_explicit_count, suffix_explicit_count
+        prefix_explicit_count -= 1
     return None
 
 
@@ -1508,6 +1541,7 @@ def match_typevar_arguments(
     type_arguments: Sequence[Value],
     *,
     type_arguments_are_packed: bool = False,
+    argument_matches_type_param: Callable[["TypeParam", Value], bool] | None = None,
 ) -> Sequence[tuple["TypeParam", Value]] | None:
     if type_arguments_are_packed:
         if len(type_params) != len(type_arguments):
@@ -1557,6 +1591,11 @@ def match_typevar_arguments(
         )
         if len(type_arguments) < minimum_required:
             return None
+        if argument_matches_type_param is not None and not all(
+            argument_matches_type_param(type_param, argument)
+            for type_param, argument in zip(type_params, type_arguments)
+        ):
+            return None
         for i, type_param in enumerate(type_params):
             argument = (
                 type_arguments[i]
@@ -1574,7 +1613,12 @@ def match_typevar_arguments(
     )
     if len(type_arguments) < minimum_required:
         return None
-    split = _split_variadic_type_arguments(type_params, type_arguments, variadic_index)
+    split = split_variadic_type_arguments(
+        type_params,
+        type_arguments,
+        variadic_index,
+        argument_matches_type_param=argument_matches_type_param,
+    )
     if split is None:
         return None
     prefix_explicit_count, suffix_explicit_count = split
@@ -1591,9 +1635,13 @@ def match_typevar_arguments(
                 else _default_argument(type_param)
             )
         elif i == variadic_index:
-            argument = TypeVarTupleBindingValue(
-                pack_typevartuple_binding(type_arguments[variadic_start:variadic_end])
-            )
+            variadic_arguments = type_arguments[variadic_start:variadic_end]
+            if not variadic_arguments and type_param.default is not None:
+                argument = _default_argument(type_param)
+            else:
+                argument = TypeVarTupleBindingValue(
+                    pack_typevartuple_binding(variadic_arguments)
+                )
         else:
             suffix_index = i - variadic_index - 1
             argument = (

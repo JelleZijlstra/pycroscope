@@ -1769,7 +1769,13 @@ def type_generic_args_from_members(
             for type_param, member in zip(type_params, members)
         ]
         members_are_typed = True
-    matched = match_typevar_arguments(type_params, members_for_matching)
+    matched = match_typevar_arguments(
+        type_params,
+        members_for_matching,
+        argument_matches_type_param=lambda type_param, argument: (
+            _argument_can_specialize_type_param(type_param, argument, ctx)
+        ),
+    )
     if matched is None:
         return [_type_from_value(member, ctx) for member in members]
     if members_are_typed:
@@ -1865,6 +1871,33 @@ def _normalize_paramspec_generic_arg_in_context(
     return AnyValue(AnySource.error)
 
 
+def _argument_can_specialize_type_param(
+    type_param: TypeParam, argument: Value, ctx: Context
+) -> bool:
+    if not isinstance(type_param, ParamSpecParam):
+        return True
+    if isinstance(argument, KnownValue):
+        argument = replace_known_sequence_value(argument)
+    if isinstance(argument, (InputSigValue, AnyValue)):
+        return True
+    if isinstance(argument, SequenceValue) and argument.typ in (list, tuple):
+        return True
+    if argument == KnownValue(Ellipsis):
+        return True
+    if (
+        isinstance(argument, PartialValue)
+        and argument.operation is PartialValueOperation.SUBSCRIPT
+        and isinstance(argument.root, KnownValue)
+        and is_typing_name(argument.root.val, "Concatenate")
+    ):
+        return True
+    if isinstance(argument, KnownValue) and is_typing_name(
+        get_origin(argument.val), "Concatenate"
+    ):
+        return True
+    return isinstance(make_type_param_from_value(argument, ctx=ctx), ParamSpecParam)
+
+
 def normalize_paramspec_generic_args_in_context(
     type_params: Sequence[TypeParam], args: Sequence[Value], ctx: Context
 ) -> list[Value]:
@@ -1940,11 +1973,25 @@ def _canonicalize_generic_args_for_value(args: Sequence[Value]) -> list[Value]:
 def _canonicalize_generic_args_for_type_params(
     type_params: Sequence[TypeParam], args: Sequence[Value], ctx: Context
 ) -> list[Value]:
-    normalized = normalize_paramspec_generic_args(type_params, args, ctx)
-    matched = match_typevar_arguments(type_params, normalized)
-    if matched is not None:
-        normalized = [argument for _, argument in matched]
-    return list(normalized)
+    matched = match_typevar_arguments(
+        type_params,
+        args,
+        argument_matches_type_param=lambda type_param, argument: (
+            _argument_can_specialize_type_param(type_param, argument, ctx)
+        ),
+    )
+    if matched is None:
+        return normalize_paramspec_generic_args(type_params, args, ctx)
+    return [
+        (
+            _normalize_paramspec_generic_arg_in_context(
+                argument, allow_flat_form=False, ctx=ctx
+            )
+            if isinstance(type_param, ParamSpecParam)
+            else argument
+        )
+        for type_param, argument in matched
+    ]
 
 
 def _normalize_generic_unpack_members(
