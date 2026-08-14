@@ -642,6 +642,21 @@ class TestTypeVar(TestNameCheckVisitorBase):
             "BadConstraintTypeVar", bool, complex, default=Base  # E: incompatible_call
         )
 
+    @skip_before((3, 11))
+    @assert_passes(run_in_both_module_modes=True)
+    def test_paramspec_default_must_be_parameter_list_ellipsis_or_paramspec(self):
+        from typing_extensions import ParamSpec, TypeVar
+
+        P = ParamSpec("P")
+        T = TypeVar("T")
+
+        ParamSpec("ListDefault", default=[str, int])
+        ParamSpec("EllipsisDefault", default=...)
+        ParamSpec("ParamSpecDefault", default=P)
+        ParamSpec("TypeDefault", default=int)  # E: incompatible_argument
+        ParamSpec("TupleDefault", default=(str, int))  # E: incompatible_argument
+        ParamSpec("TypeVarDefault", default=T)  # E: incompatible_argument
+
     @assert_passes()
     def test_typevar_default_is_not_used_as_fallback(self):
         from typing_extensions import TypeVar, assert_type
