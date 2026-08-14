@@ -1129,7 +1129,20 @@ def _type_param_default_from_value(
             error_code=ErrorCode.incompatible_argument,
             node=partial.node,
         )
+    elif has_invalid_typevar_default_kind(typed):
+        ctx.show_error(
+            "TypeVar default must be a type or TypeVar",
+            error_code=ErrorCode.incompatible_argument,
+            node=getattr(value, "node", partial.node),
+        )
+        return AnyValue(AnySource.error)
     return typed
+
+
+def has_invalid_typevar_default_kind(value: Value) -> bool:
+    return isinstance(
+        value, (InputSigValue, TypeVarTupleBindingValue, TypeVarTupleValue)
+    )
 
 
 def _value_contains_type_params(value: Value, ctx: Context) -> bool:

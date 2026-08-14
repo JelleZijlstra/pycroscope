@@ -643,6 +643,91 @@ class TestTypeVar(TestNameCheckVisitorBase):
         )
 
     @skip_before((3, 11))
+    def test_type_parameter_default_kinds(self):
+        self.assert_passes(
+            """
+            from typing_extensions import ParamSpec, TypeVar, TypeVarTuple, Unpack
+
+            P = ParamSpec("P")
+            Ts = TypeVarTuple("Ts")
+
+            TypeVar("FromParamSpec", default=P)  # E: incompatible_argument
+            TypeVar(  # E: incompatible_argument
+                "FromTypeVarTuple", default=Unpack[Ts]
+            )
+            """,
+            run_in_both_module_modes=True,
+        )
+
+    @skip_before((3, 11))
+    def test_referential_paramspec_default(self):
+        self.assert_passes(
+            """
+            from typing import Callable, Generic
+            from typing_extensions import ParamSpec, assert_type
+
+            P = ParamSpec("P")
+            Q = ParamSpec("Q", default=P)
+
+            class Callbacks(Generic[P, Q]):
+                first: Callable[P, None]
+                second: Callable[Q, None]
+
+            def check(value: Callbacks[[int]]) -> None:
+                assert_type(value.first, Callable[[int], None])
+                assert_type(value.second, Callable[[int], None])
+            """,
+            run_in_both_module_modes=True,
+        )
+
+    @skip_before((3, 14))
+    def test_pep696_paramspec_and_typevartuple_defaults(self):
+        self.assert_passes(
+            """
+            from typing import Callable
+            from typing_extensions import assert_type
+
+            class CallbackBox[**P = [str, int]]:
+                callback: Callable[P, None]
+
+            class TupleBox[*Ts = *tuple[Later, int]]:
+                elements: tuple[*Ts]
+
+            class NativeCallbacks[**P, **Q = P]:
+                first: Callable[P, None]
+                second: Callable[Q, None]
+
+            class Later: ...
+
+            def check(
+                callback: CallbackBox,
+                packed: TupleBox,
+                native: NativeCallbacks[[bytes]],
+            ) -> None:
+                assert_type(callback.callback, Callable[[str, int], None])
+                assert_type(packed.elements, tuple[Later, int])
+                assert_type(native.first, Callable[[bytes], None])
+                assert_type(native.second, Callable[[bytes], None])
+
+            class TypeVarFromParamSpec[**P, T = P]:  # E: invalid_annotation
+                ...
+
+            class ParamSpecFromTypeVar[T, **P = T]:  # E: invalid_annotation
+                ...
+
+            class TypeVarTupleFromTypeVar[T, *Ts = *T]:  # E: invalid_annotation
+                ...
+
+            class InvalidParamSpecDefault[**P = int]:  # E: invalid_annotation
+                ...
+
+            class InvalidTypeVarTupleDefault[*Ts = tuple[int]]:  # E: invalid_annotation
+                ...
+            """,
+            run_in_both_module_modes=True,
+        )
+
+    @skip_before((3, 11))
     @assert_passes(run_in_both_module_modes=True)
     def test_paramspec_default_must_be_parameter_list_ellipsis_or_paramspec(self):
         from typing_extensions import ParamSpec, TypeVar
