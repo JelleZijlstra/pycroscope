@@ -79,7 +79,6 @@ from .annotations import (
     annotation_expr_from_runtime,
     annotation_expr_from_value,
     has_invalid_paramspec_usage,
-    has_invalid_typevar_default_kind,
     is_context_manager_type,
     is_instance_of_typing_name,
     is_typevarlike,
@@ -92,6 +91,9 @@ from .annotations import (
     type_generic_args_from_members,
     value_from_ast,
 )
+
+if sys.version_info >= (3, 12):
+    from .annotations import has_invalid_typevar_default_kind
 from .arg_spec import ArgSpecCache, IgnoredCallees, UnwrapClass, is_dot_asynq_function
 from .asynq_checker import AsynqChecker
 from .boolability import Boolability, get_boolability
