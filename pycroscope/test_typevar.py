@@ -634,12 +634,108 @@ class TestTypeVar(TestNameCheckVisitorBase):
         from typing_extensions import TypeVar
 
         TypeVar("GoodBound", bound=float, default=int)
-        TypeVar("BadBound", bound=str, default=int)  # E: incompatible_call
-        TypeVar("BadConstraint", float, str, default=int)  # E: incompatible_call
+        TypeVar("BadBound", bound=str, default=int)  # E: invalid_type_parameter_default
+        TypeVar(
+            "BadConstraint",
+            float,
+            str,
+            default=int,  # E: invalid_type_parameter_default
+        )
         Base = TypeVar("Base", int, str)
         TypeVar("GoodConstraint", int, str, bool, default=Base)
         TypeVar(
-            "BadConstraintTypeVar", bool, complex, default=Base  # E: incompatible_call
+            "BadConstraintTypeVar",
+            bool,
+            complex,
+            default=Base,  # E: invalid_type_parameter_default
+        )
+
+    @skip_before((3, 11))
+    def test_type_parameter_default_kinds(self):
+        self.assert_passes(
+            """
+            from typing_extensions import ParamSpec, TypeVar, TypeVarTuple, Unpack
+
+            P = ParamSpec("P")
+            Ts = TypeVarTuple("Ts")
+
+            TypeVar("FromParamSpec", default=P)  # E: invalid_type_parameter_default
+            TypeVar(  # E: invalid_type_parameter_default
+                "FromTypeVarTuple", default=Unpack[Ts]
+            )
+            """,
+            run_in_both_module_modes=True,
+        )
+
+    @skip_before((3, 11))
+    def test_referential_paramspec_default(self):
+        self.assert_passes(
+            """
+            from typing import Callable, Generic
+            from typing_extensions import ParamSpec, assert_type
+
+            P = ParamSpec("P")
+            Q = ParamSpec("Q", default=P)
+
+            class Callbacks(Generic[P, Q]):
+                first: Callable[P, None]
+                second: Callable[Q, None]
+
+            def check(value: Callbacks[[int]]) -> None:
+                assert_type(value.first, Callable[[int], None])
+                assert_type(value.second, Callable[[int], None])
+            """,
+            run_in_both_module_modes=True,
+        )
+
+    @skip_before((3, 14))
+    def test_pep696_paramspec_and_typevartuple_defaults(self):
+        self.assert_passes(
+            """
+            from typing import Callable
+            from typing_extensions import assert_type
+
+            class CallbackBox[**P = [str, int]]:
+                callback: Callable[P, None]
+
+            class TupleBox[*Ts = *tuple[Later, int]]:
+                elements: tuple[*Ts]
+
+            class NativeCallbacks[**P, **Q = P]:
+                first: Callable[P, None]
+                second: Callable[Q, None]
+
+            class Later: ...
+
+            def check(
+                callback: CallbackBox,
+                packed: TupleBox,
+                native: NativeCallbacks[[bytes]],
+            ) -> None:
+                assert_type(callback.callback, Callable[[str, int], None])
+                assert_type(packed.elements, tuple[Later, int])
+                assert_type(native.first, Callable[[bytes], None])
+                assert_type(native.second, Callable[[bytes], None])
+
+            class TypeVarFromParamSpec[**P, T = P]:  # E: invalid_type_parameter_default
+                ...
+
+            class ParamSpecFromTypeVar[T, **P = T]:  # E: invalid_type_parameter_default
+                ...
+
+            class TypeVarTupleFromTypeVar[T, *Ts = *T]:  # E: invalid_type_parameter_default
+                ...
+
+            class InvalidParamSpecDefault[**P = int]:  # E: invalid_type_parameter_default
+                ...
+
+            class InvalidTypeVarTupleDefault[*Ts = tuple[int]]:  # E: invalid_type_parameter_default
+                ...
+
+            class InvalidTypeVarDefault[T = 42]:  # E: invalid_type_parameter_default
+                ...
+            """,
+            run_in_both_module_modes=True,
         )
 
     @skip_before((3, 11))
@@ -653,9 +749,11 @@ class TestTypeVar(TestNameCheckVisitorBase):
         ParamSpec("ListDefault", default=[str, int])
         ParamSpec("EllipsisDefault", default=...)
         ParamSpec("ParamSpecDefault", default=P)
-        ParamSpec("TypeDefault", default=int)  # E: incompatible_argument
-        ParamSpec("TupleDefault", default=(str, int))  # E: incompatible_argument
-        ParamSpec("TypeVarDefault", default=T)  # E: incompatible_argument
+        ParamSpec("TypeDefault", default=int)  # E: invalid_type_parameter_default
+        ParamSpec(
+            "TupleDefault", default=(str, int)  # E: invalid_type_parameter_default
+        )
+        ParamSpec("TypeVarDefault", default=T)  # E: invalid_type_parameter_default
 
     @assert_passes()
     def test_typevar_default_is_not_used_as_fallback(self):
@@ -803,7 +901,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
         DefaultAfterVariadic = TypeVar("DefaultAfterVariadic", default=bool)
         P = ParamSpec("P", default=[str])
 
-        class BadOrder(Generic[DefaultT, T]): ...  # E: invalid_type_parameter
+        class BadOrder(Generic[DefaultT, T]): ...  # E: invalid_type_parameter_default
 
         class GoodAfterVariadic(Generic[Unpack[Ts], P]): ...
 
@@ -817,7 +915,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
         Ts = TypeVarTuple("Ts")
         DefaultAfterVariadic = TypeVar("DefaultAfterVariadic", default=bool)
 
-        class BadAfterVariadic(  # E: invalid_type_parameter
+        class BadAfterVariadic(  # E: invalid_type_parameter_default
             Generic[Unpack[Ts], DefaultAfterVariadic]
         ): ...
 
@@ -831,7 +929,9 @@ class TestTypeVar(TestNameCheckVisitorBase):
         LaterT = TypeVar("LaterT")
         EarlierDefaultT = TypeVar("EarlierDefaultT", default=list[LaterT])
 
-        class Bad(Generic[EarlierDefaultT, LaterT]): ...  # E: invalid_type_parameter
+        class Bad(  # E: invalid_type_parameter_default
+            Generic[EarlierDefaultT, LaterT]
+        ): ...
 
     @skip_before((3, 13))
     def test_pep696_class_type_param_defaults_cannot_reference_later_params(self):
@@ -840,7 +940,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
             class Good[T, U = tuple[T]]:
                 ...
 
-            class Bad[T = tuple[U], U]:  # E: undefined_name  # E: invalid_type_parameter
+            class Bad[T = tuple[U], U]:  # E: undefined_name  # E: invalid_type_parameter_default
                 ...
         """,
             allow_import_failures=True,
@@ -1487,7 +1587,7 @@ class TestGenericClasses(TestNameCheckVisitorBase):
             T = TypeVar("T", default=tuple[U])
 
             def capybara() -> None:
-                class Bad(Generic[T, U]):  # E: invalid_type_parameter
+                class Bad(Generic[T, U]):  # E: invalid_type_parameter_default
                     ...
         """,
             run_in_both_module_modes=True,
@@ -1499,20 +1599,20 @@ class TestGenericClasses(TestNameCheckVisitorBase):
             class GoodBound[T: float = int]:
                 ...
 
-            class BadBound[T: str = int]:  # E: invalid_annotation
+            class BadBound[T: str = int]:  # E: invalid_type_parameter_default
                 ...
 
             class GoodConstraint[T: (int, str) = int]:
                 ...
 
-            class BadConstraint[T: (float, str) = int]:  # E: invalid_annotation
+            class BadConstraint[T: (float, str) = int]:  # E: invalid_type_parameter_default
                 ...
 
             class GoodConstraintTypeVar[Base: (int, str), T: (int, str, bool) = Base]:
                 ...
 
             class BadConstraintTypeVar[
-                # E: invalid_annotation
+                # E: invalid_type_parameter_default
                 Base: (int, str), T: (bool, complex) = Base
             ]:
                 ...
@@ -1524,7 +1624,8 @@ class TestGenericClasses(TestNameCheckVisitorBase):
             class AcceptsBoundTypeVar[Base: int, T: (int, str) = Base]:
                 ...
 
-            class RejectsBoundTypeVar[Base: bytes, T: (int, str) = Base]:  # E: invalid_annotation
+            # E: invalid_type_parameter_default
+            class RejectsBoundTypeVar[Base: bytes, T: (int, str) = Base]:
                 ...
         """)
 
@@ -1541,14 +1642,20 @@ class TestGenericClasses(TestNameCheckVisitorBase):
             "LiteralBad",
             Literal[1],
             Literal[2],
-            default=Literal[3],  # E: incompatible_call
+            default=Literal[3],  # E: invalid_type_parameter_default
         )
         BoundInt = TypeVar("BoundInt", bound=int)
         BoundDefaultOk = TypeVar(
-            "BoundDefaultOk", int, str, default=BoundInt  # E: incompatible_call
+            "BoundDefaultOk",
+            int,
+            str,
+            default=BoundInt,  # E: invalid_type_parameter_default
         )
         BoundDefaultBad = TypeVar(
-            "BoundDefaultBad", str, bytes, default=BoundInt  # E: incompatible_call
+            "BoundDefaultBad",
+            str,
+            bytes,
+            default=BoundInt,  # E: invalid_type_parameter_default
         )
 
         print(LiteralOk, LiteralBad, BoundDefaultOk, BoundDefaultBad)
@@ -2113,6 +2220,6 @@ class TestIntegration(TestNameCheckVisitorBase):
         from typing_extensions import TypeVar
 
         T = TypeVar("T")
-        U = TypeVar("U", default=42)  # E: incompatible_argument
-        V = TypeVar("V", bound=int, default=str)  # E: incompatible_call
-        W = TypeVar("W", int, str, default=bool)  # E: incompatible_call
+        U = TypeVar("U", default=42)  # E: invalid_type_parameter_default
+        V = TypeVar("V", bound=int, default=str)  # E: invalid_type_parameter_default
+        W = TypeVar("W", int, str, default=bool)  # E: invalid_type_parameter_default

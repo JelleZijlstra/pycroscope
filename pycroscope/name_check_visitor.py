@@ -91,6 +91,9 @@ from .annotations import (
     type_generic_args_from_members,
     value_from_ast,
 )
+
+if sys.version_info >= (3, 12):
+    from .annotations import has_invalid_typevar_default_kind
 from .arg_spec import ArgSpecCache, IgnoredCallees, UnwrapClass, is_dot_asynq_function
 from .asynq_checker import AsynqChecker
 from .boolability import Boolability, get_boolability
@@ -5735,21 +5738,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         node,
                         "Type parameter defaults can reference only earlier type"
                         " parameters from the same class",
-                        error_code=ErrorCode.invalid_type_parameter,
+                        error_code=ErrorCode.invalid_type_parameter_default,
                     )
                     return
             if seen_default and not has_default:
                 self._show_error_if_checking(
                     node,
                     "non-default TypeVars cannot follow ones with defaults",
-                    error_code=ErrorCode.invalid_type_parameter,
+                    error_code=ErrorCode.invalid_type_parameter_default,
                 )
                 return
             if previous_was_typevartuple and has_default and is_typevar:
                 self._show_error_if_checking(
                     node,
                     "TypeVars with defaults cannot follow TypeVarTuples",
-                    error_code=ErrorCode.invalid_type_parameter,
+                    error_code=ErrorCode.invalid_type_parameter_default,
                 )
                 return
             seen_default = seen_default or has_default
@@ -12878,7 +12881,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             resolved, _ = self.resolve_name(root, error_node=root, suppress_errors=True)
             return isinstance(resolved, AnyValue) and resolved.source is AnySource.error
 
-        def _type_from_pep695_type_param_expr(self, node: ast.expr) -> Value:
+        def _type_from_pep695_type_param_expr(
+            self, node: ast.expr, *, suppress_errors: bool = False
+        ) -> Value:
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 return type_from_value(
                     KnownValue(node.value), self, node, suppress_errors=True
@@ -12887,7 +12892,67 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return type_from_value(
                     KnownValue(ast.unparse(node)), self, node, suppress_errors=True
                 )
-            return type_from_value(self.visit(node), self, node)
+            return type_from_value(
+                self.visit(node), self, node, suppress_errors=suppress_errors
+            )
+
+        def _paramspec_default_from_pep695_expr(self, node: ast.expr) -> Value:
+            if isinstance(node, ast.Constant) and node.value is Ellipsis:
+                return KnownValue(Ellipsis)
+            if isinstance(node, ast.List):
+                members: list[tuple[bool, Value]] = []
+                for member_node in node.elts:
+                    member = self._type_from_pep695_type_param_expr(
+                        member_node, suppress_errors=True
+                    )
+                    if (
+                        isinstance(member, AnyValue)
+                        and member.source is AnySource.error
+                    ) or has_invalid_typevar_default_kind(member):
+                        self._show_error_if_checking(
+                            member_node,
+                            "Invalid type in ParamSpec default",
+                            error_code=ErrorCode.invalid_type_parameter_default,
+                        )
+                        member = AnyValue(AnySource.error)
+                    members.append((False, member))
+                return SequenceValue(list, members)
+            default = self._type_from_pep695_type_param_expr(node, suppress_errors=True)
+            if isinstance(default, InputSigValue) and isinstance(
+                default.input_sig, ParamSpecParam
+            ):
+                return default
+            self._show_error_if_checking(
+                node,
+                "ParamSpec default must be a list of types, ellipsis, or ParamSpec",
+                error_code=ErrorCode.invalid_type_parameter_default,
+            )
+            return AnyValue(AnySource.error)
+
+        def _typevartuple_default_from_pep695_expr(self, node: ast.expr) -> Value:
+            if not isinstance(node, ast.Starred):
+                self._show_error_if_checking(
+                    node,
+                    "TypeVarTuple default must be an unpacked tuple or TypeVarTuple",
+                    error_code=ErrorCode.invalid_type_parameter_default,
+                )
+                return AnyValue(AnySource.error)
+            unpacked = self._type_from_pep695_type_param_expr(
+                node.value, suppress_errors=True
+            )
+            members = (
+                None
+                if isinstance(unpacked, AnyValue) and unpacked.source is AnySource.error
+                else get_typevartuple_members(unpacked)
+            )
+            if members is None:
+                self._show_error_if_checking(
+                    node,
+                    "TypeVarTuple default must be an unpacked tuple or TypeVarTuple",
+                    error_code=ErrorCode.invalid_type_parameter_default,
+                )
+                return AnyValue(AnySource.error)
+            return TypeVarTupleBindingValue(tuple(members))
 
         def _pep695_type_param_expr_contains_type_param(self, node: ast.AST) -> bool:
             for subnode, _ in _iter_loaded_name_nodes(node):
@@ -13045,7 +13110,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         )
             if sys.version_info >= (3, 13):
                 if node.default_value is not None:
-                    default = self._type_from_pep695_type_param_expr(node.default_value)
+                    default = self._type_from_pep695_type_param_expr(
+                        node.default_value, suppress_errors=True
+                    )
+                    if (
+                        isinstance(default, AnyValue)
+                        and default.source is AnySource.error
+                    ) or has_invalid_typevar_default_kind(default):
+                        self._show_error_if_checking(
+                            node.default_value,
+                            "TypeVar default must be a type or TypeVar",
+                            error_code=ErrorCode.invalid_type_parameter_default,
+                        )
+                        default = AnyValue(AnySource.error)
             maybe_runtime_typevar = self._get_runtime_type_param_for_current_scope(
                 node.name, expected_kind="TypeVar"
             )
@@ -13069,6 +13146,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         def visit_ParamSpec(self, node: ast.ParamSpec) -> Value:
             owner = self.active_type_params.current_owner()
+            default = None
+            if sys.version_info >= (3, 13) and node.default_value is not None:
+                default = self._paramspec_default_from_pep695_expr(node.default_value)
             maybe_runtime_param_spec = self._get_runtime_type_param_for_current_scope(
                 node.name, expected_kind="ParamSpec"
             )
@@ -13077,13 +13157,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             else:
                 ps = typing.cast(Any, maybe_runtime_param_spec)
             typevar = InputSigValue(
-                ParamSpecParam(ps, owner=owner, variance=Variance.INFERRED)
+                ParamSpecParam(
+                    ps, owner=owner, default=default, variance=Variance.INFERRED
+                )
             )
             self._set_name_in_scope(node.name, node, typevar)
             return typevar
 
         def visit_TypeVarTuple(self, node: ast.TypeVarTuple) -> Value:
             owner = self.active_type_params.current_owner()
+            default = None
+            if sys.version_info >= (3, 13) and node.default_value is not None:
+                default = self._typevartuple_default_from_pep695_expr(
+                    node.default_value
+                )
             maybe_runtime_typevar_tuple = (
                 self._get_runtime_type_param_for_current_scope(
                     node.name, expected_kind="TypeVarTuple"
@@ -13094,7 +13181,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             else:
                 tv = typing.cast(Any, maybe_runtime_typevar_tuple)
             typevar = TypeVarTupleValue(
-                TypeVarTupleParam(tv, owner=owner, variance=Variance.INFERRED)
+                TypeVarTupleParam(
+                    tv, owner=owner, default=default, variance=Variance.INFERRED
+                )
             )
             self._set_name_in_scope(node.name, node, typevar)
             return typevar
@@ -15279,7 +15368,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_error_if_checking(
                     node,
                     "the bound and default are incompatible",
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_type_parameter_default,
                 )
                 return
         if typevar.typevar_param.constraints:
@@ -15340,7 +15429,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._show_error_if_checking(
                 node,
                 "TypeVar default must be one of its constraints",
-                error_code=ErrorCode.invalid_annotation,
+                error_code=ErrorCode.invalid_type_parameter_default,
             )
 
     def get_call_result(
