@@ -1407,6 +1407,10 @@ def make_type_param(
         default = _type_param_component_from_runtime(runtime_default, ctx)
     else:
         default = None
+    if is_instance_of_typing_name(tv, "TypeVarTuple"):
+        return TypeVarTupleParam(
+            tv, owner=owner, default=default, variance=get_type_param_variance(tv)
+        )
     if isinstance(tv, (TypeVar, typing_extensions.TypeVar)):
         if getattr(tv, "__bound__", None) is not None:
             bound = _type_from_runtime(tv.__bound__, ctx)
@@ -1428,10 +1432,6 @@ def make_type_param(
         )
     if is_instance_of_typing_name(tv, "ParamSpec"):
         return ParamSpecParam(
-            tv, owner=owner, default=default, variance=get_type_param_variance(tv)
-        )
-    if is_instance_of_typing_name(tv, "TypeVarTuple"):
-        return TypeVarTupleParam(
             tv, owner=owner, default=default, variance=get_type_param_variance(tv)
         )
     raise TypeError(f"Unsupported type parameter: {tv!r}")
