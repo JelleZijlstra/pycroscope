@@ -3786,7 +3786,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_error_if_checking(
                     disjoint_base_decorators[0],
                     f"disjoint_base cannot be applied to a {target_kind}",
-                    error_code=ErrorCode.invalid_base,
+                    error_code=ErrorCode.invalid_disjoint_base,
                 )
             effective_type_param_values = (
                 type_param_values
@@ -7182,15 +7182,29 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     node, error_code=ErrorCode.missing_return_annotation
                 )
 
-            info_for_computed_value = info
-            if FunctionDecorator.overload in info.decorator_kinds:
-                decorators = [
-                    decorator
-                    for decorator in info.decorators
-                    if not self._is_overload_decorator(decorator[0])
-                ]
-                if len(decorators) != len(info.decorators):
-                    info_for_computed_value = replace(info, decorators=decorators)
+            disjoint_base_decorators = [
+                decorator
+                for value, _, decorator in info.decorators
+                if self._is_disjoint_base_decorator_value(value)
+            ]
+            if disjoint_base_decorators:
+                self._show_error_if_checking(
+                    disjoint_base_decorators[0],
+                    "disjoint_base cannot be applied to a function",
+                    error_code=ErrorCode.invalid_disjoint_base,
+                )
+
+            decorators = [
+                decorator
+                for decorator in info.decorators
+                if not self._is_overload_decorator(decorator[0])
+                and not self._is_disjoint_base_decorator_value(decorator[0])
+            ]
+            info_for_computed_value = (
+                replace(info, decorators=decorators)
+                if len(decorators) != len(info.decorators)
+                else info
+            )
             computed_function = compute_value_of_function(info_for_computed_value, self)
             static_overload_signature: OverloadedSignature | None = None
             overload_dataclass_transform_info: DataclassTransformInfo | None = None

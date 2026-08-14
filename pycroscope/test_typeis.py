@@ -654,13 +654,17 @@ class TestTypeIs(TestNameCheckVisitorBase):
             class IncompatibleSlots(SlotBase1, SlotBase2):  # E: invalid_base
                 pass
 
-            @disjoint_base  # E: invalid_base
+            @disjoint_base  # E: invalid_disjoint_base
             class Movie(TypedDict):
                 name: str
 
-            @disjoint_base  # E: invalid_base
+            @disjoint_base  # E: invalid_disjoint_base
             class SupportsClose(Protocol):
                 def close(self) -> None: ...
+
+            @disjoint_base  # E: invalid_disjoint_base
+            def func() -> None:
+                pass
 
     @assert_passes()
     def testTypeIsComprehensionSubtype(self):

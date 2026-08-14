@@ -141,6 +141,7 @@ ErrorCode = ErrorRegistry(
         Error("invalid_overload", "Invalid overload definition"),
         Error("invalid_type_alias", "Invalid type alias definition"),
         Error("invalid_protocol", "Invalid Protocol definition"),
+        Error("invalid_disjoint_base", "Invalid use of @disjoint_base"),
         Error("invalid_type_parameter", "Invalid type parameter declaration"),
         Error("invalid_dataclass", "Invalid dataclass definition"),
         Error(
