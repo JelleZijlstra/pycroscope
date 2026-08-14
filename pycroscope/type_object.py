@@ -120,6 +120,7 @@ from .value import (
     substitute_typevartuple_binding,
     tuple_members_from_value,
     type_param_to_value,
+    typevar_map_from_type_param_defaults,
     typevar_map_from_varlike_pairs,
     typevartuple_binding_to_generic_args,
     typevartuple_binding_to_tuple_value,
@@ -3365,12 +3366,7 @@ def _get_tv_map_for_mro(
                 )
             return substituted
         else:
-            substitutions = TypeVarMap()
-            for param in params:
-                substitutions = substitutions.with_value(
-                    param, AnyValue(AnySource.generic_argument)
-                )
-            return substitutions
+            return typevar_map_from_type_param_defaults(params)
     else:
         return TypeVarMap()
 
@@ -3414,12 +3410,7 @@ def _match_up_generic_params(
     returning a mapping of type variables to values."""
     seq = match_typevar_arguments(type_params, generic_args)
     if seq is None:
-        substitutions = TypeVarMap()
-        for param in type_params:
-            substitutions = substitutions.with_value(
-                param, default_value_for_type_param(param)
-            )
-        return substitutions
+        return typevar_map_from_type_param_defaults(type_params)
     return typevar_map_from_varlike_pairs(seq)
 
 
