@@ -680,20 +680,28 @@ class TestTypeVar(TestNameCheckVisitorBase):
         from typing_extensions import ParamSpec, TypeVarTuple, Unpack, assert_type
 
         Ts = TypeVarTuple("Ts")
+        DefaultTs = TypeVarTuple("DefaultTs", default=Unpack[tuple[int, str]])
         P = ParamSpec("P", default=[float, bool])
 
         class WithVariadics(Generic[Unpack[Ts], P]):
             elements: tuple[Unpack[Ts]]
             callback: Callable[P, None]
 
+        class WithVariadicDefaults(Generic[Unpack[DefaultTs], P]):
+            elements: tuple[Unpack[DefaultTs]]
+            callback: Callable[P, None]
+
         def check(
             defaulted: WithVariadics[int, str],
             explicit: WithVariadics[int, str, [bytes]],
+            defaulted_pack: WithVariadicDefaults[[bytes]],
         ) -> None:
             assert_type(defaulted.elements, tuple[int, str])
             assert_type(defaulted.callback, Callable[[float, bool], None])
             assert_type(explicit.elements, tuple[int, str])
             assert_type(explicit.callback, Callable[[bytes], None])
+            assert_type(defaulted_pack.elements, tuple[int, str])
+            assert_type(defaulted_pack.callback, Callable[[bytes], None])
 
     @skip_before((3, 11))
     def test_typevartuple_unpack_assignability(self):

@@ -49,7 +49,6 @@ from .value import (
     Value,
     class_owner_from_key,
     concrete_values_from_iterable,
-    match_typevar_arguments,
     unite_and_simplify,
     unpack_values,
 )
@@ -298,16 +297,6 @@ def test_typevarmap_preserves_open_typevartuple_bindings() -> None:
     assert tv_map.get_value(param) == TypeVarTupleBindingValue(
         ((True, TypedValue(str)),)
     )
-
-
-def test_match_typevartuple_uses_default_when_omitted() -> None:
-    Ts = TypeVarTuple("Ts")
-    default = TypeVarTupleBindingValue(
-        ((False, TypedValue(str)), (False, TypedValue(int)))
-    )
-    param = TypeVarTupleParam(Ts, owner=None, default=default)
-
-    assert match_typevar_arguments([param], []) == [(param, default)]
 
 
 def test_get_generic_args_for_type_with_super() -> None:
