@@ -3644,6 +3644,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._check_duplicate_type_params_in_generic_bases(node, base_values)
                 self._check_inconsistent_generic_base_specialization(node, base_values)
                 self._check_protocol_base_validity(node, base_values)
+                self._check_protocol_generic_base_combination(node, base_values)
                 # TODO: clean up this extra AST walk
                 for base_node in node.bases:
                     parsed_base_value = value_from_ast(
@@ -6297,6 +6298,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 "Protocols can only inherit from protocol bases",
                 error_code=ErrorCode.invalid_base,
             )
+
+    def _check_protocol_generic_base_combination(
+        self, node: ast.ClassDef, base_values: Sequence[Value]
+    ) -> None:
+        analyzed_bases = self._base_values_for_generic_analysis(node, base_values)
+        has_protocol_shorthand = any(
+            self._is_protocol_type_parameter_base(base_value)
+            and self._type_parameter_base_has_runtime_args(base_value)
+            for base_value in analyzed_bases
+        )
+        if not has_protocol_shorthand or not any(
+            self._is_generic_type_parameter_base(base_value)
+            for base_value in analyzed_bases
+        ):
+            return
+        self._show_error_if_checking(
+            node,
+            "Protocol type parameter shorthand cannot be combined with Generic",
+            error_code=ErrorCode.invalid_base,
+        )
 
     def _is_valid_non_protocol_base_for_protocol(self, base_value: Value) -> bool:
         for candidate, _ in self._iter_type_parameter_base_candidates(base_value):
