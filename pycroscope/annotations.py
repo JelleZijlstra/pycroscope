@@ -1739,9 +1739,21 @@ def type_generic_args_from_members(
             _type_from_value_type_alias_arg(member, type_param, ctx)
             for type_param, member in zip(type_params, members)
         ]
-    matched = match_typevar_arguments(type_params, members)
+    members_for_matching = members
+    members_are_typed = False
+    if len(members) < len(type_params) and not any(
+        isinstance(type_param, TypeVarTupleParam) for type_param in type_params
+    ):
+        members_for_matching = [
+            _type_from_value_type_alias_arg(member, type_param, ctx)
+            for type_param, member in zip(type_params, members)
+        ]
+        members_are_typed = True
+    matched = match_typevar_arguments(type_params, members_for_matching)
     if matched is None:
         return [_type_from_value(member, ctx) for member in members]
+    if members_are_typed:
+        return [argument for _, argument in matched]
     typed_members: list[Value] = []
     for type_param, argument in matched:
         if isinstance(type_param, TypeVarTupleParam):

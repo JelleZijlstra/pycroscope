@@ -866,6 +866,26 @@ class TestTypeVar(TestNameCheckVisitorBase):
         value: Baz[int, str] = Spam()
         assert_type(value, Baz[int, str])
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_dependent_generic_default_specialization(self):
+        from typing import Generic
+
+        from typing_extensions import TypeVar, assert_type
+
+        T = TypeVar("T")
+        DefaultListT = TypeVar("DefaultListT", default=list[T])
+
+        class Box(Generic[T, DefaultListT]):
+            value: DefaultListT
+
+            def __init__(self, value: DefaultListT) -> None:
+                self.value = value
+
+        def capybara(box: Box[int]) -> None:
+            assert_type(box.value, list[int])
+
+        assert_type(Box[int]([]), Box[int, list[int]])
+
 
 class TestSolve(TestNameCheckVisitorBase):
     @assert_passes()
