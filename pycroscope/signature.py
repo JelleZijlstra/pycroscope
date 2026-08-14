@@ -14,7 +14,7 @@ import itertools
 import warnings
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
-from types import FunctionType, MethodDescriptorType, MethodType
+from types import FunctionType, MethodDescriptorType, MethodType, WrapperDescriptorType
 from typing import Any, ClassVar, NamedTuple, TypeVar, get_args, get_origin
 
 from typing_extensions import Self, Sentinel, assert_never
@@ -1175,7 +1175,9 @@ class Signature:
         return None
 
     def _is_method_like_typeguard_callable(self) -> bool:
-        if isinstance(self.callable, (MethodType, MethodDescriptorType)):
+        if isinstance(
+            self.callable, (MethodType, MethodDescriptorType, WrapperDescriptorType)
+        ):
             return True
         if not isinstance(self.callable, FunctionType):
             return False
