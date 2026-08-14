@@ -2175,6 +2175,21 @@ class TestTypeParameterConstructs(TestNameCheckVisitorBase):
             )
             print(BadTypeVarTuple)
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_typevartuple_impl_validates_default(self):
+        from typing_extensions import TypeVarTuple, Unpack
+
+        DefaultTs = TypeVarTuple("DefaultTs", default=Unpack[tuple[str, int]])
+        AnotherDefaultTs = TypeVarTuple("AnotherDefaultTs", default=Unpack[DefaultTs])
+        BadTuple = TypeVarTuple(
+            "BadTuple", default=tuple[str, int]  # E: incompatible_argument
+        )
+        BadType = TypeVarTuple("BadType", default=int)  # E: incompatible_argument
+        BadUnpack = TypeVarTuple(
+            "BadUnpack", default=Unpack[list[int]]  # E: incompatible_argument
+        )
+        print(DefaultTs, AnotherDefaultTs, BadTuple, BadType, BadUnpack)
+
 
 @skip_if(not hasattr(typing_extensions, "Sentinel"))
 class TestSentinelImplementation(TestNameCheckVisitorBase):

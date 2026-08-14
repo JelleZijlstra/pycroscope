@@ -4056,7 +4056,7 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
             tvt_params = [name_param]
             if sys.version_info >= (3, 12) or mod is typing_extensions:
                 tvt_params.append(
-                    replace(default_param, annotation=TypeFormValue(TypedValue(object)))
+                    replace(default_param, annotation=AnyValue(AnySource.explicit))
                 )
             if sys.version_info >= (3, 15) or mod is typing_extensions:
                 tvt_params.append(
