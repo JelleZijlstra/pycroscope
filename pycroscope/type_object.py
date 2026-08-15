@@ -1522,6 +1522,17 @@ class TypeObject:
             return attr
 
         declared_selected = self._select_declared_attribute(name, anchor=policy.anchor)
+        if (
+            policy.on_class
+            and self.is_protocol()
+            and any(
+                selected is not None and selected.symbol.is_readonly
+                for selected in declared_selected
+            )
+        ):
+            # PEP 767 does not specify a type for a read-only protocol member
+            # accessed through the protocol class, even if it exists at runtime.
+            declared_selected = (None, None)
         if policy.on_class:
             # Look for metaclass attributes
             metaclass_selected = self._select_metaclass_attribute(name)

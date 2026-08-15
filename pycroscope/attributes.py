@@ -666,6 +666,14 @@ def _get_attribute_from_known_inner(
         on_class = False
     policy = ctx.get_type_object_attribute_policy(on_class=on_class, receiver=value)
     type_object_attr = tobj.get_attribute(ctx.attr, policy)
+    if on_class and tobj.is_protocol() and type_object_attr is None:
+        protocol_symbol = tobj.get_declared_symbol_from_mro(
+            ctx.attr, ctx.get_can_assign_context()
+        )
+        if protocol_symbol is not None and protocol_symbol.is_readonly:
+            # PEP 767 deliberately leaves class access to read-only protocol
+            # members unspecified, even when a runtime value exists.
+            return _missing_attribute_result(value, ctx, _ca_error(value, ctx))
 
     # Even if there's no runtime attribute, we believe the annotation if there is one.
     if runtime_value is None:

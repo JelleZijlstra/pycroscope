@@ -35,7 +35,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from dataclasses import replace as dataclass_replace
-from functools import partial
+from functools import cached_property, partial
 from itertools import chain
 from pathlib import Path
 from types import GenericAlias
@@ -1858,6 +1858,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     current_enum_members: _EnumMemberTracker | None
     current_function: object | None
     current_function_info: FunctionInfo | None
+    current_function_is_direct_method: bool
     current_function_name: str | None
     current_namedtuple_info: _CurrentNamedTupleInfo | None
     current_synthetic_typeddict: _SyntheticTypedDictContext | None
@@ -1937,6 +1938,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.current_synthetic_typeddict = None
         self.current_function_name = None
         self.current_function_info = None
+        self.current_function_is_direct_method = False
 
         # async
         self.async_kind = AsyncFunctionKind.non_async
@@ -2529,6 +2531,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         ),
                     )
                 return existing, EMPTY_ORIGIN
+        synthetic_symbol_recorded = False
+        if (
+            scope_type == ScopeType.class_scope
+            and value is not None
+            and record_synthetic_symbol
+        ):
+            resolved_synthetic_initializer = (
+                value if synthetic_initializer is _UNSET else synthetic_initializer
+            )
+            self._set_synthetic_class_attribute(
+                varname,
+                initializer=resolved_synthetic_initializer,
+                node=node,
+                force_nonmember=(
+                    isinstance(self.current_statement, ast.AnnAssign)
+                    and self.current_statement.value is None
+                    and self.current_class_key is not None
+                    and self._is_enum_class_key(self.current_class_key)
+                ),
+            )
+            synthetic_symbol_recorded = True
         if scope_type == ScopeType.class_scope:
             if value is not None and check_incompatible_override:
                 self._check_for_incompatible_overrides(varname, node, value)
@@ -2536,7 +2559,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if value is None:
             return AnyValue(AnySource.inference), EMPTY_ORIGIN
         origin = current_scope.set(varname, value, lookup_node, self.state)
-        if scope_type == ScopeType.class_scope and record_synthetic_symbol:
+        if (
+            scope_type == ScopeType.class_scope
+            and record_synthetic_symbol
+            and not synthetic_symbol_recorded
+        ):
             resolved_synthetic_initializer = (
                 value if synthetic_initializer is _UNSET else synthetic_initializer
             )
@@ -2695,7 +2722,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 continue
             existing = synthetic_type.get_declared_symbol(method_name)
-            if existing is not None and existing.is_property:
+            if existing is not None and not existing.is_method:
                 continue
             initializer = self._get_declared_symbol_initializer(
                 synthetic_type, method_name
@@ -2971,6 +2998,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if class_name is None:
             return
         synthetic_type = self._current_synthetic_overlay_type_object()
+        if self._is_cached_property_getter(info):
+            cached_property_type = synthetic_type or self.current_tobj
+            if cached_property_type is not None:
+                self._set_synthetic_member_on_type_object(
+                    cached_property_type,
+                    node.name,
+                    initializer=function_value,
+                    annotation=info.return_annotation,
+                    is_method=False,
+                )
+            return
         if synthetic_type is None:
             return
         if not self._should_add_class_body_method_to_synthetic_overlay(
@@ -3032,6 +3070,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _is_property_getter(self, info: FunctionInfo) -> bool:
         return any(
             isinstance(unapplied, KnownValue) and unapplied.val is property
+            for unapplied, _, _ in info.decorators
+        )
+
+    def _is_cached_property_getter(self, info: FunctionInfo) -> bool:
+        return any(
+            isinstance(unapplied, KnownValue) and unapplied.val is cached_property
             for unapplied, _, _ in info.decorators
         )
 
@@ -3237,7 +3281,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return False
 
     def _check_for_incompatible_overrides(
-        self, varname: str, node: ast.AST, value: Value
+        self,
+        varname: str,
+        node: ast.AST,
+        value: Value,
+        *,
+        allow_collecting: bool = False,
     ) -> None:
         if self.current_tobj is None or self.current_class is None:
             return
@@ -3255,8 +3304,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             node=node,
             prefer_symbolic=True,
         )
+        synthetic_child_type = self._current_synthetic_overlay_type_object()
+        child_type_object = (
+            synthetic_child_type
+            if synthetic_child_type is not None
+            and synthetic_child_type.get_declared_symbol(varname) is not None
+            else self.current_tobj
+        )
         with self.catch_errors():
-            child_attr = self.current_tobj.get_attribute(varname, policy)
+            child_attr = child_type_object.get_attribute(varname, policy)
         if child_attr is None:
             return
         if (
@@ -3292,12 +3348,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 varname, base_attr, child_attr, Relation.ASSIGNABLE, self
             )
             if isinstance(can_assign, CanAssignError):
-                self._show_error_if_checking(
+                error_args = (
                     node,
                     f"Value of {varname} incompatible with base class {base_attr.owner}",
                     ErrorCode.incompatible_override,
-                    detail=str(can_assign),
                 )
+                if allow_collecting and self._is_collecting():
+                    self.show_error(*error_args, detail=str(can_assign))
+                else:
+                    self._show_error_if_checking(*error_args, detail=str(can_assign))
 
     def display_value(self, value: Value) -> str:
         return self.checker.display_value(value)
@@ -7179,6 +7238,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
 
     def visit_FunctionDef(self, node: FunctionDefNode) -> Value:
+        is_direct_method = self.scopes.scope_type() is ScopeType.class_scope
         potential_function = self._get_potential_function(node)
         with (
             self.compute_function_info(
@@ -7337,13 +7397,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         node,
                         val,
                         record_synthetic_symbol=False,
-                        check_incompatible_override=not is_property_accessor,
+                        check_incompatible_override=False,
                     )
                     self._record_complete_synthetic_function_symbol(
                         node, info, synthetic_function_value
                     )
-                    if is_property_accessor:
-                        self._check_for_incompatible_overrides(node.name, node, val)
+                    self._check_for_incompatible_overrides(node.name, node, val)
 
             if (
                 node.name in METHODS_ALLOWING_NOTIMPLEMENTED
@@ -7385,6 +7444,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 override(self, "current_function", potential_function),
                 override(self, "expected_return_value", expected_return),
                 override(self, "current_function_info", info),
+                override(self, "current_function_is_direct_method", is_direct_method),
             ):
                 result = self._visit_function_body(info)
 
@@ -8150,9 +8210,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             )
         function_info = self.current_function_info
-        is_factory_method = self.current_function_name == "__new__" or (
-            function_info is not None
-            and FunctionDecorator.classmethod in function_info.decorator_kinds
+        is_factory_method = self.current_function_is_direct_method and (
+            self.current_function_name == "__new__"
+            or (
+                function_info is not None
+                and FunctionDecorator.classmethod in function_info.decorator_kinds
+            )
         )
         if not is_factory_method or class_object_status is not False:
             return False
@@ -12091,6 +12154,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 node.target
             ) and isinstance(node.target, ast.Attribute):
                 readonly_name = node.target.attr
+        readonly_protocol_initializer = (
+            readonly_name is not None
+            and node.value is not None
+            and isinstance(node.target, ast.Name)
+            and self.scopes.scope_type() == ScopeType.class_scope
+            and self.current_tobj is not None
+            and self.current_tobj.is_protocol()
+        )
+        if readonly_protocol_initializer:
+            self._show_error_if_checking(
+                node.value,
+                "Read-only protocol attributes cannot have an initializer",
+                error_code=ErrorCode.incompatible_assignment,
+            )
         if (
             readonly_name is None
             and self.scopes.scope_type() == ScopeType.class_scope
@@ -12345,9 +12422,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             elif is_class_annotation_without_value and not has_classvar:
                 is_instance_only = True
+            elif readonly_protocol_initializer:
+                is_instance_only = True
             self._set_complete_synthetic_class_symbol(
                 node.target.id,
-                initializer=initializer_value,
+                initializer=(
+                    None if readonly_protocol_initializer else initializer_value
+                ),
                 node=node,
                 annotation=ann_assign_declared_type,
                 qualifiers=frozenset(symbol_qualifiers),
@@ -12359,6 +12440,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     and self._is_enum_class_key(self.current_class_key)
                 ),
             )
+            if readonly_protocol_initializer:
+                self._update_synthetic_declared_symbol(
+                    node.target.id,
+                    annotation=ann_assign_declared_type,
+                    add_qualifiers={Qualifier.ReadOnly},
+                    is_instance_only=True,
+                    initializer=None,
+                )
 
         with (
             override(self, "being_assigned", value),
@@ -12403,7 +12492,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._update_synthetic_declared_symbol(
                 node.target.attr, add_qualifiers={Qualifier.Final}
             )
-        if readonly_name is not None and not (
+        is_instance_attribute_declaration = (
+            ann_assign_declared_type is not None
+            and isinstance(node.target, ast.Attribute)
+            and self._is_allowed_readonly_annotation_target(node.target)
+        )
+        if is_instance_attribute_declaration:
+            assert isinstance(node.target, ast.Attribute)
+            self._update_synthetic_declared_symbol(
+                node.target.attr,
+                annotation=ann_assign_declared_type,
+                add_qualifiers=(
+                    {Qualifier.ReadOnly} if readonly_name == node.target.attr else ()
+                ),
+                is_instance_only=True,
+                initializer=initializer_value,
+            )
+            self._check_for_incompatible_overrides(
+                node.target.attr, node, ann_assign_declared_type, allow_collecting=True
+            )
+        elif readonly_name is not None and not (
             self.scopes.scope_type() == ScopeType.class_scope
             and isinstance(node.target, ast.Name)
         ):

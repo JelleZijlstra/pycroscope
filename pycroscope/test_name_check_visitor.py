@@ -5651,6 +5651,7 @@ class TestFallbackValueDispatch(TestNameCheckVisitorBase):
 class TestIncompatibleOverride(TestNameCheckVisitorBase):
     @assert_passes(run_in_both_module_modes=True)
     def test_readonly_attribute_override_is_covariant(self):
+        from functools import cached_property
         from typing import ClassVar
 
         from typing_extensions import ReadOnly
@@ -5672,11 +5673,45 @@ class TestIncompatibleOverride(TestNameCheckVisitorBase):
             def value(self) -> bool:
                 return True
 
+        class NarrowCachedProperty(Base):
+            @cached_property
+            def value(self) -> bool:
+                return True
+
         class WideReadOnly(Base):
             value: ReadOnly[object]  # E: incompatible_override
 
         class WideWritable(Base):
             value: object  # E: incompatible_override
+
+        class WideInferredWritable(Base):
+            value = object()  # E: incompatible_override
+
+        class WideProperty(Base):
+            @property
+            def value(self) -> object:  # E: incompatible_override
+                return object()
+
+        class WideCachedProperty(Base):
+            @cached_property
+            def value(self) -> object:  # E: incompatible_override
+                return object()
+
+        class InlineBase:
+            def __init__(self) -> None:
+                self.value: ReadOnly[int] = 1
+
+        class NarrowInlineWritable(InlineBase):
+            def __init__(self) -> None:
+                self.value: bool = True
+
+        class WideInlineReadOnly(InlineBase):
+            def __init__(self) -> None:
+                self.value: ReadOnly[object] = object()  # E: incompatible_override
+
+        class WideInlineWritable(InlineBase):
+            def __init__(self) -> None:
+                self.value: object = object()  # E: incompatible_override
 
     @assert_passes()
     def test_simple(self):

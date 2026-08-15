@@ -170,6 +170,11 @@ class TestAttributes(TestNameCheckVisitorBase):
             def __init__(self) -> None:
                 self.id = 1  # E: incompatible_assignment
 
+        class InitializedProtocol(Protocol):
+            id: ReadOnly[int] = 1  # E: incompatible_assignment
+
+        InitializedProtocol.id  # E: undefined_attribute
+
         class ProtocolChild(HasId, Protocol):
             def __init__(self) -> None:
                 self.id = 1  # E: incompatible_assignment
@@ -200,6 +205,14 @@ class TestAttributes(TestNameCheckVisitorBase):
 
             def mutate_other(self, other: "Factory") -> None:
                 other.value = 1  # E: incompatible_assignment
+
+            def nested_factories(self) -> None:
+                def __new__(cls: "Factory") -> None:
+                    cls.value = 1  # E: incompatible_assignment
+
+                @classmethod
+                def make(cls, instance: "Factory") -> None:
+                    instance.value = 1  # E: incompatible_assignment
 
         class Inline:
             def __init__(self, name: str) -> None:
@@ -239,6 +252,7 @@ class TestAttributes(TestNameCheckVisitorBase):
             Base,
             Child,
             HasId,
+            InitializedProtocol,
             ProtocolChild,
             ProtocolImplementation,
             Factory,
