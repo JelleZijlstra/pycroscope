@@ -5652,9 +5652,36 @@ class TestIncompatibleOverride(TestNameCheckVisitorBase):
     @assert_passes(run_in_both_module_modes=True)
     def test_readonly_attribute_override_is_covariant(self):
         from functools import cached_property
-        from typing import ClassVar
+        from typing import Callable, ClassVar, Generic, TypeVar, overload
 
         from typing_extensions import ReadOnly
+
+        T = TypeVar("T")
+
+        class Descriptor(Generic[T]):
+            getter: Callable[..., T]
+
+            @overload
+            def __get__(
+                self, instance: None, owner: type[object] | None = None
+            ) -> "Descriptor[T]": ...
+
+            @overload
+            def __get__(
+                self, instance: object, owner: type[object] | None = None
+            ) -> T: ...
+
+            def __get__(
+                self, instance: object | None, owner: type[object] | None = None
+            ) -> "Descriptor[T] | T":
+                if instance is None:
+                    return self
+                return self.getter(instance)
+
+        def descriptor(getter: Callable[..., T]) -> Descriptor[T]:
+            result: Descriptor[T] = Descriptor()
+            result.getter = getter
+            return result
 
         class Base:
             value: ReadOnly[int]
@@ -5678,6 +5705,11 @@ class TestIncompatibleOverride(TestNameCheckVisitorBase):
             def value(self) -> bool:
                 return True
 
+        class NarrowDescriptor(Base):
+            @descriptor
+            def value(self) -> bool:
+                return True
+
         class WideReadOnly(Base):
             value: ReadOnly[object]  # E: incompatible_override
 
@@ -5694,6 +5726,11 @@ class TestIncompatibleOverride(TestNameCheckVisitorBase):
 
         class WideCachedProperty(Base):
             @cached_property
+            def value(self) -> object:  # E: incompatible_override
+                return object()
+
+        class WideDescriptor(Base):
+            @descriptor
             def value(self) -> object:  # E: incompatible_override
                 return object()
 

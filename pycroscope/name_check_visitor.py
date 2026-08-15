@@ -35,7 +35,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from dataclasses import replace as dataclass_replace
-from functools import cached_property, partial
+from functools import partial
 from itertools import chain
 from pathlib import Path
 from types import GenericAlias
@@ -239,6 +239,7 @@ from .type_object import (
     get_mro,
     is_compatible_attribute,
     is_definitely_class_object_value,
+    is_nonmethod_descriptor,
     iter_base_type_objects,
     lookup_declared_symbol_with_owner,
     receiver_key_from_value,
@@ -2654,6 +2655,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self,
         name: str,
         *,
+        type_object: TypeObject | None = None,
         initializer: Value | None = None,
         node: ast.AST | None = None,
         annotation: Value | None = None,
@@ -2666,7 +2668,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         dataclass_field: DataclassFieldInfo | None = None,
         force_nonmember: bool = False,
     ) -> None:
-        type_object = self._current_synthetic_overlay_type_object()
+        if type_object is None:
+            type_object = self._current_synthetic_overlay_type_object()
         if type_object is None:
             return
         synthetic_name, synthetic_initializer, enum_member_is_method = (
@@ -2998,17 +3001,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if class_name is None:
             return
         synthetic_type = self._current_synthetic_overlay_type_object()
-        if self._is_cached_property_getter(info):
-            cached_property_type = synthetic_type or self.current_tobj
-            if cached_property_type is not None:
-                self._set_synthetic_member_on_type_object(
-                    cached_property_type,
-                    node.name,
-                    initializer=function_value,
-                    annotation=info.return_annotation,
-                    is_method=False,
-                )
-            return
+        function_is_descriptor = self._is_decorated_descriptor_result(
+            info, function_value
+        )
+        if synthetic_type is None and function_is_descriptor:
+            synthetic_type = self.current_tobj
         if synthetic_type is None:
             return
         if not self._should_add_class_body_method_to_synthetic_overlay(
@@ -3035,10 +3032,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if mutator is None:
             self._set_complete_synthetic_class_symbol(
                 node.name,
+                type_object=synthetic_type,
                 initializer=function_value,
                 node=node,
                 is_instance_only=False,
-                is_method=True,
+                is_method=not function_is_descriptor,
                 function_decorators=info.decorator_kinds,
                 deprecation_message=deprecation_message,
             )
@@ -3073,10 +3071,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             for unapplied, _, _ in info.decorators
         )
 
-    def _is_cached_property_getter(self, info: FunctionInfo) -> bool:
-        return any(
-            isinstance(unapplied, KnownValue) and unapplied.val is cached_property
-            for unapplied, _, _ in info.decorators
+    def _is_decorated_descriptor_result(self, info: FunctionInfo, value: Value) -> bool:
+        return (
+            bool(info.decorators)
+            and FunctionDecorator.classmethod not in info.decorator_kinds
+            and FunctionDecorator.staticmethod not in info.decorator_kinds
+            and is_nonmethod_descriptor(value, self)
         )
 
     def _property_accessor_function_value(
@@ -7355,6 +7355,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             else:
                 val = KnownValue(potential_function)
             synthetic_function_value = val
+            if self._is_decorated_descriptor_result(info, computed_function):
+                # Runtime lookup erases a descriptor's static type arguments.
+                # Keep the decorator-applied static value in the synthetic
+                # symbol so descriptor binding behaves the same in both module
+                # modes.
+                synthetic_function_value = computed_function
             if static_overload_signature is not None and is_property_accessor:
                 # A runtime property exposes only its concrete accessor function.
                 # Preserve the statically collected overload set in property

@@ -3047,6 +3047,15 @@ def _is_descriptor(value: Value, ctx: CanAssignContext) -> bool:
     )
 
 
+def is_nonmethod_descriptor(value: Value, ctx: CanAssignContext) -> bool:
+    """Whether a value is a descriptor that should not bind as a method."""
+    return (
+        not isinstance(replace_fallback(value), CallableValue)
+        and not _is_method_like(value)
+        and _is_descriptor(value, ctx)
+    )
+
+
 def _runtime_descriptor_owner(descriptor: KnownValue | TypedValue) -> type | None:
     if isinstance(descriptor, KnownValue) and not isinstance(descriptor.val, type):
         return type(descriptor.val)
