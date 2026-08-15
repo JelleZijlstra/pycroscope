@@ -4636,6 +4636,18 @@ class TestAnnAssign(TestNameCheckVisitorBase):
                 assert_type(cls.a[0], Self)
                 assert_type(cls.method1(), Self)
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_self_instance_attribute_declaration(self):
+        from typing_extensions import Self, assert_type
+
+        class Node:
+            def __init__(self) -> None:
+                self.children: list[Self] = []
+                assert_type(self.children, list[Self])
+
+            def add_child(self, child: Self) -> None:
+                self.children.append(child)
+
     @assert_passes()
     def test_self_annotated_property_uses_runtime_attribute_resolution(self):
         from typing import Generic, TypeVar
@@ -5649,6 +5661,107 @@ class TestFallbackValueDispatch(TestNameCheckVisitorBase):
 
 
 class TestIncompatibleOverride(TestNameCheckVisitorBase):
+    @assert_passes(run_in_both_module_modes=True)
+    def test_readonly_attribute_override_is_covariant(self):
+        from functools import cached_property
+        from typing import Callable, ClassVar, Generic, TypeVar, overload
+
+        from typing_extensions import ReadOnly
+
+        T = TypeVar("T")
+
+        class Descriptor(Generic[T]):
+            getter: Callable[..., T]
+
+            @overload
+            def __get__(
+                self, instance: None, owner: type[object] | None = None
+            ) -> "Descriptor[T]": ...
+
+            @overload
+            def __get__(
+                self, instance: object, owner: type[object] | None = None
+            ) -> T: ...
+
+            def __get__(
+                self, instance: object | None, owner: type[object] | None = None
+            ) -> "Descriptor[T] | T":
+                if instance is None:
+                    return self
+                return self.getter(instance)
+
+        def descriptor(getter: Callable[..., T]) -> Descriptor[T]:
+            result: Descriptor[T] = Descriptor()
+            result.getter = getter
+            return result
+
+        class Base:
+            value: ReadOnly[int]
+
+        class NarrowReadOnly(Base):
+            value: ReadOnly[bool]
+
+        class NarrowWritable(Base):
+            value: bool
+
+        class NarrowClassVar(Base):
+            value: ClassVar[bool] = True
+
+        class NarrowProperty(Base):
+            @property
+            def value(self) -> bool:
+                return True
+
+        class NarrowCachedProperty(Base):
+            @cached_property
+            def value(self) -> bool:
+                return True
+
+        class NarrowDescriptor(Base):
+            @descriptor
+            def value(self) -> bool:
+                return True
+
+        class WideReadOnly(Base):
+            value: ReadOnly[object]  # E: incompatible_override
+
+        class WideWritable(Base):
+            value: object  # E: incompatible_override
+
+        class WideInferredWritable(Base):
+            value = object()  # E: incompatible_override
+
+        class WideProperty(Base):
+            @property
+            def value(self) -> object:  # E: incompatible_override
+                return object()
+
+        class WideCachedProperty(Base):
+            @cached_property
+            def value(self) -> object:  # E: incompatible_override
+                return object()
+
+        class WideDescriptor(Base):
+            @descriptor
+            def value(self) -> object:  # E: incompatible_override
+                return object()
+
+        class InlineBase:
+            def __init__(self) -> None:
+                self.value: ReadOnly[int] = 1
+
+        class NarrowInlineWritable(InlineBase):
+            def __init__(self) -> None:
+                self.value: bool = True
+
+        class WideInlineReadOnly(InlineBase):
+            def __init__(self) -> None:
+                self.value: ReadOnly[object] = object()  # E: incompatible_override
+
+        class WideInlineWritable(InlineBase):
+            def __init__(self) -> None:
+                self.value: object = object()  # E: incompatible_override
+
     @assert_passes()
     def test_simple(self):
         from typing_extensions import Literal

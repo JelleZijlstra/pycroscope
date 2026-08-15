@@ -142,14 +142,15 @@ class TestAttributes(TestNameCheckVisitorBase):
             assert_is_value(cls.__class__, SubclassValue(TypedValue(type)))
             assert_type(cls.__bases__, tuple[type[object], ...])
 
-    @assert_passes()
+    @assert_passes(run_in_both_module_modes=True)
     def test_readonly_attribute_assignment_and_deletion(self):
-        from typing import ClassVar
+        from typing import ClassVar, Protocol
 
         from typing_extensions import Final, ReadOnly
 
         class Base:
             id: ReadOnly[int]
+            token: ClassVar[ReadOnly[str]]
 
             def __init__(self, value: int) -> None:
                 self.id = value
@@ -158,7 +159,60 @@ class TestAttributes(TestNameCheckVisitorBase):
         class Child(Base):
             def __init__(self, value: int) -> None:
                 super().__init__(value)
-                self.id = value  # E: incompatible_assignment
+                self.id = value
+
+            def __init_subclass__(cls) -> None:
+                cls.token = cls.__name__
+
+        class HasId(Protocol):
+            id: ReadOnly[int]
+
+            def __init__(self) -> None:
+                self.id = 1  # E: incompatible_assignment
+
+        class InitializedProtocol(Protocol):
+            id: ReadOnly[int] = 1  # E: incompatible_assignment
+
+        InitializedProtocol.id  # E: undefined_attribute
+
+        class ProtocolChild(HasId, Protocol):
+            def __init__(self) -> None:
+                self.id = 1  # E: incompatible_assignment
+
+        class ProtocolImplementation(HasId):
+            def __init__(self) -> None:
+                self.id = 1
+
+        class Factory:
+            value: ReadOnly[int]
+
+            def __new__(cls, value: int) -> "Factory":
+                instance: Factory = object.__new__(cls)
+                instance.value = value
+                return instance
+
+            @classmethod
+            def make(cls, value: int) -> "Factory":
+                instance: Factory = object.__new__(cls)
+                instance.value = value
+                return instance
+
+            @classmethod
+            def reinitialize(cls, instance: "Factory", value: int) -> None:
+                # PEP 767 permits type checkers to allow this simpler, less sound
+                # classmethod form without proving that instance is fresh.
+                instance.value = value
+
+            def mutate_other(self, other: "Factory") -> None:
+                other.value = 1  # E: incompatible_assignment
+
+            def nested_factories(self) -> None:
+                def __new__(cls: "Factory") -> None:
+                    cls.value = 1  # E: incompatible_assignment
+
+                @classmethod
+                def make(cls, instance: "Factory") -> None:
+                    instance.value = 1  # E: incompatible_assignment
 
         class Inline:
             def __init__(self, name: str) -> None:
@@ -194,7 +248,18 @@ class TestAttributes(TestNameCheckVisitorBase):
         Config.version = 2  # E: incompatible_assignment
         Config.token = "override"  # E: incompatible_assignment
         mutate(inline)
-        print(Base, Child, Config, FinalAttr, inline)
+        print(
+            Base,
+            Child,
+            HasId,
+            InitializedProtocol,
+            ProtocolChild,
+            ProtocolImplementation,
+            Factory,
+            Config,
+            FinalAttr,
+            inline,
+        )
 
     @assert_passes()
     def test_known_value_hook(self):

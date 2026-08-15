@@ -1803,7 +1803,7 @@ class TestSyntheticType(TestNameCheckVisitorBase):
         good: WantsClassVar = HasClassVal()
         print(bad, good)
 
-    @assert_passes()
+    @assert_passes(run_in_both_module_modes=True)
     def test_protocol_readonly_data_member(self):
         from functools import cached_property
         from typing import Protocol, Sequence
@@ -1841,6 +1841,22 @@ class TestSyntheticType(TestNameCheckVisitorBase):
         ok4: WantsReadOnlyData = CachedPropertyImpl()
         bad: WantsReadOnlyData = BadTypeImpl()  # E: incompatible_assignment
         print(ok1, ok2, ok3, ok4, bad)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_protocol_readonly_data_member_accepts_classvar(self):
+        from typing import ClassVar, Protocol, Sequence
+
+        from typing_extensions import ReadOnly
+
+        class WantsReadOnlyData(Protocol):
+            val: ReadOnly[Sequence[float]]
+
+        class SharedValue:
+            val: ClassVar[list[float]] = []
+
+        instance_ok: WantsReadOnlyData = SharedValue()
+        class_ok: WantsReadOnlyData = SharedValue
+        print(instance_ok, class_ok)
 
     @assert_passes()
     def test_protocol_with_runtime_property_without_getter(self):
