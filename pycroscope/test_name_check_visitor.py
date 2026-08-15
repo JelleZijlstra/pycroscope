@@ -4636,6 +4636,18 @@ class TestAnnAssign(TestNameCheckVisitorBase):
                 assert_type(cls.a[0], Self)
                 assert_type(cls.method1(), Self)
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_self_instance_attribute_declaration(self):
+        from typing_extensions import Self, assert_type
+
+        class Node:
+            def __init__(self) -> None:
+                self.children: list[Self] = []
+                assert_type(self.children, list[Self])
+
+            def add_child(self, child: Self) -> None:
+                self.children.append(child)
+
     @assert_passes()
     def test_self_annotated_property_uses_runtime_attribute_resolution(self):
         from typing import Generic, TypeVar

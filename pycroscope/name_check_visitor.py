@@ -3294,6 +3294,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             # Dataclasses synthesize the expected __post_init__ contract from InitVar
             # fields, so generic override rules are too strict here.
             return
+        if varname == "_ignore_" and self.current_tobj.is_enum():
+            # Enum consumes this directive while constructing the class. Its runtime
+            # accepts iterable forms that are intentionally broader than the stub for
+            # Enum._ignore_, so it is not an ordinary override.
+            return
         if varname in self.options.get_value_for(IgnoredForIncompatibleOverride):
             return
         if varname.startswith("__") and not varname.endswith("__"):
@@ -14821,6 +14826,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     root, node.attr, node, self.being_assigned
                 )
                 self._record_synthetic_attr_set(node, root)
+            return
+        if (
+            self.ann_assign_type is not None
+            and self._is_allowed_readonly_annotation_target(node)
+        ):
+            # The initializer was already checked against this declaration's
+            # annotation in visit_AnnAssign. Do not compare the annotation again
+            # with the synthetic attribute created from the same declaration;
+            # doing so can incorrectly compare Self with its current class.
+            self._record_type_attr_set_for_value(
+                root, node.attr, node, self.being_assigned
+            )
+            self._record_synthetic_attr_set(node, root)
             return
         transformed_attribute_types = self._get_transformed_attribute_types(
             attr.raw_value
