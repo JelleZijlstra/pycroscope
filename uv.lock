@@ -579,7 +579,7 @@ wheels = [
 
 [[package]]
 name = "pycroscope"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "tomli", marker = "python_full_version < '3.11'" },
