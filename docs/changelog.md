@@ -2,6 +2,52 @@
 
 <!-- scriv-insert-here -->
 
+## Version 0.5.0 (August 27, 2026)
+
+This release adds negation types and improves intersection call checking,
+generic type parameters, and conformance with the typing specification.
+
+- Fix bug with calling methods on values typed as intersections.
+- Reject protocol matches that provide a required `ClassVar` only through an instance attribute.
+- Fix implicit generic subclasses so type variables nested inside base-class arguments remain class type parameters in method annotations.
+- Support `P.args`, `P.kwargs`, and generic specialization with PEP 695 parameter specifications without crashing, and exclude `__type_params__` metadata from protocol requirements.
+- Narrow negative `TypeIs` checks against covariant generic `Any` arms more precisely when the checked type uses `object`.
+- Normalize `Not[...]` inside expected-type expressions such as `assert_type(x, Intersection[A, Not[B]])`.
+- Implement call checking for callable intersection types.
+- Treat definitely missing attributes on intersection members as an error instead of ignoring them, while still allowing indeterminate members to be ignored when another member provides the attribute.
+- Normalize pycroscope extension annotations with PEP 604 union operands, such as `Intersection[A, B | C]`, `A | Intersection[B, C]`, and `int | Not[str]`, instead of producing an internal error.
+- Improve recursive gradual type compatibility for aliases, protocols, and TypedDicts, so recursive `Any` tails no longer hide incompatible nested types and mutually recursive TypedDicts no longer produce internal recursion errors.
+- Infer and validate class type-parameter variance from the collected class API in both importable and static fallback analysis, including generic bases and callable member annotations.
+- Treat plain subclasses of frozen dataclasses as mutable for their own annotated attributes, while keeping inherited frozen dataclass fields read-only.
+- Add basic support for `pycroscope.extensions.Not[T]` negation types, including assignability and intersection simplification.
+- Simplify unions containing an exact fully static `Not[T]` complement pair, such as `Literal[1] | Not[Literal[1]]`, to `object`.
+- Deduplicate unions containing equivalent intersections written in different orders, such as `Any & int` and `int & Any`.
+- Preserve `Not[T]` intersections in negative `TypeIs[T]` narrowing, while keeping other narrowing paths pragmatic.
+- Check property assignments and deletions against the matching accessor, including separately overloaded getters, setters, and deleters and deprecations on individual overloads.
+- Infer and enforce variance for `ParamSpec` and `TypeVarTuple`, including mixed PEP 695 generic classes and traditional declarations with explicit or inferred variance.
+- Preserve open and explicit-extra-item TypedDict tails when forwarding `**kwargs` or comparing callables, so incompatible typed destinations are rejected while closed TypedDicts remain exact.
+- Report an error when a PEP 695 type parameter list contains multiple TypeVarTuples.
+- Report an error when ClassVar is used for a NamedTuple field.
+- Check constructor signature compatibility when `__init__` or `__new__` is marked with `@override`.
+- Infer precise tuple types when slicing NamedTuple instances with literal slices.
+- Accept list-form ParamSpec arguments before an unpacked TypeVarTuple when specializing a type alias.
+- Enforce the disjoint-base rules for multiple inheritance and nonempty slots, and report invalid decorator targets with the new `invalid_disjoint_base` error code.
+- Simplify negative narrowing when fixed-length tuple types have different lengths.
+- Reject classes that combine `Protocol[T, ...]` shorthand with a `Generic[T, ...]` base.
+- Enforce TypedDict consistency rules for assignments to Mapping and mutable dict types.
+- Apply dependent type parameter defaults correctly when specializing a generic with some type arguments omitted.
+- Allow `TypeVarTuple` defaults to refer to another unpacked `TypeVarTuple` and report invalid non-unpacked defaults.
+- Apply PEP 696 type parameter defaults when a generic class is used without explicit type arguments.
+- Apply a trailing ParamSpec default when preceding type arguments belong to a TypeVarTuple.
+- Do not report missing generic parameters when every type parameter has a default.
+- Report an error when a `ParamSpec` default is not a parameter list, ellipsis, or another `ParamSpec`.
+- Support `ParamSpec` and `TypeVarTuple` defaults in type parameter syntax, substitute referential `ParamSpec` defaults, and report invalid defaults with the new `invalid_type_parameter_default` error code.
+- Follow PEP 695 scoping rules for native type parameters, including nested scopes and references from class and function headers.
+- Bring PEP 767 read-only attributes in line with the current draft by supporting inherited and factory initialization, covariant overrides, and class-variable or descriptor protocol implementations.
+- Recognize Enum members defined in statically known conditional branches, including Python version checks.
+- Fix an internal error on Python 3.14 when function annotations refer to names imported only under `if TYPE_CHECKING:`.
+- Require `typing_extensions>=4.16.0`.
+
 ## Version 0.4.0 (May 2, 2026)
 
 This release aims to strengthen robustness and quality, fixing many issues

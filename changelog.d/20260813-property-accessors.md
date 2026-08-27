@@ -1,1 +1,0 @@
-- Check property assignments and deletions against the matching accessor, including separately overloaded getters, setters, and deleters and deprecations on individual overloads.
