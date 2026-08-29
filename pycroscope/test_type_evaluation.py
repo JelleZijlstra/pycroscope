@@ -266,6 +266,15 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
             raise NotImplementedError
 
         @evaluated
+        def excluded_platform_membership():
+            if sys.platform in ("definitely-not-a-platform",):
+                return Literal["unknown"]
+            return Literal["known"]
+
+        def excluded_platform_membership():
+            raise NotImplementedError
+
+        @evaluated
         def platform_prefix():
             if sys.platform.startswith(""):
                 return Literal["known"]
@@ -274,11 +283,53 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
         def platform_prefix():
             raise NotImplementedError
 
+        @evaluated
+        def excluded_platform_prefix():
+            if sys.platform.startswith("definitely-not-a-platform"):
+                return Literal["unknown"]
+            return Literal["known"]
+
+        def excluded_platform_prefix():
+            raise NotImplementedError
+
         def capybara():
             assert_type(implementation_name(), Literal["known"])
             assert_type(implementation_version(), Literal["new"])
             assert_type(platform_membership(), Literal["known"])
+            assert_type(excluded_platform_membership(), Literal["known"])
             assert_type(platform_prefix(), Literal["known"])
+            assert_type(excluded_platform_prefix(), Literal["known"])
+
+    @assert_passes()
+    def test_runtime_environment_condition_error_details(self):
+        import sys
+        from typing import Any
+
+        from pycroscope.extensions import evaluated, show_error
+
+        @evaluated
+        def reject_current_implementation():
+            if sys.implementation.name != "definitely-not-an-implementation":
+                show_error("implementation unsupported")
+                return Any
+            return int
+
+        def reject_current_implementation():
+            raise NotImplementedError
+
+        @evaluated
+        def reject_platform_prefix():
+            if sys.platform.startswith(""):
+                show_error("platform unsupported")
+                return Any
+            return int
+
+        def reject_platform_prefix():
+            raise NotImplementedError
+
+        def capybara() -> None:
+            reject_current_implementation()  # E: incompatible_call
+            reject_platform_prefix()  # E: incompatible_call
 
     @skip_if(sys.platform == "darwin")
     @assert_passes()
@@ -759,6 +810,7 @@ class TestValidation(TestNameCheckVisitorBase):
     @assert_passes()
     def test_bad(self):
         import sys
+        from typing import Any, cast
 
         from pycroscope.extensions import evaluated
 
@@ -794,6 +846,12 @@ class TestValidation(TestNameCheckVisitorBase):
             if sys.path == []:  # E: bad_evaluator
                 return None
             if sys.version_info > "x":  # E: bad_evaluator
+                return None
+            if sys.platform.startswith():  # E: bad_evaluator
+                return None
+            if sys.platform.startswith(cast(Any, "")):  # E: bad_evaluator
+                return None
+            if sys.platform.startswith(1):  # E: bad_evaluator
                 return None
 
             if is_provided("x"):  # E: bad_evaluator
