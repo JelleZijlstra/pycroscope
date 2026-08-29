@@ -168,7 +168,10 @@ Conditions in `if` statements may contain:
   to `(not) is_of_type(arg, Literal[<constant>], exclude_any=True)`.
   `<constant>` may be any value that is valid inside `Literal` (`None`, a string, a bool, an int, or an enum
   member).
-- Version and platform checks that are otherwise valid in stubs, as specified in PEP 484.
+- Checks against `sys.version_info`, `sys.platform`, `sys.implementation.name`, and
+  `sys.implementation.version`. Platform and implementation names support equality and
+  membership checks, and `sys.platform.startswith()` is also supported. These checks use
+  the Python interpreter running pycroscope.
 - Multiple conditions combined with `and` or `or`.
 - A negation of another condition with `not`.
 

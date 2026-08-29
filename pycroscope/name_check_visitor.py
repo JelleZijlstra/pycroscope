@@ -254,6 +254,8 @@ from .type_params import (
 from .typeshed import TypeshedFinder
 from .value import (
     NO_RETURN_VALUE,
+    SYS_IMPLEMENTATION_NAME_EXTENSION,
+    SYS_IMPLEMENTATION_VERSION_EXTENSION,
     SYS_PLATFORM_EXTENSION,
     SYS_VERSION_INFO_EXTENSION,
     UNINITIALIZED_VALUE,
@@ -303,6 +305,8 @@ from .value import (
     PropertyAccessKind,
     PropertyInfo,
     ReferencingValue,
+    RuntimeEnvironment,
+    RuntimeEnvironmentExtension,
     SelfOwnerExtension,
     SequenceValue,
     SimpleType,
@@ -311,8 +315,6 @@ from .value import (
     SyntheticClassObjectValue,
     SyntheticModuleValue,
     SyntheticTypeFormValue,
-    SysPlatformExtension,
-    SysVersionInfoExtension,
     TypeAlias,
     TypeAliasValue,
     TypedDictEntry,
@@ -562,6 +564,128 @@ COMPARATOR_TO_OPERATOR = {
     ast.In: (_in, _not_in, None),
     ast.NotIn: (_not_in, _in, None),
 }
+
+_RUNTIME_STRING_CONTAINERS = (tuple, list, set, frozenset)
+
+
+def _runtime_environment_value(environment: RuntimeEnvironment) -> object:
+    match environment:
+        case RuntimeEnvironment.sys_platform:
+            return sys.platform
+        case RuntimeEnvironment.sys_version_info:
+            return sys.version_info
+        case RuntimeEnvironment.sys_implementation:
+            return sys.implementation
+        case RuntimeEnvironment.sys_implementation_name:
+            return sys.implementation.name
+        case RuntimeEnvironment.sys_implementation_version:
+            return sys.implementation.version
+        case _:
+            assert_never(environment)
+
+
+def _runtime_environment_from_value(value: Value) -> RuntimeEnvironment | None:
+    if isinstance(value, AnnotatedValue):
+        extensions = value.get_metadata_of_type(RuntimeEnvironmentExtension)
+        for extension in extensions:
+            return extension.environment
+    return None
+
+
+def _known_string_container(value: Value) -> tuple[str, ...] | None:
+    value = replace_fallback(value)
+    if isinstance(value, KnownValue):
+        if not isinstance(value.val, _RUNTIME_STRING_CONTAINERS):
+            return None
+        if all(isinstance(member, str) for member in value.val):
+            return tuple(value.val)
+        return None
+    if isinstance(value, SequenceValue):
+        if value.typ not in _RUNTIME_STRING_CONTAINERS:
+            return None
+        members = value.get_member_sequence()
+        if members is None:
+            return None
+        strings = []
+        for member in members:
+            member = replace_fallback(member)
+            if not isinstance(member, KnownValue) or not isinstance(member.val, str):
+                return None
+            strings.append(member.val)
+        return tuple(strings)
+    return None
+
+
+def _evaluate_runtime_environment_comparison(
+    environment: RuntimeEnvironment, op: ast.cmpop, rhs: Value
+) -> bool | None:
+    if environment in (
+        RuntimeEnvironment.sys_platform,
+        RuntimeEnvironment.sys_implementation_name,
+    ):
+        actual = _runtime_environment_value(environment)
+        assert isinstance(actual, str)
+        if isinstance(op, (ast.Eq, ast.NotEq)):
+            rhs = replace_fallback(rhs)
+            if not isinstance(rhs, KnownValue) or not isinstance(rhs.val, str):
+                return None
+            if isinstance(op, ast.Eq):
+                return actual == rhs.val
+            return actual != rhs.val
+        elif isinstance(op, (ast.In, ast.NotIn)):
+            container = _known_string_container(rhs)
+            if container is None:
+                return None
+            if isinstance(op, ast.In):
+                return actual in container
+            return actual not in container
+        else:
+            return None
+    if environment is RuntimeEnvironment.sys_implementation:
+        return None
+
+    rhs = replace_fallback(rhs)
+    if not (
+        isinstance(rhs, KnownValue)
+        and isinstance(rhs.val, tuple)
+        and all(isinstance(member, int) for member in rhs.val)
+    ):
+        return None
+    actual_version = _runtime_environment_value(environment)
+    assert isinstance(actual_version, tuple)
+    if isinstance(op, ast.Gt):
+        return actual_version > rhs.val
+    if isinstance(op, ast.GtE):
+        return actual_version >= rhs.val
+    if isinstance(op, ast.Lt):
+        return actual_version < rhs.val
+    if isinstance(op, ast.LtE):
+        return actual_version <= rhs.val
+    return None
+
+
+def _evaluate_runtime_environment_call(
+    callee: Value,
+    args: Sequence[Composite],
+    keywords: Sequence[tuple[str | None, Composite]],
+) -> bool | None:
+    if (
+        not isinstance(callee, UnboundMethodValue)
+        or callee.attr_name != "startswith"
+        or callee.secondary_attr_name is not None
+        or len(args) != 1
+        or keywords
+    ):
+        return None
+    environment = _runtime_environment_from_value(callee.composite.value)
+    if environment is not RuntimeEnvironment.sys_platform:
+        return None
+    prefix = replace_fallback(args[0].value)
+    if not isinstance(prefix, KnownValue) or not isinstance(prefix.val, str):
+        return None
+    return sys.platform.startswith(prefix.val)
+
+
 _NEG_OPERATOR_TO_AST = {
     neg_op: node_cls for node_cls, (_, neg_op, _) in COMPARATOR_TO_OPERATOR.items()
 }
@@ -10126,6 +10250,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         values = []
         constraint = NULL_CONSTRAINT
         definite_value = None
+        all_operands_definite = True
         short_circuited = False
         should_warn_on_short_circuit = False
         has_reported_unreachable_operand = False
@@ -10157,6 +10282,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         condition, check_boolability=not is_last
                     )
                 new_def_val = _extract_definite_value(new_value)
+                if new_def_val is None:
+                    all_operands_definite = False
                 new_truthiness = _extract_unreachable_condition_value(new_value)
                 if is_and and new_def_val is False:
                     definite_value = False
@@ -10189,6 +10316,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         self.scopes.combine_subscopes(scopes)
         out = unite_values(*values)
+        if definite_value is None and all_operands_definite:
+            definite_value = is_and
         if definite_value is not None:
             out = annotate_value(out, [DefiniteValueExtension(definite_value)])
         if is_and:
@@ -10260,8 +10389,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         lhs_shown = lhs
         rhs_shown = rhs
         for ignored_extension in (
-            SysPlatformExtension,
-            SysVersionInfoExtension,
+            RuntimeEnvironmentExtension,
             ConstraintExtension,
             DefiniteValueExtension,
         ):
@@ -10320,21 +10448,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         rhs_constraint = extract_constraints(rhs)
         rhs = replace_fallback(rhs)
         definite_value = None
-        if isinstance(lhs, AnnotatedValue):
-            if (
-                SYS_PLATFORM_EXTENSION in lhs.metadata
-                and isinstance(rhs, KnownValue)
-                and isinstance(op, (ast.Eq, ast.NotEq))
-            ):
-                op_func, _, _ = COMPARATOR_TO_OPERATOR[type(op)]
-                definite_value = op_func(sys.platform, rhs.val)
-            elif (
-                SYS_VERSION_INFO_EXTENSION in lhs.metadata
-                and isinstance(rhs, KnownValue)
-                and isinstance(op, (ast.Gt, ast.GtE, ast.Lt, ast.LtE))
-            ):
-                op_func, _, _ = COMPARATOR_TO_OPERATOR[type(op)]
-                definite_value = op_func(sys.version_info, rhs.val)
+        environment = _runtime_environment_from_value(lhs)
+        if environment is not None:
+            definite_value = _evaluate_runtime_environment_comparison(
+                environment, op, rhs
+            )
         lhs = replace_fallback(lhs)
         if isinstance(lhs_constraint, PredicateProvider) and isinstance(
             rhs, KnownValue
@@ -14451,6 +14569,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     value = annotate_value(value, [SYS_PLATFORM_EXTENSION])
                 elif node.attr == "version_info":
                     value = annotate_value(value, [SYS_VERSION_INFO_EXTENSION])
+                elif node.attr == "implementation":
+                    value = annotate_value(
+                        value,
+                        [
+                            RuntimeEnvironmentExtension(
+                                RuntimeEnvironment.sys_implementation
+                            )
+                        ],
+                    )
+            elif (
+                _runtime_environment_from_value(root_composite.value)
+                is RuntimeEnvironment.sys_implementation
+            ):
+                if node.attr == "name":
+                    value = annotate_value(value, [SYS_IMPLEMENTATION_NAME_EXTENSION])
+                elif node.attr == "version":
+                    value = annotate_value(
+                        value, [SYS_IMPLEMENTATION_VERSION_EXTENSION]
+                    )
             elif isinstance(root_composite.value, KnownValue) and isinstance(
                 root_composite.value.val, types.ModuleType
             ):
@@ -15382,6 +15519,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return_value = self.check_call(
             node, callee_wrapped, args, keywords, allow_call=self.in_annotation
         )
+        definite_value = _evaluate_runtime_environment_call(
+            callee_wrapped, args, keywords
+        )
+        if definite_value is not None:
+            return_value = annotate_value(
+                return_value, [DefiniteValueExtension(definite_value)]
+            )
 
         if self._is_checking():
             self.yield_checker.record_call(callee_wrapped, node)

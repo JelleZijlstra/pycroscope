@@ -2421,7 +2421,7 @@ class SequenceValue(GenericValue):
     ``["x", *some_str.split()]`` would be represented as
     ``SequenceValue(list, [(False, KnownValue("x")), (True, TypedValue(str))])``.
 
-    This is only used for ``set``, ``list``, and ``tuple``.
+    This is only used for ``set``, ``frozenset``, ``list``, and ``tuple``.
 
     """
 
@@ -3783,20 +3783,33 @@ class DeprecatedExtension(Extension):
     deprecation_message: str
 
 
+class RuntimeEnvironment(enum.Enum):
+    """Runtime values that control statically selected code paths."""
+
+    sys_platform = "sys.platform"
+    sys_version_info = "sys.version_info"
+    sys_implementation = "sys.implementation"
+    sys_implementation_name = "sys.implementation.name"
+    sys_implementation_version = "sys.implementation.version"
+
+
 @dataclass(frozen=True)
-class SysPlatformExtension(Extension):
-    """Used for sys.platform."""
+class RuntimeEnvironmentExtension(Extension):
+    """Marks a value supplied by the host Python runtime."""
+
+    environment: RuntimeEnvironment
 
 
-SYS_PLATFORM_EXTENSION = SysPlatformExtension()
-
-
-@dataclass(frozen=True)
-class SysVersionInfoExtension(Extension):
-    """Used for sys.version_info."""
-
-
-SYS_VERSION_INFO_EXTENSION = SysVersionInfoExtension()
+SYS_PLATFORM_EXTENSION = RuntimeEnvironmentExtension(RuntimeEnvironment.sys_platform)
+SYS_VERSION_INFO_EXTENSION = RuntimeEnvironmentExtension(
+    RuntimeEnvironment.sys_version_info
+)
+SYS_IMPLEMENTATION_NAME_EXTENSION = RuntimeEnvironmentExtension(
+    RuntimeEnvironment.sys_implementation_name
+)
+SYS_IMPLEMENTATION_VERSION_EXTENSION = RuntimeEnvironmentExtension(
+    RuntimeEnvironment.sys_implementation_version
+)
 
 
 @dataclass(frozen=True)
