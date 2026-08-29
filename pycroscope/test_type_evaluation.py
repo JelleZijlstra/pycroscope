@@ -230,6 +230,56 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
             else:
                 assert_type(where_am_i(), Literal["Somewhere else"])
 
+    @assert_passes()
+    def test_runtime_environment_conditions(self):
+        import sys
+
+        from typing_extensions import Literal, assert_type
+
+        from pycroscope.extensions import evaluated
+
+        @evaluated
+        def implementation_name():
+            if sys.implementation.name != "definitely-not-an-implementation":
+                return Literal["known"]
+            return Literal["unknown"]
+
+        def implementation_name():
+            raise NotImplementedError
+
+        @evaluated
+        def implementation_version():
+            if sys.implementation.version >= (0, 0):
+                return Literal["new"]
+            return Literal["old"]
+
+        def implementation_version():
+            raise NotImplementedError
+
+        @evaluated
+        def platform_membership():
+            if sys.platform not in ("definitely-not-a-platform",):
+                return Literal["known"]
+            return Literal["unknown"]
+
+        def platform_membership():
+            raise NotImplementedError
+
+        @evaluated
+        def platform_prefix():
+            if sys.platform.startswith(""):
+                return Literal["known"]
+            return Literal["unknown"]
+
+        def platform_prefix():
+            raise NotImplementedError
+
+        def capybara():
+            assert_type(implementation_name(), Literal["known"])
+            assert_type(implementation_version(), Literal["new"])
+            assert_type(platform_membership(), Literal["known"])
+            assert_type(platform_prefix(), Literal["known"])
+
     @skip_if(sys.platform == "darwin")
     @assert_passes()
     def test_platform_error_off_mac(self):

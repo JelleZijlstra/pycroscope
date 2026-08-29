@@ -8,7 +8,7 @@ import ast
 import contextlib
 import operator
 import sys
-from collections.abc import Callable, Generator, Mapping, Sequence
+from collections.abc import Callable, Container, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -136,6 +136,24 @@ class VersionCondition(Condition):
 
 
 @dataclass
+class RuntimeEnvironmentCondition(Condition):
+    name: str
+    actual: object
+    op: type[ast.cmpop] | Literal["startswith"]
+    expected: object
+
+    def display(self, negated: bool = False) -> CanAssignError:
+        if self.op == "startswith":
+            maybe_not = " does not" if negated else ""
+            return CanAssignError(
+                f"{self.name} ({self.actual!r}){maybe_not} starts with {self.expected!r}"
+            )
+        op = _OP_TO_DATA[self.op].negation if negated else self.op
+        text = _OP_TO_DATA[op].text
+        return CanAssignError(f"{self.name} ({self.actual!r}) {text} {self.expected!r}")
+
+
+@dataclass
 class IsOfTypeCondition(Condition):
     arg: str
     op: "_Operator"
@@ -202,6 +220,14 @@ def _dummy_impl(left: object, right: object) -> object:
     raise NotImplementedError  # pragma: no cover
 
 
+def _in(left: object, right: Container[object]) -> bool:
+    return operator.contains(right, left)
+
+
+def _not_in(left: object, right: Container[object]) -> bool:
+    return not operator.contains(right, left)
+
+
 _OP_TO_DATA: dict[_Operator, _Comparator] = {
     ast.Is: _Comparator("is", ast.IsNot, operator.is_),
     ast.IsNot: _Comparator("is not", ast.Is, operator.is_not),
@@ -211,6 +237,8 @@ _OP_TO_DATA: dict[_Operator, _Comparator] = {
     ast.LtE: _Comparator("<=", ast.Gt, operator.le),
     ast.Lt: _Comparator("<", ast.GtE, operator.lt),
     ast.GtE: _Comparator(">=", ast.Lt, operator.ge),
+    ast.In: _Comparator("in", ast.NotIn, _in),
+    ast.NotIn: _Comparator("not in", ast.In, _not_in),
     "is of type": _Comparator("is of type", "is not of type", _dummy_impl),
     "is not of type": _Comparator("is not of type", "is of type", _dummy_impl),
 }
@@ -324,6 +352,30 @@ class ConditionReturn:
         )
 
 
+def _is_sys_attribute(node: ast.expr, attribute: str) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == attribute
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "sys"
+    )
+
+
+def _runtime_environment_operand(node: ast.Attribute) -> tuple[str, object] | None:
+    if _is_sys_attribute(node, "platform"):
+        return "sys.platform", sys.platform
+    if _is_sys_attribute(node, "version_info"):
+        return "sys.version_info", sys.version_info
+    if isinstance(node.value, ast.Attribute) and _is_sys_attribute(
+        node.value, "implementation"
+    ):
+        if node.attr == "name":
+            return "sys.implementation.name", sys.implementation.name
+        if node.attr == "version":
+            return "sys.implementation.version", sys.implementation.version
+    return None
+
+
 @dataclass
 class ConditionEvaluator(ast.NodeVisitor):
     evaluator: Evaluator
@@ -336,6 +388,29 @@ class ConditionEvaluator(ast.NodeVisitor):
         return ConditionReturn(NullCondition())
 
     def visit_Call(self, node: ast.Call) -> ConditionReturn:
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "startswith"
+            and _is_sys_attribute(node.func.value, "platform")
+        ):
+            if node.keywords or len(node.args) != 1:
+                return self.return_invalid(
+                    "sys.platform.startswith() takes one positional argument", node
+                )
+            prefix = self.evaluate_literal(node.args[0])
+            if prefix is None:
+                return ConditionReturn(NullCondition())
+            if not isinstance(prefix.val, str):
+                return self.return_invalid(
+                    "sys.platform.startswith() requires a string literal", node.args[0]
+                )
+            result = sys.platform.startswith(prefix.val)
+            condition = RuntimeEnvironmentCondition(
+                "sys.platform", sys.platform, "startswith", prefix.val
+            )
+            if result:
+                return ConditionReturn(condition, left_varmap={})
+            return ConditionReturn(condition, right_varmap={})
         if not isinstance(node.func, ast.Name):
             return self.return_invalid("Unexpected call", node.func)
         name = node.func.id
@@ -474,32 +549,25 @@ class ConditionEvaluator(ast.NodeVisitor):
             return ret
 
         if isinstance(node.left, ast.Attribute):
-            mod = self.evaluate_literal(node.left.value)
-            if mod == KnownValue(sys):
-                if node.left.attr == "platform":
-                    left_operand = sys.platform
-                elif node.left.attr == "version_info":
-                    left_operand = sys.version_info
-                else:
-                    return self.return_invalid(
-                        "Only comparisons on sys.platform and sys.version_info are"
-                        " supported",
-                        node.left,
-                    )
+            environment = _runtime_environment_operand(node.left)
+            if environment is not None:
+                name, left_operand = environment
                 data = _OP_TO_DATA[type(op)]
                 try:
                     result = data.impl(left_operand, right_operand.val)
                 except Exception:
-                    return self.return_invalid(
-                        f"Invalid sys.{node.left.attr} comparison", node
-                    )
-                if node.left.attr == "platform":
+                    return self.return_invalid(f"Invalid {name} comparison", node)
+                if name == "sys.platform":
                     condition = PlatformCondition(
                         sys.platform, type(op), right_operand.val
                     )
-                else:
+                elif name == "sys.version_info":
                     condition = VersionCondition(
                         sys.version_info[:2], type(op), right_operand.val
+                    )
+                else:
+                    condition = RuntimeEnvironmentCondition(
+                        name, left_operand, type(op), right_operand.val
                     )
                 if result:
                     return ConditionReturn(condition, left_varmap={})
