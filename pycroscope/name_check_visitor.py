@@ -3504,6 +3504,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _check_for_class_variable_redefinition(
         self, varname: str, node: ast.AST
     ) -> None:
+        # Loops revisit their bindings during collection. Report duplicates only
+        # during the checking pass, when each class statement is processed once.
+        if self._is_collecting():
+            return
         current_scope = self.scopes.current_scope()
         if varname not in current_scope.variables:
             return
