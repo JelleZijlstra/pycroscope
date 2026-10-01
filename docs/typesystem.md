@@ -2,6 +2,11 @@
 
 Pycroscope supports most of the Python type system, as specified in [PEP 484](https://www.python.org/dev/peps/pep-0484/) and various later PEPs and in the [Python documentation](https://docs.python.org/3/library/typing.html). It uses type annotations to infer types and checks for type compatibility in calls and return types. Supported type system features include generics like `List[int]`, `NewType`, `TypedDict`, `TypeVar`, and `Callable`.
 
+Classes declared with `NamedTuple` in stubs expose generated methods such as
+`_replace`, `_asdict`, and `_make`, including when the runtime class inherits from
+a `collections.namedtuple` class. Methods returning `Self`, such as `_replace`
+and `_make`, preserve the concrete subclass type.
+
 ## Extensions
 
 In addition to the standard Python type system, pycroscope supports a number of non-standard extensions:
