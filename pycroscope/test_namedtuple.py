@@ -1,9 +1,64 @@
 # static analysis: ignore
+import sys
+import types
+from collections import namedtuple
+
+import pytest
+
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
 
 
 class TestNamedTuple(TestNameCheckVisitorBase):
+    @pytest.mark.parametrize("runtime_kind", [None, "direct", "subclass"])
+    def test_stub_namedtuple_methods(self, monkeypatch, runtime_kind):
+        if runtime_kind is not None:
+            Point = namedtuple("Point", "x")
+            if runtime_kind == "subclass":
+
+                class Point(Point):
+                    __slots__ = ()
+
+            class Child(Point):
+                pass
+
+            module = types.ModuleType("_pycroscope_tests.namedtuple")
+            for cls in (Point, Child):
+                cls.__module__ = module.__name__
+                cls.__qualname__ = cls.__name__
+                setattr(module, cls.__name__, cls)
+            monkeypatch.setitem(sys.modules, module.__name__, module)
+
+        self.assert_passes(
+            """
+            from typing import Any
+            from typing_extensions import assert_type
+
+            def capybara():
+                from _pycroscope_tests.namedtuple import (
+                    Child, CustomPoint, ExtensionPoint, Point,
+                )
+
+                def check(p: Point, child: Child) -> None:
+                    assert_type(p._replace(x=1), Point)
+                    assert_type(p._asdict(), dict[str, Any])
+                    assert_type(Point._make([1]), Point)
+                    assert_type(child._replace(x=1), Child)
+                    assert_type(child._asdict(), dict[str, Any])
+                    assert_type(Child._make([1]), Child)
+                    assert_type(p.x, int)
+                    assert_type(p._fields, tuple[str, ...])
+                    p.missing_method()  # E: undefined_attribute
+
+                def check_extensions(p: ExtensionPoint, custom: CustomPoint) -> None:
+                    assert_type(p._replace(x=1), ExtensionPoint)
+                    assert_type(p._asdict(), dict[str, Any])
+                    assert_type(ExtensionPoint._make([1]), ExtensionPoint)
+                    assert_type(custom._asdict(), dict[str, int])
+            """,
+            run_in_both_module_modes=True,
+        )
+
     @assert_passes(allow_import_failures=True)
     def test_namedtuple_after_import_failure(self):
         from typing import ClassVar, Generic, NamedTuple, TypeVar

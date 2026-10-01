@@ -681,12 +681,13 @@ class TypeshedFinder:
             )
         elif isinstance(info, typeshed_client.NameInfo):
             if isinstance(info.ast, ast.ClassDef):
-                if info.child_nodes and attr in info.child_nodes:
-                    child_info = info.child_nodes[attr]
+                child = self._get_child_info(info, attr, mod, owner)
+                if child is not None:
+                    child_info, child_mod = child
                     if isinstance(child_info, typeshed_client.NameInfo):
                         return self._get_value_from_child_info(
                             child_info.ast,
-                            mod,
+                            child_mod,
                             on_class=on_class,
                             parent_name=info.ast.name,
                             owner=owner,
@@ -765,16 +766,37 @@ class TypeshedFinder:
         assert False, repr(node)
 
     def _get_child_info(
-        self, info: typeshed_client.resolver.ResolvedName, attr: str, mod: str
+        self,
+        info: typeshed_client.resolver.ResolvedName,
+        attr: str,
+        mod: str,
+        owner: _ClassOwner | None = None,
     ) -> tuple[typeshed_client.resolver.ResolvedName, str] | None:
         if info is None:
             return None
         elif isinstance(info, typeshed_client.ImportedInfo):
-            return self._get_child_info(info.info, attr, ".".join(info.source_module))
+            return self._get_child_info(
+                info.info, attr, ".".join(info.source_module), owner
+            )
         elif isinstance(info, typeshed_client.NameInfo):
             if isinstance(info.ast, ast.ClassDef):
                 if info.child_nodes and attr in info.child_nodes:
                     return info.child_nodes[attr], mod
+                # NamedTuple is a factory at runtime. Its stub describes the
+                # generated members, but its constructor is the factory's, not
+                # the constructor of the generated class.
+                if attr not in {"__init__", "__new__"}:
+                    for base in info.ast.bases:
+                        value = self._parse_expr(base, mod, owner)
+                        if isinstance(value, KnownValue) and is_typing_name(
+                            value.val, "NamedTuple"
+                        ):
+                            return self._get_child_info(
+                                self._get_info_for_name("typing.NamedTuple"),
+                                attr,
+                                "typing",
+                                owner,
+                            )
                 return None
             return None  # TODO maybe we need this for aliased methods
         return None
@@ -786,20 +808,11 @@ class TypeshedFinder:
         attr: str,
         owner: _ClassOwner | None,
     ) -> ClassSymbol | None:
-        if info is None:
+        child = self._get_child_info(info, attr, mod, owner)
+        if child is None:
             return None
-        if isinstance(info, typeshed_client.ImportedInfo):
-            return self._get_direct_symbol_from_info(
-                info.info, ".".join(info.source_module), attr, owner
-            )
-        if not (
-            isinstance(info, typeshed_client.NameInfo)
-            and isinstance(info.ast, ast.ClassDef)
-            and info.child_nodes
-            and attr in info.child_nodes
-        ):
-            return None
-        return self._symbol_from_child_info(info.child_nodes[attr], mod, owner)
+        child_info, child_mod = child
+        return self._symbol_from_child_info(child_info, child_mod, owner)
 
     def _symbol_from_child_info(
         self,
