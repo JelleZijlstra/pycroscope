@@ -228,8 +228,10 @@ class AnnotationVisitor(ErrorContext, CanAssignContext, Protocol):
     def resolve_name(
         self,
         node: ast.Name,
+        *,
         error_node: ast.AST | None = None,
         suppress_errors: bool = False,
+        from_annotation: bool = False,
     ) -> tuple[Value, object]:
         raise NotImplementedError
 
@@ -256,6 +258,7 @@ class Context:
     """While this is True, no annotation errors are emitted."""
     should_allow_undefined_names: bool = field(default=False, init=False)
     """While this is True, unresolved names may evaluate to an unknown type."""
+    in_string_annotation: bool = field(default=False, init=False)
     _being_evaluated: dict[int, Value] = field(default_factory=dict, init=False)
     _invalid_self_nodes: set[int] = field(default_factory=set, init=False)
     visitor: AnnotationVisitor | None = field(default=None, kw_only=True)
@@ -348,11 +351,19 @@ class Context:
         )
         return AnyValue(AnySource.error)
 
-    def get_name_from_globals(self, name: str, globals: Mapping[str, Any]) -> Value:
+    def get_name_from_globals(
+        self,
+        name: str,
+        globals: Mapping[str, Any],
+        *,
+        localns: Mapping[str, object] | None = None,
+    ) -> Value:
         if (
             type_param := self.active_type_params.get_type_param_by_name(name)
         ) is not None:
             return type_param_to_value(type_param)
+        if localns is not None and name in localns:
+            return KnownValue(localns[name])
         if name in globals:
             return KnownValue(globals[name])
         elif hasattr(builtins, name):
@@ -2527,7 +2538,8 @@ def _eval_forward_ref(val: str, ctx: Context) -> AnnotationExpr:
     node = ctx.get_error_node()
     if node is not None and hasattr(node, "lineno") and node.lineno > 1:
         ast.increment_lineno(tree, node.lineno - 1)
-    return _annotation_expr_from_ast(tree.body, ctx)
+    with override(ctx, "in_string_annotation", True):
+        return _annotation_expr_from_ast(tree.body, ctx)
 
 
 def _annotation_expr_from_value(value: Value, ctx: Context) -> AnnotationExpr:
@@ -3350,7 +3362,11 @@ class DefaultContext(Context):
         if self.visitor is not None:
             if self.should_allow_undefined_names:
                 val, defining_scope, _ = self.visitor.scopes.get_with_scope(
-                    node.id, None, self.visitor.state, can_assign_ctx=self.visitor
+                    node.id,
+                    None,
+                    self.visitor.state,
+                    can_assign_ctx=self.visitor,
+                    from_annotation=True,
                 )
                 if val is UNINITIALIZED_VALUE:
                     if self.visitor._is_collecting():
@@ -3370,6 +3386,7 @@ class DefaultContext(Context):
                 return val
             val, _ = self.visitor.resolve_name(
                 node,
+                from_annotation=self.in_string_annotation,
                 error_node=node if self.use_name_node_for_error else self.node,
                 suppress_errors=(
                     self.should_suppress_errors or self.should_allow_undefined_names
@@ -3471,7 +3488,11 @@ class RuntimeAnnotationsContext(Context):
                 node, error_node=self.node, suppress_errors=self.should_suppress_errors
             )
         else:
-            value = self.get_name_from_globals(node.id, globals_dict)
+            value = self.get_name_from_globals(
+                node.id,
+                globals_dict,
+                localns=vars(self.owner) if isinstance(self.owner, type) else None,
+            )
         if _is_self_annotation_value(value):
             self.maybe_show_invalid_self_annotation()
         return value

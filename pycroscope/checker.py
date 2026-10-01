@@ -552,8 +552,10 @@ class Checker:
     def resolve_name(
         self,
         node: ast.Name,
+        *,
         error_node: ast.AST | None = None,
         suppress_errors: bool = False,
+        from_annotation: bool = False,
     ) -> tuple[Value, object]:
         return AnyValue(AnySource.inference), node.id
 

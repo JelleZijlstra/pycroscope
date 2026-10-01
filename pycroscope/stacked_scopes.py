@@ -762,6 +762,9 @@ class Scope:
         default_factory=dict
     )
 
+    # Completed class bindings, used only for deferred annotation lookup.
+    annotation_values: dict[Varname, Value] | None = None
+
     def __post_init__(self) -> None:
         if (
             self.parent_scope is not None
@@ -782,17 +785,22 @@ class Scope:
         state: VisitorState,
         *,
         from_parent_scope: bool = False,
+        from_annotation: bool = False,
         fallback_value: Value | None = None,
         can_assign_ctx: CanAssignContext,
     ) -> tuple[Value, "Scope | None", VarnameOrigin]:
-        local_value, origin = self.get_local(
-            varname,
-            node,
-            state,
-            from_parent_scope=from_parent_scope,
-            fallback_value=fallback_value,
-            can_assign_ctx=can_assign_ctx,
-        )
+        if from_annotation and self.annotation_values is not None:
+            local_value = self.annotation_values.get(varname, UNINITIALIZED_VALUE)
+            origin = EMPTY_ORIGIN
+        else:
+            local_value, origin = self.get_local(
+                varname,
+                None if from_annotation else node,
+                state,
+                from_parent_scope=from_parent_scope,
+                fallback_value=fallback_value,
+                can_assign_ctx=can_assign_ctx,
+            )
         if local_value is not UNINITIALIZED_VALUE:
             return (
                 self.resolve_reference(local_value, state, can_assign_ctx),
@@ -809,6 +817,7 @@ class Scope:
                 parent_node,
                 state,
                 from_parent_scope=True,
+                from_annotation=from_annotation,
                 fallback_value=fallback_value,
                 can_assign_ctx=can_assign_ctx,
             )
@@ -1014,10 +1023,10 @@ class Scope:
 class ModuleScope(Scope):
     """Module scope with per-usage definition tracking across collect/check passes."""
 
-    _preexisting_names: set[Varname]
+    _preexisting_names: builtins.set[Varname]
     _future_values: dict[Varname, Value]
     _usage_is_defined: dict[tuple[Node, Varname], bool]
-    _names_bound_in_check: set[Varname]
+    _names_bound_in_check: builtins.set[Varname]
 
     def __init__(
         self,
@@ -1259,10 +1268,10 @@ class FunctionScope(Scope):
     name_to_current_definition_nodes: SubScope
     usage_to_definition_nodes: dict[tuple[Node, Varname], list[Node]]
     definition_node_to_value: dict[Node, Value]
-    name_to_all_definition_nodes: dict[Varname, set[Node]]
-    name_to_composites: dict[Varname, set[CompositeVariable]]
+    name_to_all_definition_nodes: dict[Varname, builtins.set[Node]]
+    name_to_composites: dict[Varname, builtins.set[CompositeVariable]]
     referencing_value_vars: dict[Varname, Value]
-    accessed_from_special_nodes: set[Varname]
+    accessed_from_special_nodes: builtins.set[Varname]
     current_loop_scopes: list[SubScope]
 
     def __init__(
@@ -1771,6 +1780,7 @@ class StackedScopes:
         state: VisitorState,
         *,
         fallback_value: Value | None = None,
+        from_annotation: bool = False,
         can_assign_ctx: CanAssignContext,
     ) -> tuple[Value, Scope | None, VarnameOrigin]:
         """Like :meth:`get`, but also returns the scope object the name was found in.
@@ -1784,6 +1794,7 @@ class StackedScopes:
             node,
             state,
             fallback_value=fallback_value,
+            from_annotation=from_annotation,
             can_assign_ctx=can_assign_ctx,
         )
 
