@@ -1,6 +1,7 @@
 # static analysis: ignore
 
 import sys
+import textwrap
 
 from .annotations import has_invalid_paramspec_usage
 from .error_code import ErrorCode
@@ -613,6 +614,151 @@ class TestAnnotations(TestNameCheckVisitorBase):
                 assert_type(x, int)
                 assert_type(y, list[str])
             """)
+
+    def test_deferred_class_annotations(self):
+        for mode in ("quoted", "future", "native"):
+            if mode == "native" and sys.version_info < (3, 14):
+                continue
+            code = """
+                from typing_extensions import assert_type
+
+                class Outer:
+                    before: "Inner"
+                    bytes: "bytes"
+                    also_bytes: "bytes"
+                    str: "str" = ""  # E: invalid_annotation
+                    invalid: "int" = 0  # E: invalid_annotation
+
+                    class Inner:
+                        pass
+
+                    after: "Inner"
+
+                    def int(self) -> None:
+                        pass
+
+                    def method(self, value: "Inner") -> "Inner":
+                        return value
+
+                def check(value: Outer) -> None:
+                    assert_type(value.before, Outer.Inner)
+                    assert_type(value.after, Outer.Inner)
+                    assert_type(value.bytes, bytes)
+                    assert_type(value.also_bytes, bytes)
+                    assert_type(value.method(value.before), Outer.Inner)
+            """
+            if mode != "quoted":
+                code = code.replace('"Inner"', "Inner").replace('"bytes"', "bytes")
+                code = code.replace('"str"', "str").replace('"int"', "int")
+            if mode == "future":
+                code = "from __future__ import annotations\n" + textwrap.dedent(code)
+            self.assert_passes(code, run_in_both_module_modes=True)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_class_annotations_do_not_defer_expressions(self):
+        class Outer:
+            before: "Inner"
+            value = int(1)
+
+            class Inner:
+                pass
+
+            def int(self) -> None:
+                pass
+
+        def takes_int(value: int) -> None:
+            pass
+
+        takes_int(Outer.value)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_deferred_class_annotation_shadowing(self):
+        from typing_extensions import assert_type
+
+        class Item:
+            pass
+
+        class Outer:
+            before: "Item"
+            items: "list[Item]"
+
+            class Item:
+                pass
+
+        def check(value: Outer) -> None:
+            assert_type(value.before, Outer.Item)
+            assert_type(value.items, list[Outer.Item])
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_deferred_annotations_skip_enclosing_classes(self):
+        from typing_extensions import assert_type
+
+        class Item:
+            pass
+
+        class Outer:
+            class Item:
+                pass
+
+            class Inner:
+                value: "Item"
+
+        def check(value: Outer.Inner) -> None:
+            assert_type(value.value, Item)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_inherited_deferred_class_annotations(self):
+        from typing_extensions import assert_type
+
+        class Base:
+            class Item:
+                pass
+
+            value: "Item"
+
+            def method(self, value: "Item") -> "Item":
+                return value
+
+        class Child(Base):
+            pass
+
+        def check(value: Child) -> None:
+            assert_type(value.value, Base.Item)
+            assert_type(value.method(value.value), Base.Item)
+
+    def test_future_annotations_preserve_eager_aliases(self):
+        self.assert_passes(
+            """
+            from __future__ import annotations
+            from typing_extensions import TypeAlias, assert_type
+
+            class Outer:
+                Alias: TypeAlias = int
+                value: Alias
+
+                def int(self) -> None:
+                    pass
+
+            def check(value: Outer) -> None:
+                assert_type(value.value, int)
+            """,
+            run_in_both_module_modes=True,
+        )
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_qualified_annotation_with_shadowed_builtin(self):
+        import builtins
+
+        from typing_extensions import assert_type
+
+        class Container:
+            values: "builtins.set[int]"
+
+            def set(self) -> None:
+                pass
+
+        def check(value: Container) -> None:
+            assert_type(value.values, set[int])
 
     @assert_passes()
     def test_final(self):

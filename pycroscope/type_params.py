@@ -111,6 +111,7 @@ class TypeParamVisitor(Protocol):
     def resolve_name(
         self,
         node: ast.Name,
+        *,
         error_node: ast.AST | None = None,
         suppress_errors: bool = False,
     ) -> tuple[Value, object]: ...

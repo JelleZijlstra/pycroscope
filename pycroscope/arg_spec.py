@@ -317,7 +317,13 @@ class AnnotationsContext(Context):
 
     def get_name(self, node: ast.Name) -> Value:
         if self.globals is not None:
-            return self.get_name_from_globals(node.id, self.globals)
+            return self.get_name_from_globals(
+                node.id,
+                self.globals,
+                localns=(
+                    vars(self.self_key) if isinstance(self.self_key, type) else None
+                ),
+            )
         return self.handle_undefined_name(node.id)
 
 

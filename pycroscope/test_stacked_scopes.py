@@ -470,11 +470,11 @@ class TestScoping(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_return_annotation(self):
-        import socket
+        import socket as socket_module
 
         class Capybara:
-            def socket(self) -> socket.error:
-                return socket.error()
+            def socket(self) -> socket_module.error:
+                return socket_module.error()
 
     @skip_before((3, 12))
     def test_module_scope_reveal_locals_with_forward_alias(self):

@@ -741,8 +741,10 @@ class CanAssignContext(Protocol):
     def resolve_name(
         self,
         node: ast.Name,
+        *,
         error_node: ast.AST | None = None,
         suppress_errors: bool = False,
+        from_annotation: bool = False,
     ) -> tuple["Value", object]:
         """Resolve a name for annotation evaluation."""
         return AnyValue(AnySource.inference), node.id

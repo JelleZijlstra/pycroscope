@@ -1829,6 +1829,17 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
             capromys = 1
             capromys = 2  # E: class_variable_redefinition
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_class_loop_bindings(self):
+        class Container:
+            for field in ("first", "second"):
+                locals()[field] = field
+
+        class WhileContainer:
+            values = iter((1, 2))
+            while next(values, 0):
+                field = 1
+
     @assert_passes()
     def test_duplicate_attribute_augassign(self):
         class Capybara:

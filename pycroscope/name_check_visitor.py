@@ -2118,6 +2118,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.collector = collector
         self.import_name_to_node = {}
         self.future_imports = set()  # active future imports in this file
+        self._class_annotation_values: dict[ast.ClassDef, dict[Varname, Value]] = {}
         self.return_values = []
         self.error_for_implicit_any = self.options.is_error_code_enabled(
             ErrorCode.implicit_any
@@ -2683,6 +2684,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._check_for_class_variable_redefinition(varname, node)
         if value is None:
             return AnyValue(AnySource.inference), EMPTY_ORIGIN
+        if (
+            current_scope.annotation_values is not None
+            and self._is_collecting()
+            and not (
+                isinstance(self.current_statement, ast.AnnAssign)
+                and self.current_statement.value is None
+            )
+        ):
+            # Annotation-only declarations do not bind names in the class namespace.
+            current_scope.annotation_values[varname] = value
         origin = current_scope.set(varname, value, lookup_node, self.state)
         if (
             scope_type == ScopeType.class_scope
@@ -3493,6 +3504,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _check_for_class_variable_redefinition(
         self, varname: str, node: ast.AST
     ) -> None:
+        # Loops revisit their bindings during collection. Report duplicates only
+        # during the checking pass, when each class statement is processed once.
+        if self._is_collecting():
+            return
         current_scope = self.scopes.current_scope()
         if varname not in current_scope.variables:
             return
@@ -3528,8 +3543,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def resolve_name(
         self,
         node: ast.Name,
+        *,
         error_node: ast.AST | None = None,
         suppress_errors: bool = False,
+        from_annotation: bool = False,
     ) -> tuple[Value, VarnameOrigin]:
         """Resolves a Name node to a value.
 
@@ -3544,11 +3561,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                                 undefined.
         :type suppress_errors: bool
 
+        :param from_annotation: Use completed scopes for an explicitly stringified
+                                annotation, even without the annotations future import.
+
         """
         if error_node is None:
             error_node = node
         value, defining_scope, origin = self.scopes.get_with_scope(
-            node.id, node, self.state, can_assign_ctx=self
+            node.id,
+            node,
+            self.state,
+            can_assign_ctx=self,
+            from_annotation=from_annotation
+            or (
+                self.in_annotation
+                and not self.in_type_alias_definition
+                and (
+                    "annotations" in self.future_imports or sys.version_info >= (3, 14)
+                )
+            ),
         )
         if defining_scope is not None:
             if defining_scope.scope_type in (
@@ -6900,22 +6931,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self, node: ast.ClassDef, current_class: ClassKey | None
     ) -> tuple[Value, Mapping[str, Value] | None]:
         if self._is_collecting():
-            # If this is a nested class, we need to run the collecting phase to get data
-            # about names accessed from the class.
-            if (
-                len(self.scopes.scopes) > 2
-                or self.current_synthetic_typeddict is not None
+            # Collect class bindings even at module level so deferred annotations
+            # can see later definitions without changing ordinary expression lookup.
+            with (
+                self.scopes.add_scope(
+                    ScopeType.class_scope, scope_node=node, scope_object=current_class
+                ),
+                self._set_current_class(current_class),
             ):
-                with (
-                    self.scopes.add_scope(
-                        ScopeType.class_scope,
-                        scope_node=node,
-                        scope_object=current_class,
-                    ),
-                    self._set_current_class(current_class),
-                ):
-                    self._generic_visit_list(node.body)
-            return AnyValue(AnySource.inference), None
+                scope = self.scopes.current_scope()
+                scope.annotation_values = {}
+                self._generic_visit_list(node.body)
+                self._class_annotation_values[node] = scope.annotation_values
+            return (
+                (
+                    KnownValue(current_class)
+                    if isinstance(current_class, type)
+                    else AnyValue(AnySource.inference)
+                ),
+                None,
+            )
         else:
             with (
                 self.scopes.add_scope(
@@ -6923,6 +6958,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ),
                 self._set_current_class(current_class),
             ):
+                self.scopes.current_scope().annotation_values = (
+                    self._class_annotation_values.get(node)
+                )
                 self._generic_visit_list(node.body)
                 self._flush_pending_overload_block_for_scope(
                     self.scopes.current_scope()
