@@ -2070,8 +2070,10 @@ class Signature:
                                 replacement_value
                             )
                         )
-                        replacement = assert_input_sig(replacement_value)
-                        new_val = replacement.substitute_typevars(typevars)
+                        # Substitute once, just as for ordinary type variables.
+                        # The replacement may contain the same ParamSpec, so
+                        # applying the map again can recurse indefinitely.
+                        new_val = assert_input_sig(replacement_value)
                         if isinstance(new_val, ParamSpecParam):
                             new_param = SigParameter(
                                 param.name,
@@ -2110,50 +2112,6 @@ class Signature:
                                             break
                                 existing_names.add(replacement_name)
                                 params.append((replacement_name, replacement_param))
-                        elif isinstance(new_val, Value):
-                            rebound = assert_input_sig(new_val)
-                            if isinstance(rebound, ParamSpecParam):
-                                new_param = SigParameter(
-                                    param.name,
-                                    param.kind,
-                                    annotation=InputSigValue(rebound),
-                                )
-                                params.append((name, new_param))
-                            elif isinstance(rebound, AnySig):
-                                if not params:
-                                    params.append((ELLIPSIS_PARAM.name, ELLIPSIS_PARAM))
-                                else:
-                                    params.extend(
-                                        _paramspec_anysig_tail_parameters(len(params))
-                                    )
-                            elif isinstance(rebound, ActualArguments):
-                                new_param = SigParameter(
-                                    param.name,
-                                    ParameterKind.PARAM_SPEC,
-                                    annotation=InputSigValue(rebound),
-                                )
-                                params.append((param.name, new_param))
-                            else:
-                                existing_names = {
-                                    param_name for param_name, _ in params
-                                }
-                                next_unnamed_index = len(existing_names)
-                                for (
-                                    replacement_param
-                                ) in rebound.sig.parameters.values():
-                                    replacement_name = replacement_param.name
-                                    if replacement_name in existing_names:
-                                        while True:
-                                            candidate = f"@{next_unnamed_index}"
-                                            next_unnamed_index += 1
-                                            if candidate not in existing_names:
-                                                replacement_name = candidate
-                                                replacement_param = replace(
-                                                    replacement_param, name=candidate
-                                                )
-                                                break
-                                    existing_names.add(replacement_name)
-                                    params.append((replacement_name, replacement_param))
                         else:
                             assert_never(new_val)
                     else:

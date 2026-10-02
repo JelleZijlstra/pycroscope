@@ -2243,6 +2243,71 @@ class TestGenericClasses(TestNameCheckVisitorBase):
 
 
 class TestIntegration(TestNameCheckVisitorBase):
+    @assert_passes(run_in_both_module_modes=True)
+    def test_wraps_paramspec_closure(self):
+        from collections.abc import Callable
+        from functools import wraps
+        from typing import TypeVar
+
+        from typing_extensions import ParamSpec, assert_type
+
+        P = ParamSpec("P")
+        R = TypeVar("R")
+
+        def decorate(func: Callable[P, R]) -> Callable[P, R]:
+            name = func.__name__
+
+            @wraps(func)
+            def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+                if not name:
+                    raise ValueError(name)
+                return func(*args, **kwargs)
+
+            return wrapper
+
+        def check():
+            @decorate
+            def target(value: int, *, suffix: str) -> str:
+                return str(value) + suffix
+
+            assert_type(target(1, suffix="!"), str)
+            target("bad", suffix="!")  # E: incompatible_argument
+            target(1)  # E: incompatible_call
+
+    @skip_before((3, 12))
+    def test_wraps_nested_generic_closure(self):
+        self.assert_passes(
+            """
+            from collections.abc import Callable
+            from functools import wraps
+            from typing import assert_type
+
+            def outer[**P, R](func: Callable[P, R]) -> Callable[P, R]:
+                def decorate[**Q, S](wrapped: Callable[Q, S]) -> Callable[Q, S]:
+                    name = wrapped.__name__
+
+                    @wraps(wrapped)
+                    def wrapper(*args: Q.args, **kwargs: Q.kwargs) -> S:
+                        if not name:
+                            raise ValueError(name)
+                        unused = 1  # E: unused_variable
+                        return wrapped(*args, **kwargs)
+
+                    return wrapper
+                return decorate(func)
+
+            def check():
+                @outer
+                def target(value: int, *, suffix: str) -> str:
+                    return str(value) + suffix
+
+                assert_type(target(1, suffix="!"), str)
+                target("bad", suffix="!")  # E: incompatible_argument
+                target(1)  # E: incompatible_call
+            """,
+            run_in_both_module_modes=True,
+        )
+
     @assert_passes()
     def test_wraps(self):
         import functools
