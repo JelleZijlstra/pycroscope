@@ -1307,7 +1307,7 @@ class TypeshedFinder:
         self, mod: str, owner: _ClassOwner | None
     ) -> _AnnotationContext:
         self_key = owner.class_key if owner is not None else None
-        return _AnnotationContext(self, mod, self_key=self_key)
+        return _AnnotationContext(self, mod, self_key=self_key, can_assign_ctx=self.ctx)
 
     def _get_signature_from_func_def(
         self,

@@ -13,6 +13,7 @@ import typing
 import urllib.parse
 from collections.abc import Collection, MutableSequence, Reversible, Sequence, Set
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Generic, List, NewType, Type, TypeVar, Union
 from urllib.error import HTTPError
 
@@ -633,6 +634,78 @@ class TestConstructors(TestNameCheckVisitorBase):
             assert_is_value(type(x), SubclassValue(TypedValue(str)))
 
 
+class TestStubGenericDefaults(TestNameCheckVisitorBase):
+    @pytest.fixture(autouse=True, params=[True, False], ids=["runtime", "stub_only"])
+    def runtime_module(self, request, monkeypatch):
+        if not request.param:
+            return
+        package = ModuleType("_pycroscope_tests")
+        package.__path__ = []
+        monkeypatch.setitem(sys.modules, package.__name__, package)
+        module_name = "_pycroscope_tests.generic_defaults"
+        module = ModuleType(module_name)
+        module.__package__ = package.__name__
+        package.generic_defaults = module
+        exec(
+            """
+class Box:
+    def get(self):
+        return "x"
+
+class Sub(Box):
+    pass
+
+class Recursive(Box):
+    pass
+
+def make():
+    return Sub()
+
+def make_int():
+    return Sub()
+
+def make_recursive():
+    return Recursive()
+""",
+            module.__dict__,
+        )
+        monkeypatch.setitem(sys.modules, module_name, module)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_factory_return(self):
+        from typing_extensions import assert_type
+
+        def capybara():
+            from _pycroscope_tests.generic_defaults import make, make_int
+
+            # No Sub annotation has populated its type parameters before this call.
+            assert_type(make().get(), str)
+            assert_type(make_int().get(), int)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_bare_and_explicit_annotations(self):
+        from typing_extensions import assert_type
+
+        def capybara():
+            from _pycroscope_tests.generic_defaults import Sub, make
+
+            def check(bare: Sub, explicit: Sub[int]):
+                assert_type(bare.get(), str)
+                assert_type(explicit.get(), int)
+                assert_type(make().get(), str)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_recursive_generic_base(self):
+        from typing_extensions import assert_type
+
+        def capybara():
+            from _pycroscope_tests.generic_defaults import Recursive, make_recursive
+
+            assert_type(make_recursive().get(), Recursive)
+            assert_type(make_recursive().get().get(), Recursive)
+            assert_type("".isspace(), bool)
+
+
 class Parent(Generic[T]):
     pass
 
@@ -1080,10 +1153,7 @@ class TestParamSpec(TestNameCheckVisitorBase):
 
         def capybara():
             wrapped = contextlib.contextmanager(cm)
-            assert_is_value(
-                wrapped(1),
-                GenericValue(contextlib._GeneratorContextManager, [TypedValue(str)]),
-            )
+            assert_type(wrapped(1), contextlib._GeneratorContextManager[str])
             wrapped("x")  # E: incompatible_argument
 
 

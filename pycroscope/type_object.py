@@ -546,6 +546,7 @@ class TypeObject:
     _direct_bases: tuple[MroValue, ...] | None
     _mro: Sequence[MroEntry] | None
     _declared_type_params: tuple[TypeParam, ...] | None
+    _computing_declared_type_params: bool
     _declared_type_params_explicit: bool
     _is_final: bool | None
     _is_disjoint_base: bool | None
@@ -577,6 +578,7 @@ class TypeObject:
         self._direct_bases = None
         self._mro = None
         self._declared_type_params = None
+        self._computing_declared_type_params = False
         self._declared_type_params_explicit = False
         self._is_final = None
         self._is_disjoint_base = None
@@ -1239,7 +1241,15 @@ class TypeObject:
 
     def get_declared_type_params(self) -> tuple[TypeParam, ...]:
         if self._declared_type_params is None:
-            self._declared_type_params = self._compute_declared_type_params()
+            if self._computing_declared_type_params:
+                # Stub bases can refer back to the class, e.g. str(Sequence[str]).
+                # Do not cache this fallback: the outer call computes the parameters.
+                return ()
+            self._computing_declared_type_params = True
+            try:
+                self._declared_type_params = self._compute_declared_type_params()
+            finally:
+                self._computing_declared_type_params = False
         return self._declared_type_params
 
     def get_substitutions(self, args: Sequence[Value]) -> TypeVarMap:
