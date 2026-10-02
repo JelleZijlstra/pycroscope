@@ -168,7 +168,7 @@ class ErrorContext(Protocol):
         self,
         node: ast.AST,
         e: str,
-        error_code: ErrorCodeInstance,
+        error_code: ErrorCodeInstance | None = None,
         *,
         detail: str | None = None,
         save: bool = True,
