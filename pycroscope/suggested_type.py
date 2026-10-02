@@ -5,7 +5,6 @@ Suggest types for untyped code.
 """
 
 import ast
-import os
 from collections import defaultdict
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -141,9 +140,7 @@ class CallableData:
             if sig_param.default is not None:
                 issue = self._check_optional_parameter(param.arg, calls)
                 if issue is not None:
-                    yield _make_failure(
-                        self.ctx, param, self._make_message(param.arg, issue)
-                    )
+                    yield from self._show_unused_call_pattern(param, issue)
             if any(call.source in {ARGS, KWARGS, UNKNOWN} for call in calls):
                 continue
             value_calls = [call for call in calls if call.source is not BOUND_RECEIVER]
@@ -152,15 +149,23 @@ class CallableData:
             annotation = replace_fallback(sig_param.annotation)
             bool_issue = self._check_bool_parameter(annotation, value_calls)
             if bool_issue is not None:
-                yield _make_failure(
-                    self.ctx, param, self._make_message(param.arg, bool_issue)
-                )
+                yield from self._show_unused_call_pattern(param, bool_issue)
                 continue
             union_issue = self._check_union_parameter(annotation, value_calls, ctx)
             if union_issue is not None:
-                yield _make_failure(
-                    self.ctx, param, self._make_message(param.arg, union_issue)
-                )
+                yield from self._show_unused_call_pattern(param, union_issue)
+
+    def _show_unused_call_pattern(
+        self, param: ast.arg, issue: str
+    ) -> Iterator[Failure]:
+        failure = self.ctx.show_error(
+            param,
+            self._make_message(param.arg, issue),
+            # Final checks return these failures separately from the visitor's.
+            save=False,
+        )
+        if failure is not None:
+            yield failure
 
     def _make_message(self, param_name: str, issue: str) -> str:
         return (
@@ -304,26 +309,6 @@ def _is_bool_annotation(annotation: Value) -> bool:
 
 def _describe_call_pattern_value(value: Value) -> str:
     return str(prepare_type(value))
-
-
-def _make_failure(ctx: ErrorContext, node: ast.AST, description: str) -> Failure:
-    lineno = getattr(node, "lineno", None)
-    col_offset = getattr(node, "col_offset", None)
-    failure: Failure = {
-        "description": description,
-        "filename": ctx.filename,
-        "absolute_filename": os.path.abspath(ctx.filename),
-        "message": description + "\n",
-    }
-    concise_message = ctx.filename
-    if lineno is not None:
-        failure["lineno"] = lineno
-        concise_message += f":{lineno}"
-    if col_offset is not None:
-        failure["col_offset"] = col_offset
-        concise_message += f":{col_offset}"
-    failure["concise_message"] = concise_message + f": {description}\n"
-    return failure
 
 
 def display_suggested_type(
