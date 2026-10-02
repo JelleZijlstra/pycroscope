@@ -1876,6 +1876,60 @@ class TestGenericClasses(TestNameCheckVisitorBase):
         contra_ok: Contra[int] = Contra[object]()
 
     @skip_before((3, 12))
+    def test_infer_variance_from_recursive_alias(self):
+        self.assert_passes("""
+            from typing import Callable
+
+            type Plain = int | list[Plain]
+            type Tree[T] = T | tuple[Tree[T], ...]
+            type Mutable[T] = T | list[Mutable[T]]
+            type Flipped[T] = T | Callable[[Flipped[T]], None]
+            type Swapped[T, U] = T | tuple[Swapped[U, T], ...]
+            type Left[T] = T | tuple[Right[T], ...]
+            type Right[T] = tuple[Left[T], ...]
+
+            class PlainBox[T]:
+                def get(self) -> Plain:
+                    return 1
+
+            class Co[T]:
+                def get(self) -> Tree[T]:
+                    raise NotImplementedError
+
+            class Contra[T]:
+                def put(self, value: Tree[T]) -> None:
+                    pass
+
+            class Inv[T]:
+                def get(self) -> Mutable[T]:
+                    raise NotImplementedError
+
+            class Flip[T]:
+                def get(self) -> Flipped[T]:
+                    raise NotImplementedError
+
+            class Swap[T]:
+                def get(self) -> Swapped[int, T]:
+                    raise NotImplementedError
+
+            class Mutual[T]:
+                def get(self) -> Left[T]:
+                    raise NotImplementedError
+
+            def check(co: Co[int], contra: Contra[object], inv: Inv[int], flip: Flip[int]):
+                a: Co[object] = co
+                b: Contra[int] = contra
+                c: Inv[object] = inv  # E: incompatible_assignment
+                d: Flip[object] = flip  # E: incompatible_assignment
+                print(a, b, c, d)
+
+            def check_specializations(swap: Swap[int], mutual: Mutual[int]):
+                a: Swap[object] = swap
+                b: Mutual[object] = mutual
+                print(a, b)
+            """)
+
+    @skip_before((3, 12))
     def test_infer_variance_from_member_annotations(self):
         self.assert_passes(
             """

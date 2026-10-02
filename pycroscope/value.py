@@ -4222,25 +4222,37 @@ def gradualize(value: Value) -> GradualType:
 
 
 def replace_fallback(val: Value) -> BasicType:
-    while True:
-        fallback = val.get_fallback_value()
-        if fallback is None:
-            break
-        val = fallback
-    if not isinstance(val, BASIC_TYPE):
-        raise NotAGradualType(f"Encountered non-basic type {val!r}")
-    return val
+    return replace_fallback_except(val)
 
 
 ValueT = TypeVar("ValueT", bound=Value)
 
 
+@typing.overload
+def replace_fallback_except(val: Value) -> BasicType: ...
+
+
+@typing.overload
+def replace_fallback_except(
+    val: Value, except_types: tuple[type[ValueT], ...]
+) -> BasicType | ValueT: ...
+
+
 def replace_fallback_except(
     val: Value, except_types: tuple[type[ValueT], ...] = ()
 ) -> BasicType | ValueT:
+    seen_aliases: set[tuple[int, tuple[Value, ...]]] | None = None
     while True:
         if isinstance(val, except_types):
             return val
+        if isinstance(val, TypeAliasValue):
+            if seen_aliases is None:
+                seen_aliases = set()
+            alias_key = (id(val.alias), tuple(val.type_arguments))
+            if alias_key in seen_aliases:
+                # A cycle with no intervening concrete type is an invalid alias.
+                return AnyValue(AnySource.error)
+            seen_aliases.add(alias_key)
         fallback = val.get_fallback_value()
         if fallback is None:
             break

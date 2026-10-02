@@ -2761,7 +2761,11 @@ def _newtype_contains_any(value: Value) -> bool:
     return False
 
 
-def _newtype_contains_typevar(value: Value) -> bool:
+def _newtype_contains_typevar(
+    value: Value, seen_aliases: set[tuple[int, tuple[Value, ...]]] | None = None
+) -> bool:
+    if seen_aliases is None:
+        seen_aliases = set()
     if isinstance(value, PartialCallValue):
 
         def _is_type_param_constructor(obj: object) -> bool:
@@ -2782,15 +2786,24 @@ def _newtype_contains_typevar(value: Value) -> bool:
             runtime_value.typ
         ):
             return True
-        return _newtype_contains_typevar(value.callee) or any(
-            _newtype_contains_typevar(argument) for argument in value.arguments.values()
+        return _newtype_contains_typevar(value.callee, seen_aliases) or any(
+            _newtype_contains_typevar(argument, seen_aliases)
+            for argument in value.arguments.values()
         )
     if isinstance(value, PartialValue):
-        return _newtype_contains_typevar(value.root) or any(
-            _newtype_contains_typevar(member) for member in value.members
+        return _newtype_contains_typevar(value.root, seen_aliases) or any(
+            _newtype_contains_typevar(member, seen_aliases) for member in value.members
         )
 
-    value = replace_fallback(value)
+    value = replace_fallback_except(value, (TypeAliasValue, TypeVarValue))
+    if isinstance(value, TypeAliasValue):
+        key = (id(value.alias), tuple(value.type_arguments))
+        if key in seen_aliases:
+            return False
+        seen_aliases.add(key)
+        return _newtype_contains_typevar(value.get_value(), seen_aliases) or any(
+            _newtype_contains_typevar(arg, seen_aliases) for arg in value.type_arguments
+        )
     if isinstance(value, AnyValue):
         return value.source is AnySource.generic_argument
     if isinstance(value, KnownValue):
@@ -2798,23 +2811,24 @@ def _newtype_contains_typevar(value: Value) -> bool:
     if isinstance(value, TypeVarValue):
         return True
     if isinstance(value, TypeFormValue):
-        return _newtype_contains_typevar(value.inner_type)
+        return _newtype_contains_typevar(value.inner_type, seen_aliases)
     if isinstance(value, NewTypeValue):
-        return _newtype_contains_typevar(value.value)
+        return _newtype_contains_typevar(value.value, seen_aliases)
     if isinstance(value, AnnotatedValue):
-        return _newtype_contains_typevar(value.value)
+        return _newtype_contains_typevar(value.value, seen_aliases)
     if isinstance(value, GenericValue):
-        return any(_newtype_contains_typevar(arg) for arg in value.args)
+        return any(_newtype_contains_typevar(arg, seen_aliases) for arg in value.args)
     if isinstance(value, SequenceValue):
-        return any(_newtype_contains_typevar(member) for _, member in value.members)
-    if isinstance(value, MultiValuedValue):
-        return any(_newtype_contains_typevar(subval) for subval in value.vals)
-    if isinstance(value, SubclassValue):
-        return _newtype_contains_typevar(value.typ)
-    if isinstance(value, TypeAliasValue):
-        return _newtype_contains_typevar(value.get_value()) or any(
-            _newtype_contains_typevar(arg) for arg in value.type_arguments
+        return any(
+            _newtype_contains_typevar(member, seen_aliases)
+            for _, member in value.members
         )
+    if isinstance(value, MultiValuedValue):
+        return any(
+            _newtype_contains_typevar(subval, seen_aliases) for subval in value.vals
+        )
+    if isinstance(value, SubclassValue):
+        return _newtype_contains_typevar(value.typ, seen_aliases)
     return False
 
 

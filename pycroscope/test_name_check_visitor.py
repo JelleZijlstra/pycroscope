@@ -3397,6 +3397,23 @@ class TestVariableNameValue(TestNameCheckVisitorBase):
 
 
 class TestNewType(TestNameCheckVisitorBase):
+    @skip_before((3, 12))
+    def test_recursive_alias_base(self):
+        self.assert_passes(
+            """
+            from typing import NewType
+
+            type A = list[A]
+            type B[T] = list[B[T] | T]
+            N = NewType("N", A)
+            Specialized = NewType("Specialized", B[int])
+
+            def check(value: A) -> N:
+                return N(value)
+            """,
+            run_in_both_module_modes=True,
+        )
+
     @assert_passes()
     def test_basic(self):
         from typing import NewType

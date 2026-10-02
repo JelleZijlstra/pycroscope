@@ -27,6 +27,25 @@ from .value import (
 
 
 class TestSuggestedType(TestNameCheckVisitorBase):
+    @assert_passes(
+        settings={ErrorCode.suggested_return_type: True}, run_in_both_module_modes=True
+    )
+    def test_recursive_alias_return(self):
+        from typing import Annotated
+
+        from typing_extensions import TypeAliasType
+
+        A = TypeAliasType("A", int | list["A"])
+
+        def direct(value: A):  # E: suggested_return_type
+            return value
+
+        def nested(value: list[A]):  # E: suggested_return_type
+            return value
+
+        def annotated(value: Annotated[A, "metadata"]):  # E: suggested_return_type
+            return value
+
     @assert_passes(settings={ErrorCode.suggested_return_type: True})
     def test_return(self):
         def capybara():  # E: suggested_return_type

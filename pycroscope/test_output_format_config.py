@@ -107,3 +107,59 @@ def test_unused_call_pattern_output(
         assert findings[0]["lineno"] == 4
         assert findings[0]["col_offset"] == 6
         assert findings[0]["description"] in result.stderr
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="PEP 695 syntax")
+@pytest.mark.parametrize("include_alias_call", [False, True])
+def test_recursive_alias_unused_call_pattern_json(
+    tmp_path: Path, include_alias_call: bool
+) -> None:
+    source = tmp_path / "recursive.py"
+    source.write_text(
+        "type A = int | list[A]\n"
+        "\n"
+        "def f(a: A | bytes) -> None:\n"
+        "    pass\n"
+        "\n"
+        "def g() -> None:\n"
+        "    f(bytes(1))\n" + ("    f([1, [2]])\n" if include_alias_call else ""),
+        encoding="utf-8",
+    )
+    unrelated = tmp_path / "unrelated.py"
+    unrelated.write_text("value: int = 'wrong'\n", encoding="utf-8")
+    config_path = tmp_path / "pyproject.toml"
+    _write_config(config_path, "concise")
+    report = tmp_path / "findings.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pycroscope",
+            "--config-file",
+            str(config_path),
+            "--find-unused-call-patterns",
+            "--json-output",
+            str(report),
+            str(source),
+            str(unrelated),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1, result.stderr
+    assert "Traceback" not in result.stderr
+    findings = json.loads(report.read_text(encoding="utf-8"))
+    assert any(finding["filename"] == str(unrelated) for finding in findings)
+    alias_findings = [
+        finding for finding in findings if finding["filename"] == str(source)
+    ]
+    if include_alias_call:
+        assert alias_findings == []
+    else:
+        assert len(alias_findings) == 1
+        description = alias_findings[0]["description"]
+        assert "parameter 'a' never receives" in description
+        assert ".A" in description
+        assert "(observed bytes)" in description
+        assert description in result.stderr

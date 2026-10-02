@@ -260,6 +260,7 @@ class Context:
     """While this is True, unresolved names may evaluate to an unknown type."""
     in_string_annotation: bool = field(default=False, init=False)
     _being_evaluated: dict[int, Value] = field(default_factory=dict, init=False)
+    _type_alias_cache: dict[object, TypeAlias] = field(default_factory=dict, init=False)
     _invalid_self_nodes: set[int] = field(default_factory=set, init=False)
     visitor: AnnotationVisitor | None = field(default=None, kw_only=True)
     can_assign_ctx: CanAssignContext | None = field(default=None, kw_only=True)
@@ -399,7 +400,12 @@ class Context:
         evaluator: typing.Callable[[], Value],
         evaluate_type_params: typing.Callable[[], Sequence[TypeParam]],
     ) -> TypeAlias:
-        return TypeAlias(evaluator, evaluate_type_params)
+        cache_key = _type_alias_cache_key(key)
+        if cache_key not in self._type_alias_cache:
+            self._type_alias_cache[cache_key] = TypeAlias(
+                evaluator, evaluate_type_params
+            )
+        return self._type_alias_cache[cache_key]
 
 
 @dataclass
