@@ -38,6 +38,7 @@ from .value import (
     SubclassValue,
     SyntheticClassObjectValue,
     SyntheticModuleValue,
+    TypeAliasValue,
     TypedDictValue,
     TypedValue,
     TypeFormValue,
@@ -45,6 +46,7 @@ from .value import (
     Value,
     VariableNameValue,
     replace_fallback,
+    replace_fallback_except,
     replace_known_sequence_value,
     stringify_object,
     unite_values,
@@ -394,8 +396,11 @@ def prepare_type(value: Value, ctx: CanAssignContext | None = None) -> Value:
 
     if isinstance(value, InputSigValue):
         return AnyValue(AnySource.inference)
+    value = replace_fallback_except(value, (TypeAliasValue,))
+    if isinstance(value, TypeAliasValue):
+        # Keep aliases as named types; expanding recursive aliases never terminates.
+        return value
     value = replace_known_sequence_value(value)
-    value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):
         vals = [prepare_type(subval, ctx) for subval in value.vals]
         # Throw out Anys

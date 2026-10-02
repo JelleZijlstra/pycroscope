@@ -719,6 +719,31 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
         """)
 
     @skip_before((3, 12))
+    def test_312_nested_identity_alias(self):
+        self.assert_passes(
+            """
+            type Identity[T] = T
+
+            def f(value: Identity[Identity[int]]) -> str:
+                return value  # E: incompatible_return_value
+            """,
+            run_in_both_module_modes=True,
+        )
+
+    @skip_before((3, 12))
+    def test_312_used_alias_cycle(self):
+        self.assert_passes(
+            """
+            type A = B  # E: invalid_type_alias
+            type B = A  # E: invalid_type_alias
+
+            def f(value: A) -> B:
+                return value
+            """,
+            run_in_both_module_modes=True,
+        )
+
+    @skip_before((3, 12))
     def test_312_runtime_typealiastype_cycles(self):
         self.assert_passes(
             """

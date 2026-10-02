@@ -36,6 +36,7 @@ from .value import (
     SyntheticClassObjectValue,
     SyntheticModuleValue,
     SyntheticTypeFormValue,
+    TypeAliasValue,
     TypedValue,
     TypeFormValue,
     TypeParam,
@@ -282,6 +283,7 @@ class _PolarityCollector:
         }
         self._ctx = ctx
         self.polarities: dict[TypeParam, _Polarity] = {}
+        self._seen_aliases: set[tuple[int, tuple[Value, ...], _Polarity]] = set()
 
     def record(self, type_param: TypeParam, polarity: _Polarity) -> None:
         target = self._type_params_by_identity.get(type_param.typevar)
@@ -347,10 +349,16 @@ class _PolarityCollector:
                 TypeFormValue,
                 NotValue,
                 SyntheticTypeFormValue,
+                TypeAliasValue,
             ),
         )
 
         match value:
+            case TypeAliasValue():
+                key = (id(value.alias), tuple(value.type_arguments), polarity)
+                if key not in self._seen_aliases:
+                    self._seen_aliases.add(key)
+                    self.collect(value.get_value(), polarity)
             case TypeVarValue(typevar_param=typevar_param):
                 self.record(typevar_param, polarity)
             case ParamSpecArgsValue(param_spec=param_spec) | ParamSpecKwargsValue(
