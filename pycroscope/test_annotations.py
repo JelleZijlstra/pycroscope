@@ -2,7 +2,7 @@
 
 import sys
 import textwrap
-from typing import Callable
+import typing as _typing
 
 from .annotations import has_invalid_paramspec_usage
 from .error_code import ErrorCode
@@ -46,7 +46,7 @@ _SHARED_TUPLE = int
 _SHARED_CALLABLE = int
 for _ in range(16):
     _SHARED_TUPLE = tuple[_SHARED_TUPLE, _SHARED_TUPLE]
-    _SHARED_CALLABLE = Callable[[_SHARED_CALLABLE], _SHARED_CALLABLE]
+    _SHARED_CALLABLE = _typing.Callable[[_SHARED_CALLABLE], _SHARED_CALLABLE]
 
 
 class TestAnnotations(TestNameCheckVisitorBase):
@@ -1044,7 +1044,7 @@ class TestCallable(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_stringified(self):
-        from typing import Sequence, TypeVar
+        from typing import Callable, Sequence, TypeVar
 
         from typing_extensions import Literal
 
