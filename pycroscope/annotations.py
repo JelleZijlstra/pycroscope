@@ -321,7 +321,7 @@ class Context:
         self._runtime_annotation_references.extend(
             (obj, self.self_key, self.new_type_param_owner, bindings)
         )
-        final_expr = AnnotationExpr(self, AnyValue(AnySource.inference))
+        final_value: Value = AnyValue(AnySource.inference)
         if isinstance(obj, str):
             name, module = obj, "<unknown>"
         elif isinstance(obj, typing.ForwardRef):
@@ -329,15 +329,13 @@ class Context:
         else:
             name = safe_getattr(obj, "__name__", type(obj).__name__)
             module = safe_getattr(obj, "__module__", "<unknown>")
-        alias = TypeAlias(
-            lambda: final_expr.to_value(allow_qualifiers=True, allow_empty=True),
-            lambda: [],
-        )
+        alias = TypeAlias(lambda: final_value, lambda: [])
         self._runtime_annotation_cache[key] = AnnotationExpr(
             self, TypeAliasValue(name, module, alias)
         )
         try:
             final_expr = evaluator()
+            final_value = final_expr.to_value(allow_qualifiers=True, allow_empty=True)
             self._runtime_annotation_cache[key] = final_expr
             return final_expr
         except BaseException:
