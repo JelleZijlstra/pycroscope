@@ -2201,11 +2201,13 @@ class Signature:
         )
 
     def get_annotation_values(self) -> Iterable[Value]:
+        """Yield return and parameter annotations without walking their subvalues."""
         yield self.return_value
         for param in self.parameters.values():
             yield param.annotation
 
     def walk_values(self) -> Iterable[Value]:
+        """Yield return and parameter annotations and recursively walk their subvalues."""
         for value in self.get_annotation_values():
             yield from value.walk_values()
 
@@ -3144,10 +3146,12 @@ class OverloadedSignature:
         return f"overloaded ({sigs})"
 
     def get_annotation_values(self) -> Iterable[Value]:
+        """Yield each overload's annotations without walking their subvalues."""
         for sig in self.signatures:
             yield from sig.get_annotation_values()
 
     def walk_values(self) -> Iterable[Value]:
+        """Yield each overload's annotations and recursively walk their subvalues."""
         for value in self.get_annotation_values():
             yield from value.walk_values()
 
