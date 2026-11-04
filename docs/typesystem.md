@@ -7,6 +7,12 @@ Classes declared with `NamedTuple` in stubs expose generated methods such as
 a `collections.namedtuple` class. Methods returning `Self`, such as `_replace`
 and `_make`, preserve the concrete subclass type.
 
+Recursive `TypedDict` annotations support quoted forward references and Python
+3.14 deferred annotations, including references between multiple TypedDicts.
+Recursive generic bounds also preserve their bounds during annotation evaluation.
+Shared runtime annotation graphs, including nested tuples and callables, are
+resolved without expanding every path through repeated subtypes.
+
 ## Extensions
 
 In addition to the standard Python type system, pycroscope supports a number of non-standard extensions:

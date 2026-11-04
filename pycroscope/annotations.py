@@ -32,7 +32,7 @@ import itertools
 import sys
 import types
 import typing
-from collections.abc import Callable, Container, Generator, Hashable, Mapping, Sequence
+from collections.abc import Callable, Container, Hashable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import InitVar, dataclass, field
 from types import GenericAlias
@@ -245,6 +245,16 @@ class AnnotationVisitor(ErrorContext, CanAssignContext, Protocol):
         raise NotImplementedError
 
 
+def _annotation_evaluation_key(obj: object) -> object:
+    if isinstance(obj, str):
+        return (str, obj)
+    if isinstance(obj, typing.ForwardRef):
+        # Each TypedDict field gets a separate ForwardRef, even when the fields
+        # refer to the same recursive type in the same annotation context.
+        return (typing.ForwardRef, obj.__forward_arg__, obj.__forward_module__)
+    return id(obj)
+
+
 @dataclass
 class Context:
     """A context for evaluating annotations.
@@ -259,8 +269,14 @@ class Context:
     should_allow_undefined_names: bool = field(default=False, init=False)
     """While this is True, unresolved names may evaluate to an unknown type."""
     in_string_annotation: bool = field(default=False, init=False)
-    _being_evaluated: dict[int, Value] = field(default_factory=dict, init=False)
     _type_alias_cache: dict[object, TypeAlias] = field(default_factory=dict, init=False)
+    _runtime_annotation_cache: dict[object, AnnotationExpr] = field(
+        default_factory=dict, init=False
+    )
+    _runtime_annotation_references: list[object] = field(
+        default_factory=list, init=False
+    )
+    _runtime_annotation_depth: int = field(default=0, init=False)
     _invalid_self_nodes: set[int] = field(default_factory=set, init=False)
     visitor: AnnotationVisitor | None = field(default=None, kw_only=True)
     can_assign_ctx: CanAssignContext | None = field(default=None, kw_only=True)
@@ -278,27 +294,60 @@ class Context:
         """Temporarily treat undefined annotation names as unknown types."""
         return override(self, "should_allow_undefined_names", True)
 
-    def is_being_evaluted(self, obj: object) -> Value | None:
-        return self._being_evaluated.get(id(obj))
+    def evaluate_runtime_annotation(
+        self, obj: object, evaluator: Callable[[], AnnotationExpr], *, is_type: bool
+    ) -> AnnotationExpr:
+        """Evaluate one node in a runtime annotation graph.
 
-    @contextlib.contextmanager
-    def add_evaluation(
-        self, obj: object, name: str, module: str, evaluator: Callable[[], Value]
-    ) -> Generator[None, None, None]:
-        """Temporarily add an object to the set of objects being evaluated.
-
-        This is used to prevent infinite recursion when evaluating forward references.
-
+        Keep completed nodes and recursive references for this traversal only.
+        Expression parsing and type parsing have different qualifier semantics,
+        and active type-parameter bindings can change while resolving an alias.
         """
-        obj_id = id(obj)
-        value = TypeAliasValue(
-            name, module, self.get_type_alias(name, evaluator, lambda: [])
+        bindings = self.active_type_params.current_pep695_type_params()
+        key = (
+            is_type,
+            _annotation_evaluation_key(obj),
+            tuple((id(identity), id(param)) for identity, param in bindings.items()),
+            id(self.self_key),
+            id(self.new_type_param_owner),
+            self.should_suppress_errors,
+            self.should_allow_undefined_names,
+            self.in_string_annotation,
         )
-        self._being_evaluated[obj_id] = value
+        if key in self._runtime_annotation_cache:
+            return self._runtime_annotation_cache[key]
+        self._runtime_annotation_depth += 1
+        # Retain objects used in identity keys until the traversal ends.
+        self._runtime_annotation_references.extend(
+            (obj, self.self_key, self.new_type_param_owner, bindings)
+        )
+        final_expr = AnnotationExpr(self, AnyValue(AnySource.inference))
+        if isinstance(obj, str):
+            name, module = obj, "<unknown>"
+        elif isinstance(obj, typing.ForwardRef):
+            name, module = obj.__forward_arg__, obj.__forward_module__ or "<unknown>"
+        else:
+            name = safe_getattr(obj, "__name__", type(obj).__name__)
+            module = safe_getattr(obj, "__module__", "<unknown>")
+        alias = TypeAlias(
+            lambda: final_expr.to_value(allow_qualifiers=True, allow_empty=True),
+            lambda: [],
+        )
+        self._runtime_annotation_cache[key] = AnnotationExpr(
+            self, TypeAliasValue(name, module, alias)
+        )
         try:
-            yield
+            final_expr = evaluator()
+            self._runtime_annotation_cache[key] = final_expr
+            return final_expr
+        except BaseException:
+            self._runtime_annotation_cache.pop(key, None)
+            raise
         finally:
-            del self._being_evaluated[obj_id]
+            self._runtime_annotation_depth -= 1
+            if not self._runtime_annotation_depth:
+                self._runtime_annotation_cache.clear()
+                self._runtime_annotation_references.clear()
 
     def show_error(
         self,
@@ -709,14 +758,14 @@ def _annotation_expr_from_ast(node: ast.AST, ctx: Context) -> AnnotationExpr:
 
 
 def _annotation_expr_from_runtime(val: object, ctx: Context) -> AnnotationExpr:
+    return ctx.evaluate_runtime_annotation(
+        val, lambda: _annotation_expr_from_runtime_inner(val, ctx), is_type=False
+    )
+
+
+def _annotation_expr_from_runtime_inner(val: object, ctx: Context) -> AnnotationExpr:
     if isinstance(val, str):
-        if (result := ctx.is_being_evaluted(val)) is not None:
-            return AnnotationExpr(ctx, result)
-        final_value = AnyValue(AnySource.inference)
-        with ctx.add_evaluation(val, val, "<unknown>", lambda: final_value):
-            final_expr = _eval_forward_ref(val, ctx)
-            final_value = final_expr.to_value(allow_qualifiers=True, allow_empty=True)
-        return final_expr
+        return _eval_forward_ref(val, ctx)
     elif is_typing_name(val, "Final"):
         return AnnotationExpr(ctx, None, [(Qualifier.Final, None)])
     elif is_typing_name(val, "ClassVar"):
@@ -733,21 +782,10 @@ def _annotation_expr_from_runtime(val: object, ctx: Context) -> AnnotationExpr:
     elif is_instance_of_typing_name(val, "_ForwardRef") or is_instance_of_typing_name(
         val, "ForwardRef"
     ):
-        if (result := ctx.is_being_evaluted(val)) is not None:
-            return AnnotationExpr(ctx, result)
-        final_value = AnyValue(AnySource.inference)
-        with ctx.add_evaluation(
-            val,
-            val.__forward_arg__,  # static analysis: ignore[undefined_attribute]
-            val.__forward_module__,  # static analysis: ignore[undefined_attribute]
-            lambda: final_value,
-        ):
-            # Forward refs may be defined in a different file and errors can be misattributed.
-            with ctx.suppress_errors():
-                # static analysis: ignore[undefined_attribute]
-                final_expr = _eval_forward_ref(val.__forward_arg__, ctx)
-                final_value = final_expr.to_value(allow_qualifiers=True)
-        return final_expr
+        # Forward refs may be defined in a different file and errors can be misattributed.
+        with ctx.suppress_errors():
+            # static analysis: ignore[undefined_attribute]
+            return _eval_forward_ref(val.__forward_arg__, ctx)
     elif isinstance(val, GenericAlias) and getattr(val, "__unpacked__", False):
         inner = _type_from_runtime(val, ctx)
         return AnnotationExpr(ctx, inner, qualifiers=[(Qualifier.Unpack, None)])
@@ -801,13 +839,16 @@ def _intersection_value_from_members(members: Sequence[Value]) -> IntersectionVa
 
 
 def _type_from_runtime(val: Any, ctx: Context) -> Value:
+    return ctx.evaluate_runtime_annotation(
+        val,
+        lambda: AnnotationExpr(ctx, _type_from_runtime_inner(val, ctx)),
+        is_type=True,
+    ).to_value()
+
+
+def _type_from_runtime_inner(val: Any, ctx: Context) -> Value:
     if isinstance(val, str):
-        if (result := ctx.is_being_evaluted(val)) is not None:
-            return result
-        final_value = AnyValue(AnySource.inference)
-        with ctx.add_evaluation(val, val, "<unknown>", lambda: final_value):
-            final_value = _eval_forward_ref(val, ctx).to_value()
-        return final_value
+        return _eval_forward_ref(val, ctx).to_value()
     elif is_instance_of_typing_name(val, "ParamSpecArgs"):
         origin = get_origin(val)
         if is_instance_of_typing_name(origin, "ParamSpec"):
@@ -830,49 +871,7 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
     # Can't use is_typeddict() here because we still want to support
     # mypy_extensions.TypedDict
     elif is_instance_of_typing_name(val, "_TypedDictMeta"):
-        required_keys = getattr(val, "__required_keys__", None)
-        readonly_keys = getattr(val, "__readonly_keys__", None)
-        total = getattr(val, "__total__", True)
-        extra_keys = None
-        # Deprecated
-        if hasattr(val, "__extra_keys__"):
-            extra_keys = _annotation_expr_from_runtime(val.__extra_keys__, ctx)
-        # typing_extensions 4.12
-        # static analysis: ignore[value_always_true]
-        if isinstance(
-            val,
-            # static analysis: ignore[private_import]
-            typing_extensions._TypedDictMeta,
-            # static analysis: ignore[value_always_true]
-        ) and not hasattr(typing_extensions, "TypeForm"):
-            if hasattr(val, "__closed__") and val.__closed__:
-                extra_keys = _annotation_expr_from_runtime(val.__extra_items__, ctx)
-        else:
-            # Newer typing-extensions
-            if hasattr(val, "__closed__") and val.__closed__:
-                extra_keys = AnnotationExpr(ctx, NO_RETURN_VALUE)
-            elif hasattr(val, "__extra_items__") and not is_typing_name(
-                val.__extra_items__, "NoExtraItems"
-            ):
-                extra_keys = _annotation_expr_from_runtime(val.__extra_items__, ctx)
-        if extra_keys is None:
-            extra_keys_val = None
-            extra_readonly = False
-        else:
-            extra_keys_val, qualifiers = extra_keys.unqualify(
-                {Qualifier.ReadOnly}, qualifier_error_code=ErrorCode.invalid_qualifier
-            )
-            extra_readonly = Qualifier.ReadOnly in qualifiers
-        return TypedDictValue(
-            {
-                key: _get_typeddict_value(
-                    value, ctx, key, required_keys, total, readonly_keys
-                )
-                for key, value in val.__annotations__.items()
-            },
-            extra_keys=extra_keys_val,
-            extra_keys_readonly=extra_readonly,
-        )
+        return _typeddict_from_runtime(val, ctx)
     elif val is AsynqCallable:
         return CallableValue(Signature.make([ELLIPSIS_PARAM], is_asynq=True))
     elif val is Intersection:
@@ -919,16 +918,9 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
     elif is_instance_of_typing_name(val, "_ForwardRef") or is_instance_of_typing_name(
         val, "ForwardRef"
     ):
-        if (result := ctx.is_being_evaluted(val)) is not None:
-            return result
-        final_value = AnyValue(AnySource.inference)
-        with ctx.add_evaluation(
-            val, val.__forward_arg__, val.__forward_module__, lambda: final_value
-        ):
-            # Forward refs may be defined in a different file and errors can be misattributed.
-            with ctx.suppress_errors():
-                final_value = _eval_forward_ref(val.__forward_arg__, ctx).to_value()
-        return final_value
+        # Forward refs may be defined in a different file and errors can be misattributed.
+        with ctx.suppress_errors():
+            return _eval_forward_ref(val.__forward_arg__, ctx).to_value()
     elif is_instance_of_typing_name(val, "TypeAliasType"):
         alias_owner = _alias_owner_from_runtime_alias(val)
         type_params = tuple(
@@ -1662,19 +1654,29 @@ def _is_paramspec_component_annotation(value: Value) -> bool:
 def has_invalid_paramspec_usage(
     value: Value, can_assign_ctx: CanAssignContext | None
 ) -> bool:
+    return _has_invalid_paramspec_usage(value, can_assign_ctx, set())
+
+
+def _has_invalid_paramspec_usage(
+    value: Value, can_assign_ctx: CanAssignContext | None, seen: set[int]
+) -> bool:
+    if id(value) in seen:
+        return False
+    seen.add(id(value))
     if _is_paramspec_annotation(value):
         return True
     if _is_paramspec_component_annotation(value):
         return True
     if isinstance(value, AnnotatedValue):
-        return has_invalid_paramspec_usage(value.value, can_assign_ctx)
+        return _has_invalid_paramspec_usage(value.value, can_assign_ctx, seen)
     if isinstance(value, MultiValuedValue):
         return any(
-            has_invalid_paramspec_usage(subval, can_assign_ctx) for subval in value.vals
+            _has_invalid_paramspec_usage(subval, can_assign_ctx, seen)
+            for subval in value.vals
         )
     if isinstance(value, SequenceValue):
         return any(
-            has_invalid_paramspec_usage(member, can_assign_ctx)
+            _has_invalid_paramspec_usage(member, can_assign_ctx, seen)
             for _is_many, member in value.members
         )
     if isinstance(value, TypeAliasValue):
@@ -1684,25 +1686,25 @@ def has_invalid_paramspec_usage(
                 if _is_paramspec_annotation(type_arg):
                     if not isinstance(type_param, ParamSpecParam):
                         return True
-                elif has_invalid_paramspec_usage(type_arg, can_assign_ctx):
+                elif _has_invalid_paramspec_usage(type_arg, can_assign_ctx, seen):
                     return True
             return False
         return any(
-            has_invalid_paramspec_usage(type_arg, can_assign_ctx)
+            _has_invalid_paramspec_usage(type_arg, can_assign_ctx, seen)
             for type_arg in value.type_arguments
         )
     if isinstance(value, CallableValue):
         signature = value.signature
         if not isinstance(signature, Signature):
             return False
-        if has_invalid_paramspec_usage(signature.return_value, can_assign_ctx):
+        if _has_invalid_paramspec_usage(signature.return_value, can_assign_ctx, seen):
             return True
         for param in signature.parameters.values():
             annotation = param.annotation
             if _is_paramspec_annotation(annotation):
                 if param.kind is not ParameterKind.PARAM_SPEC:
                     return True
-            elif has_invalid_paramspec_usage(annotation, can_assign_ctx):
+            elif _has_invalid_paramspec_usage(annotation, can_assign_ctx, seen):
                 return True
         return False
     if isinstance(value, GenericValue):
@@ -1715,7 +1717,7 @@ def has_invalid_paramspec_usage(
                     type_params[i], ParamSpecParam
                 ):
                     return True
-            elif has_invalid_paramspec_usage(arg, can_assign_ctx):
+            elif _has_invalid_paramspec_usage(arg, can_assign_ctx, seen):
                 return True
         return False
     return False
@@ -2496,6 +2498,52 @@ def _args_from_concatenate(concatenate: Any, ctx: Context) -> Sequence[SigParame
         for i, annotation in enumerate(types)
     ]
     return params
+
+
+def _typeddict_from_runtime(val: Any, ctx: Context) -> TypedDictValue:
+    required_keys = getattr(val, "__required_keys__", None)
+    readonly_keys = getattr(val, "__readonly_keys__", None)
+    total = getattr(val, "__total__", True)
+    extra_keys = None
+    # Deprecated
+    if hasattr(val, "__extra_keys__"):
+        extra_keys = _annotation_expr_from_runtime(val.__extra_keys__, ctx)
+    # typing_extensions 4.12
+    # static analysis: ignore[value_always_true]
+    if isinstance(
+        val,
+        # static analysis: ignore[private_import]
+        typing_extensions._TypedDictMeta,
+        # static analysis: ignore[value_always_true]
+    ) and not hasattr(typing_extensions, "TypeForm"):
+        if hasattr(val, "__closed__") and val.__closed__:
+            extra_keys = _annotation_expr_from_runtime(val.__extra_items__, ctx)
+    else:
+        # Newer typing-extensions
+        if hasattr(val, "__closed__") and val.__closed__:
+            extra_keys = AnnotationExpr(ctx, NO_RETURN_VALUE)
+        elif hasattr(val, "__extra_items__") and not is_typing_name(
+            val.__extra_items__, "NoExtraItems"
+        ):
+            extra_keys = _annotation_expr_from_runtime(val.__extra_items__, ctx)
+    if extra_keys is None:
+        extra_keys_val = None
+        extra_readonly = False
+    else:
+        extra_keys_val, qualifiers = extra_keys.unqualify(
+            {Qualifier.ReadOnly}, qualifier_error_code=ErrorCode.invalid_qualifier
+        )
+        extra_readonly = Qualifier.ReadOnly in qualifiers
+    return TypedDictValue(
+        {
+            key: _get_typeddict_value(
+                value, ctx, key, required_keys, total, readonly_keys
+            )
+            for key, value in val.__annotations__.items()
+        },
+        extra_keys=extra_keys_val,
+        extra_keys_readonly=extra_readonly,
+    )
 
 
 def _get_typeddict_value(
@@ -3881,9 +3929,7 @@ def _value_of_origin_args(
             exprs = [_annotation_expr_from_runtime(arg, ctx) for arg in args]
             return _make_sequence_value(tuple, exprs, ctx)
     elif is_union(origin):
-        vals = [_type_from_runtime(arg, ctx) for arg in args]
-        assert all(isinstance(val, Value) for val in vals), args
-        return unite_values(*vals)
+        return unite_values(*[_type_from_runtime(arg, ctx) for arg in args])
     elif origin is Callable or is_typing_name(origin, "Callable"):
         if len(args) == 0:
             return CallableValue(ANY_SIGNATURE)

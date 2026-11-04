@@ -305,7 +305,7 @@ def _visit_default(node: ast.AST, ctx: Context) -> Value:
 
 def _paramspec_identities_from_value(value: Value) -> set[object]:
     identities: set[object] = set()
-    for subval in value.walk_values():
+    for subval in value.walk_unique_values():
         if isinstance(subval, InputSigValue) and isinstance(
             subval.input_sig, ParamSpecParam
         ):
@@ -345,7 +345,7 @@ def _is_invalid_generic_annotation_value(value: Value) -> bool:
         target = value.get_value()
         if isinstance(target, GenericValue) and is_typing_name(target.typ, "Generic"):
             return True
-    for subval in value.walk_values():
+    for subval in value.walk_unique_values():
         if isinstance(subval, KnownValue):
             if is_typing_name(subval.val, "Generic"):
                 return True

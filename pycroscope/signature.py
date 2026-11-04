@@ -1011,13 +1011,16 @@ class Signature:
                     and isinstance(param_typ, GenericValue)
                     and param_typ.typ
                     in {dict, collections.abc.Mapping, collections.abc.MutableMapping}
-                    and isinstance(composite.value, TypedDictValue)
+                    and isinstance(
+                        receiver_value := replace_fallback(composite.value),
+                        TypedDictValue,
+                    )
                 ):
                     # TypedDict instances support dict methods at runtime; when checking a
                     # bound receiver argument, keep that behavior instead of applying
                     # TypedDict-vs-dict assignment restrictions intended for user-facing
                     # assignment/compatibility checks.
-                    value_to_check = _typed_dict_as_mapping_receiver(composite.value)
+                    value_to_check = _typed_dict_as_mapping_receiver(receiver_value)
                 tv_tuple_map = _try_match_typevartuple_var_positional(
                     param, param_typ, value_to_check, ctx.can_assign_ctx
                 )
@@ -2197,10 +2200,14 @@ class Signature:
             use_default_inferable_typevars=False,
         )
 
-    def walk_values(self) -> Iterable[Value]:
-        yield from self.return_value.walk_values()
+    def get_annotation_values(self) -> Iterable[Value]:
+        yield self.return_value
         for param in self.parameters.values():
-            yield from param.annotation.walk_values()
+            yield param.annotation
+
+    def walk_values(self) -> Iterable[Value]:
+        for value in self.get_annotation_values():
+            yield from value.walk_values()
 
     def get_asynq_value(self) -> "Signature":
         """Return the :class:`Signature` for the `.asynq` attribute of an
@@ -3136,9 +3143,13 @@ class OverloadedSignature:
         sigs = ", ".join(map(str, self.signatures))
         return f"overloaded ({sigs})"
 
-    def walk_values(self) -> Iterable[Value]:
+    def get_annotation_values(self) -> Iterable[Value]:
         for sig in self.signatures:
-            yield from sig.walk_values()
+            yield from sig.get_annotation_values()
+
+    def walk_values(self) -> Iterable[Value]:
+        for value in self.get_annotation_values():
+            yield from value.walk_values()
 
     def get_asynq_value(self) -> "OverloadedSignature":
         return OverloadedSignature([sig.get_asynq_value() for sig in self.signatures])

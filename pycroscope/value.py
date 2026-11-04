@@ -597,6 +597,32 @@ class Value:
         """Iterator that yields all sub-values contained in this value."""
         yield self
 
+    def get_child_values(self) -> Iterable["Value"]:
+        """Values to visit next in a graph walk.
+
+        Compound values expose direct children. The fallback supports existing
+        subclasses that implement only the recursive walk_values() interface.
+        """
+        for value in self.walk_values():
+            if value is not self:
+                yield value
+
+    def walk_unique_values(self) -> Iterable["Value"]:
+        """Walk a shared type graph without revisiting the same object."""
+        seen: dict[int, Value] = {}
+        stack = [iter((self,))]
+        while stack:
+            value = next(stack[-1], None)
+            if value is None:
+                stack.pop()
+                continue
+            identity = id(value)
+            if identity in seen:
+                continue
+            seen[identity] = value
+            yield value
+            stack.append(iter(value.get_child_values()))
+
     def substitute_typevars(self, typevars: TypeVarMap) -> "Value":
         """Substitute the typevars in the map to produce a new Value.
 
@@ -1390,7 +1416,7 @@ def get_single_typevartuple_param(value: Value) -> TypeVarTupleParam | None:
 
 
 def iter_type_params_in_value(value: Value) -> Iterator[TypeParam]:
-    for subval in value.walk_values():
+    for subval in value.walk_unique_values():
         if isinstance(subval, TypeVarValue):
             yield subval.typevar_param
         else:
@@ -1718,6 +1744,9 @@ class TypeAliasValue(Value):
         yield self
         for arg in self.type_arguments:
             yield from arg.walk_values()
+
+    def get_child_values(self) -> Iterable[Value]:
+        yield from self.type_arguments
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "TypeAliasValue":
         if not self.type_arguments:
@@ -2379,6 +2408,9 @@ class GenericValue(TypedValue):
         for arg in self.args:
             yield from arg.walk_values()
 
+    def get_child_values(self) -> Iterable[Value]:
+        yield from self.args
+
     def substitute_typevars(self, typevars: TypeVarMap) -> "GenericValue":
         new_args: list[Value] = []
         for arg in self.args:
@@ -2510,6 +2542,10 @@ class SequenceValue(GenericValue):
         for _, member in self.members:
             yield from member.walk_values()
 
+    def get_child_values(self) -> Iterable[Value]:
+        for _, member in self.members:
+            yield member
+
     def simplify(self) -> GenericValue:
         if self.typ is tuple:
             return SequenceValue(
@@ -2614,6 +2650,11 @@ class DictIncompleteValue(GenericValue):
         for pair in self.kv_pairs:
             yield from pair.key.walk_values()
             yield from pair.value.walk_values()
+
+    def get_child_values(self) -> Iterable[Value]:
+        for pair in self.kv_pairs:
+            yield pair.key
+            yield pair.value
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "DictIncompleteValue":
         return DictIncompleteValue(
@@ -2792,6 +2833,10 @@ class TypedDictValue(GenericValue):
         for entry in self.items.values():
             yield from entry.typ.walk_values()
 
+    def get_child_values(self) -> Iterable[Value]:
+        for entry in self.items.values():
+            yield entry.typ
+
 
 @dataclass(unsafe_hash=True)
 class SyntheticClassObjectValue(Value):
@@ -2847,6 +2892,9 @@ class AsyncTaskIncompleteValue(GenericValue):
         yield self
         yield from self.value.walk_values()
 
+    def get_child_values(self) -> Iterable[Value]:
+        yield self.value
+
 
 @dataclass(unsafe_hash=True, init=False)
 class CallableValue(TypedValue):
@@ -2881,6 +2929,9 @@ class CallableValue(TypedValue):
     def walk_values(self) -> Iterable[Value]:
         yield self
         yield from self.signature.walk_values()
+
+    def get_child_values(self) -> Iterable[Value]:
+        yield from self.signature.get_annotation_values()
 
     def get_asynq_value(self) -> Value:
         """Return the CallableValue for the .asynq attribute of an AsynqCallable."""
@@ -3099,6 +3150,9 @@ class IntersectionValue(Value):
         for val in self.vals:
             yield from val.walk_values()
 
+    def get_child_values(self) -> Iterable[Value]:
+        yield from self.vals
+
     def get_type_value(self, ctx: CanAssignContext) -> Value:
         return pycroscope.relations.intersect_multi(
             [val.get_type_value(ctx) for val in self.vals], ctx
@@ -3234,6 +3288,9 @@ class MultiValuedValue(Value):
         yield self
         for val in self.vals:
             yield from val.walk_values()
+
+    def get_child_values(self) -> Iterable[Value]:
+        yield from self.vals
 
     def simplify(self) -> Value:
         return unite_values(*[val.simplify() for val in self.vals])
@@ -3999,6 +4056,11 @@ class AnnotatedValue(Value):
         yield from self.value.walk_values()
         for val in self.metadata:
             yield from val.walk_values()
+
+    def get_child_values(self) -> Iterable[Value]:
+        yield self.value
+        for extension in self.metadata:
+            yield from extension.walk_values()
 
     def get_metadata_of_type(self, typ: type[T]) -> Generator[T, None, None]:
         """Return any metadata of the given type."""

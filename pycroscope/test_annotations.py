@@ -2,6 +2,7 @@
 
 import sys
 import textwrap
+from typing import Callable
 
 from .annotations import has_invalid_paramspec_usage
 from .error_code import ErrorCode
@@ -40,7 +41,61 @@ _ABSTRACT_CONTEXT_MANAGER_INT = GenericValue(
 )
 
 
+# Compact runtime graphs with exponentially many paths through shared children.
+_SHARED_TUPLE = int
+_SHARED_CALLABLE = int
+for _ in range(16):
+    _SHARED_TUPLE = tuple[_SHARED_TUPLE, _SHARED_TUPLE]
+    _SHARED_CALLABLE = Callable[[_SHARED_CALLABLE], _SHARED_CALLABLE]
+
+
 class TestAnnotations(TestNameCheckVisitorBase):
+    @assert_passes(run_in_both_module_modes=True)
+    def test_shared_runtime_annotation_graphs(self):
+        from pycroscope.test_annotations import _SHARED_CALLABLE, _SHARED_TUPLE
+
+        def tuples(value: _SHARED_TUPLE) -> None:
+            pass
+
+        def callables(value: _SHARED_CALLABLE) -> None:
+            pass
+
+    @skip_before((3, 12))
+    def test_recursive_generic_bound(self):
+        self.assert_passes(
+            """
+            from typing import Any
+            from typing_extensions import assert_type
+
+            class Node[T: Node]:
+                value: T
+
+            def identity[T: Node](value: T) -> T:
+                return value
+
+            def check(value: Node[Any]) -> None:
+                assert_type(identity(value), Node[Any])
+                identity(1)  # E: incompatible_argument
+        """,
+            run_in_both_module_modes=True,
+        )
+
+    @skip_before((3, 12))
+    def test_runtime_annotation_cache_type_parameter_scopes(self):
+        self.assert_passes(
+            """
+            from typing_extensions import assert_type
+
+            type Pair[T] = tuple[T, T]
+            type Both[T, U] = tuple[Pair[T], Pair[U]]
+
+            def check(value: Both[int, str]) -> None:
+                assert_type(value[0][0], int)
+                assert_type(value[1][0], str)
+        """,
+            run_in_both_module_modes=True,
+        )
+
     @assert_passes()
     def test_union(self):
         from typing import Dict, List, Match, Optional, Pattern, Set, Union
@@ -989,7 +1044,7 @@ class TestCallable(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_stringified(self):
-        from typing import Callable, Sequence, TypeVar
+        from typing import Sequence, TypeVar
 
         from typing_extensions import Literal
 

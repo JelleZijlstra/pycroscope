@@ -393,6 +393,161 @@ class TestTypedDict(TestNameCheckVisitorBase):
                 takes_readonly_alt_tail(any_tail)  # E: incompatible_argument
         """)
 
+    @skip_before((3, 14))
+    @assert_passes()
+    def test_deferred_recursive_typeddicts(self):
+        from typing import TypedDict
+
+        from typing_extensions import assert_type
+
+        class Node(TypedDict):
+            child: Node
+            value: int
+
+        class Left(TypedDict):
+            right: Right | None
+
+        class Right(TypedDict):
+            left: Left
+            value: str
+
+        def check(node: Node, left: Left, right: Right) -> None:
+            assert_type(node["child"]["child"]["value"], int)
+            node["child"]["value"] = "bad"  # E: incompatible_argument
+            assert_type(right["left"]["right"], Right | None)
+            if left["right"] is not None:
+                assert_type(left["right"]["value"], str)
+
+    @assert_passes()
+    def test_recursive_typeddict_union(self):
+        from typing import TypedDict, Union
+
+        from typing_extensions import assert_type
+
+        class Node0(TypedDict):
+            field0: "Schema"
+            field1: "Schema"
+            value: int
+
+        class Node1(TypedDict):
+            field0: "Schema"
+            field1: "Schema"
+            value: int
+
+        class Node2(TypedDict):
+            field0: "Schema"
+            field1: "Schema"
+            value: int
+
+        class Node3(TypedDict):
+            field0: "Schema"
+            field1: "Schema"
+            value: int
+
+        Schema = Union[Node0, Node1, Node2, Node3]
+
+        def check(node: Schema) -> None:
+            assert_type(node["value"], int)
+            node["field0"]["value"] = "bad"  # E: incompatible_argument
+
+    @skip_if_not_installed("pydantic")
+    @assert_passes()
+    def test_pydantic_type_adapter_recursive_schema(self):
+        from pydantic import TypeAdapter
+
+        adapter = TypeAdapter(int)
+        assert_type(adapter.validate_json("1"), int)
+
+    @skip_before((3, 14))
+    @assert_passes()
+    def test_deferred_recursive_typeddict_union(self):
+        from typing import TypedDict, Union
+
+        from typing_extensions import assert_type
+
+        class Node0(TypedDict):
+            field0: Schema
+            field1: Schema
+            value: int
+
+        class Node1(TypedDict):
+            field0: Schema
+            field1: Schema
+            value: int
+
+        class Node2(TypedDict):
+            field0: Schema
+            field1: Schema
+            value: int
+
+        class Node3(TypedDict):
+            field0: Schema
+            field1: Schema
+            value: int
+
+        Schema = Union[Node0, Node1, Node2, Node3]
+
+        def check(node: Schema) -> None:
+            assert_type(node["value"], int)
+            node["value"] = "bad"  # E: incompatible_argument
+
+    def test_future_recursive_typeddict_union(self):
+        self.assert_passes("""
+            from __future__ import annotations
+            from typing import Union
+            from typing_extensions import Literal, TypedDict, assert_type
+
+            class Node0(TypedDict):
+                field0: Schema
+                field1: Schema
+                kind: Literal[0]
+
+            class Node1(TypedDict):
+                field0: Schema
+                field1: Schema
+                kind: Literal[1]
+
+            class Node2(TypedDict):
+                field0: Schema
+                field1: Schema
+                kind: Literal[2]
+
+            class Node3(TypedDict):
+                field0: Schema
+                field1: Schema
+                kind: Literal[3]
+
+            Schema = Union[Node0, Node1, Node2, Node3]
+
+            def check(node: Schema) -> None:
+                assert_type(node["kind"], Literal[0, 1, 2, 3])
+        """)
+
+    @skip_before((3, 14))
+    @assert_passes()
+    def test_recursive_typeddicts_with_same_name(self):
+        from typing import TypedDict
+
+        from typing_extensions import assert_type
+
+        class A:
+            class Node(TypedDict):
+                child: A.Node
+                value: int
+
+        class B:
+            class Node(TypedDict):
+                child: B.Node
+                value: str
+
+        class Pair(TypedDict):
+            a: A.Node
+            b: B.Node
+
+        def check(pair: Pair) -> None:
+            assert_type(pair["a"]["child"]["child"]["value"], int)
+            assert_type(pair["b"]["child"]["child"]["value"], str)
+
     def test_mutually_recursive_typeddicts_do_not_recurse_forever(self):
         self.assert_passes("""
             from __future__ import annotations
