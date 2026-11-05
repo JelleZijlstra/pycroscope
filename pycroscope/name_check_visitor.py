@@ -3351,7 +3351,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(value, TypeAliasValue):
             return set()
         identities: set[object] = set()
-        for subval in value.walk_values():
+        for subval in value.walk_unique_values():
             if isinstance(subval, TypeAliasValue):
                 continue
             type_param = _type_param_value_from_value(subval, self)
@@ -17570,7 +17570,7 @@ def _attribute_names_from_assignment_target(
 def _value_contains_self(value: Value | None) -> bool:
     if value is None:
         return False
-    for subvalue in value.walk_values():
+    for subvalue in value.walk_unique_values():
         if is_self_typevar_value(subvalue):
             return True
     return False
