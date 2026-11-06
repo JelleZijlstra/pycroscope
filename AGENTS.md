@@ -1,7 +1,8 @@
 # Agent Instructions
 
 - If behavior, CLI output/options, or configuration changes, update the relevant docs in `docs/` in the same change.
-  Do not update `docs/` for minor changes.
+  Bugfixes and minor changes do not need documentation updates; follow the changelog requirements below.
+  `docs/typesystem.md` explains the overall type system and features special to pycroscope, not individual bugfixes.
 - When asked to make a PR, first rebase your changes on latest `main`, then open a PR. Verify that the PR
   body is formatted correctly, then monitor CI and push fixes for any CI failures or merge conflicts.
 

@@ -1821,12 +1821,15 @@ class ArgSpecCache:
     ) -> GenericBases | None:
         if bases is None:
             return None
-        # Put Generic first since it determines the order of the typevars. This matters
-        # for typing.Coroutine.
+        # Generic and Protocol explicitly determine the order of the typevars,
+        # even when another base mentions them in a different order.
         bases = sorted(
             bases,
             key=lambda base: not isinstance(base, TypedValue)
-            or base.typ is not Generic,
+            or not (
+                is_typing_name(base.typ, "Generic")
+                or is_typing_name(base.typ, "Protocol")
+            ),
         )
         raw_typevars = tuple(
             uniq_chain(tuple(iter_type_params_in_value(base)) for base in bases)
