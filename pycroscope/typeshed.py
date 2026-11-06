@@ -55,7 +55,7 @@ from .signature import (
     SigParameter,
     make_bound_method,
 )
-from .stacked_scopes import Composite, uniq_chain
+from .stacked_scopes import Composite
 from .value import (
     UNINITIALIZED_VALUE,
     AnnotationExpr,
@@ -88,7 +88,6 @@ from .value import (
     class_owner_from_key,
     class_owner_from_qualname,
     get_self_param,
-    iter_type_params_in_value,
     make_coro_type,
     replace_fallback,
     type_param_to_value,
@@ -1485,20 +1484,14 @@ class TypeshedFinder:
         if arg.annotation is not None:
             typ = self._parse_annotation(arg.annotation, module, owner)
         elif owner is not None and is_self:
-            bases = self.get_bases(owner.class_key)
-            if bases is None:
-                typ = TypedValue(owner.class_key)
-            else:
-                typevars = uniq_chain(
-                    tuple(iter_type_params_in_value(base)) for base in bases
+            type_params = self.ctx.get_type_parameters(owner.class_key)
+            if type_params:
+                typ = GenericValue(
+                    owner.class_key,
+                    [type_param_to_value(type_param) for type_param in type_params],
                 )
-                if typevars:
-                    typ = GenericValue(
-                        owner.class_key,
-                        [type_param_to_value(type_param) for type_param in typevars],
-                    )
-                else:
-                    typ = TypedValue(owner.class_key)
+            else:
+                typ = TypedValue(owner.class_key)
 
         name = arg.arg
         if kind is ParameterKind.POSITIONAL_OR_KEYWORD and is_positional_only_arg_name(

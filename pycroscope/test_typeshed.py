@@ -371,6 +371,75 @@ _EXPECTED_TYPED_DICTS = {
 }
 
 
+class TestStubGenericOrder(TestNameCheckVisitorBase):
+    @pytest.fixture(autouse=True, params=[True, False], ids=["runtime", "stub_only"])
+    def runtime_module(self, request, monkeypatch):
+        if not request.param:
+            return
+        package = ModuleType("_pycroscope_tests")
+        package.__path__ = []
+        monkeypatch.setitem(sys.modules, package.__name__, package)
+        module_name = "_pycroscope_tests.generic_order"
+        module = ModuleType(module_name)
+        module.__package__ = package.__name__
+        package.generic_order = module
+        exec(
+            """
+class Base:
+    def get(self):
+        return "x"
+
+class Reordered(Base):
+    def first(self):
+        return 1
+
+class ExtensionsReordered(Base):
+    def first(self):
+        return 1
+
+class GenericReordered(Base):
+    def first(self):
+        return 1
+
+def make():
+    return Reordered()
+
+def make_extensions():
+    return ExtensionsReordered()
+
+def make_generic():
+    return GenericReordered()
+
+def get_base(value):
+    return value.get()
+""",
+            module.__dict__,
+        )
+        monkeypatch.setitem(sys.modules, module_name, module)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_explicit_type_parameter_order(self):
+        from typing_extensions import assert_type
+
+        def capybara():
+            from _pycroscope_tests.generic_order import (
+                get_base,
+                make,
+                make_extensions,
+                make_generic,
+            )
+
+            assert_type(make().first(), int)
+            assert_type(make().get(), str)
+            assert_type(make_extensions().first(), int)
+            assert_type(make_extensions().get(), str)
+            assert_type(make_generic().first(), int)
+            assert_type(make_generic().get(), str)
+            assert_type(get_base(make()), str)
+            assert_type(get_base(make_extensions()), str)
+            assert_type(get_base(make_generic()), str)
+
+
 class TestBundledStubs(TestNameCheckVisitorBase):
     @assert_passes()
     def test_import_aliases(self):
