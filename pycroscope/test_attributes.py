@@ -1184,9 +1184,11 @@ class TestAttributes(TestNameCheckVisitorBase):
         def capybara(obj: BrokenProperty) -> None:
             assert_type(obj.value, Any)
 
-    @assert_passes()
+    @assert_passes(run_in_both_module_modes=True)
     def test_metatype_instance_attributes(self):
         from typing import Any
+
+        from typing_extensions import assert_type
 
         def capybara(typ: type) -> None:
             assert_type(typ.__name__, str)
