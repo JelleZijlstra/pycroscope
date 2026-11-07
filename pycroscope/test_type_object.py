@@ -1053,7 +1053,9 @@ def test_get_attribute_uses_typeshed_types_for_type_descriptors() -> None:
     )
     assert mro_attr is not None
     assert mro_attr.is_metaclass_owner
-    assert mro_attr.is_property
+    # Stubs may describe __mro__ as a property or a Final attribute. On Python
+    # 3.10 and 3.11 its runtime member descriptor does not imply a property.
+    assert mro_attr.is_property or mro_attr.symbol.is_final
     assert mro_attr.value == GenericValue(tuple, [TypedValue(type)])
 
     bases_attr = type_object.get_attribute(
